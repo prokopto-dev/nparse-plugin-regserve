@@ -19,17 +19,25 @@ services:
     expose:
       - "8080"
 
-    # The image's own CMD has no --seed, so without this the container comes up, answers /healthz
-    # with "ok", and 404s the one document it exists to serve. Until the store lands (Phase 1) the
-    # catalogue IS this file.
+    # --seed is an IMPORT SOURCE, not the catalogue. On the first boot with an empty database the
+    # server imports this file; after that the database is the catalogue and the file is ignored.
+    # It stays mounted because it is what repopulates a fresh volume — and because a database that
+    # already holds plugins is never overwritten by it, leaving it costs nothing.
+    #
+    # The database path comes from REGSERVE_DB_PATH below. Without it the container would come up,
+    # answer /healthz with "ok", and register no index endpoints at all.
     command: ["serve", "--addr", ":8080", "--seed", "/etc/regserve/seed.json"]
 
     environment:
-      # CONSUMED TODAY: only REGSERVE_LOG_LEVEL. The rest are declared for the phases that read
-      # them — DB_PATH and PUBLIC_URL in Phase 1, the pepper and the OAuth pairs in Phase 2 — and
-      # setting one now changes nothing. They are listed rather than added later so the .env on the
-      # droplet is complete before the release that needs it, and marked rather than left looking
-      # active because a variable that reads as configuration and is ignored is its own defect.
+      # CONSUMED TODAY: REGSERVE_DB_PATH and REGSERVE_LOG_LEVEL. The rest are declared for the
+      # phases that read them — PUBLIC_URL, the pepper and the OAuth pairs in Phase 2 — and setting
+      # one now changes nothing. They are listed rather than added later so the .env on the droplet
+      # is complete before the release that needs it, and marked rather than left looking active
+      # because a variable that reads as configuration and is ignored is its own defect.
+      #
+      # REGSERVE_DB_PATH points into the named volume below. SQLite writes its WAL and shared-memory
+      # files beside it, so the DIRECTORY has to be writable, not just the file — which is why this
+      # is /data and not somewhere on the read-only root.
       REGSERVE_DB_PATH: /data/regserve.db
       REGSERVE_PUBLIC_URL: https://${REGSERVE_HOST:?set REGSERVE_HOST in .env}
       REGSERVE_LOG_LEVEL: ${REGSERVE_LOG_LEVEL:-info}
@@ -46,9 +54,10 @@ services:
     volumes:
       - regserve-data:/data
 
-      # The catalogue, placed by hand on the droplet (docs/operations/deployment.md). Read-only,
-      # and compatible with read_only: true below — that flag makes the container's own root
-      # filesystem immutable and says nothing about separate mounts.
+      # The seed catalogue, placed by hand on the droplet (docs/operations/deployment.md). It is
+      # imported once into an empty database and ignored thereafter. Read-only, and compatible with
+      # read_only: true below — that flag makes the container's own root filesystem immutable and
+      # says nothing about separate mounts.
       #
       # It must be world-readable (chmod 644): the container runs as uid 65532, which will not
       # match whoever owns the file on the host.
@@ -65,8 +74,14 @@ services:
         bind:
           create_host_path: false
 
-    # The image runs as uid 65532 and the named volume is chown-ed on first creation. If you switch
-    # to a bind mount, chown it to 65532:65532 first or the first boot fails on an unwritable /data.
+    # The image runs as uid 65532, and it ships /data owned by that uid so Docker applies the same
+    # ownership when it initialises this empty named volume — see deploy/Dockerfile, which is where
+    # the mechanism lives. A root-owned /data means the server cannot create the database and comes
+    # up serving no catalogue at all.
+    #
+    # A BIND MOUNT gets none of that: Docker does not touch the ownership of a host directory. If
+    # you switch to one, `chown 65532:65532` it on the host first, or the first boot fails on an
+    # unwritable /data.
     user: "65532:65532"
 
     security_opt:

@@ -77,9 +77,13 @@ request from a fork. CI ships an image; the host holds the credentials.
 
 ### 2. On the droplet — the catalogue
 
-Until the store lands (Phase 1) the catalogue is a **file on the droplet**, mounted read-only into
-the container. `compose.yaml` starts the server with `--seed /etc/regserve/seed.json`, and that
-mount comes from `/opt/regserve/seed.json`.
+The catalogue lives in the database, on the `/data` volume. `seed.json` is how it got there: on the
+first boot with an **empty** database the server imports the file and never reads it again. A
+database that already holds plugins is never overwritten by a file on disk, so the mount is
+harmless once it has done its job — and it must stay in place until it has.
+
+`compose.yaml` starts the server with `--seed /etc/regserve/seed.json`, mounted read-only from
+`/opt/regserve/seed.json`.
 
 ```bash
 # As the deploy user, in /opt/regserve.
@@ -90,11 +94,20 @@ chmod 644 seed.json
 `644` is not laziness: the container runs as uid `65532`, which matches nothing on the host, so the
 file has to be world-readable or the server cannot open it.
 
-The service is deliberately unable to start without it. A missing file fails `compose up` outright
-(`create_host_path: false`, so Docker will not helpfully create a directory in its place), an
-unreadable or malformed one exits at boot naming the file, and the deploy workflow checks it before
-it pulls anything. The failure this arrangement refuses to have is the quiet one: a container that
-comes up, answers `/healthz` with `ok`, and serves 404 to every installed client.
+The service is deliberately unable to start with a seed it cannot use. A missing file fails
+`compose up` outright (`create_host_path: false`, so Docker will not helpfully create a directory in
+its place), an unreadable or malformed one exits at boot naming the file, and the deploy workflow
+checks it before it pulls anything. The seed is read and validated **before** the database is
+touched, on every boot, whether or not it will be needed — so a file that has quietly rotted is
+found on the deploy that follows, not on the day the volume turns out to be empty.
+
+The failure this arrangement refuses to have is the quiet one: a container that comes up, answers
+`/healthz` with `ok`, and serves an empty catalogue to every installed client.
+
+**Removing the seed once the database holds the catalogue is safe** — drop the `--seed` flag and the
+bind mount together, in the same change to `deploy/compose.yaml`. Leaving them is also safe, and is
+the better default while `/data` is young enough that a volume loss is plausible: the seed is then
+the thing that repopulates a fresh database.
 
 ### 3. On the droplet — access to the image
 
@@ -206,12 +219,39 @@ Then check it — all three, in this order, because each failure means something
 
 ```bash
 curl -fsS https://nparseplugins.prokopto.dev/healthz   # the process is up
-curl -fsS https://nparseplugins.prokopto.dev/readyz    # a catalogue is loaded and renders
+curl -fsS https://nparseplugins.prokopto.dev/readyz    # the database answers and the catalogue renders
 curl -fsS https://nparseplugins.prokopto.dev/index.json | head -c 400
 ```
 
-`/readyz` says *why* when it is not ready. "no catalogue is loaded" means the seed never reached the
-container; anything else means it did and would not render.
+`/readyz` says *why* when it is not ready. "no database is configured" means `REGSERVE_DB_PATH`
+never reached the container; "the database could not be opened" means the `/data` volume is missing
+or unwritable, and the reason is in `docker compose logs`. Neither is fatal to the process on
+purpose: `/healthz` stays green so a brief volume problem does not restart-loop a container that
+would recover.
+
+The image ships `/data` owned by uid `65532`, and Docker applies that ownership when it initialises
+an empty named volume — so the first boot can create the database. **A bind mount gets none of
+that**: Docker never changes the ownership of a host directory, so `chown 65532:65532` it yourself
+before starting, or the log will read `permission denied` on `/data/regserve.db`.
+
+On the **first** boot against an empty database the log carries one line that matters:
+
+```bash
+docker compose logs regserve | grep catalogue
+# "catalogue imported from the seed file"  path=/etc/regserve/seed.json plugins=N
+# "catalogue loaded"                       plugins=N
+```
+
+Every boot after that says `seed file not imported` with a `reason`, and there are three:
+
+| `reason` | What it means |
+|---|---|
+| `the database already holds a catalogue` | Normal. Every boot after the first |
+| `a seed has already been imported into this database` | Normal, and the same statement made by the audit log rather than the plugin table |
+| `the seed file lists no plugins` | **The file is empty.** Nothing was written — not even the import marker — so fixing the file and restarting still imports it |
+
+If you ever see `the catalogue is empty`, the import did not happen and `/index.json` is about to
+report an empty registry to every client — check the seed mount before anything else.
 
 ---
 
@@ -271,8 +311,23 @@ made.
 
 ## Updating the catalogue
 
-Until Phase 1 the catalogue is `/opt/regserve/seed.json` and nothing else. Publishing a plugin means
-editing that file, and it takes a container recreate because the server reads it once, at boot.
+**The catalogue is the database now.** Editing `seed.json` and recreating the container does
+nothing: the import runs only against an empty database, on purpose, because the alternative is a
+restart silently reverting every publish made since the file was written.
+
+Until the publish API lands (Phase 3) there are exactly two honest ways to change the catalogue, and
+both should be rare:
+
+1. **Write the rows.** Stop the container, snapshot the database, and use `sqlite3` on the volume.
+   A listing is a `plugin` row plus one `release` row at `state = 'approved'`; the CHECK constraints
+   will refuse a hash that is not 64 lowercase hex characters, a URL that is not `https`, an
+   approved release with no hash, and a second approved release for the same plugin. Record what you
+   did in `audit_log` — it is append-only, so the row you write is the row that stays.
+2. **Start over from a seed.** Snapshot the database, remove it, and let the next boot re-import
+   `seed.json`. This throws away every publish and every ownership row the database holds, so it is
+   only reasonable while the database holds nothing but the import.
+
+The seed file below is still worth keeping current for case 2.
 
 ```bash
 # On the droplet, as deploy, in /opt/regserve.
@@ -281,8 +336,8 @@ cp seed.json seed.json.prev                       # the only rollback there is
 curl -fsS https://prokopto-dev.github.io/nparseplus-plugins/index.json -o seed.json
 ```
 
-**Validate before recreating.** A hand-edited seed that does not parse crash-loops the container,
-and the deploy-time preflight does not run here:
+**Validate before recreating.** A seed that does not parse fails the boot — the server reads and
+validates it before it touches the database — and the deploy-time preflight does not run here:
 
 ```bash
 python3 - seed.json <<'CHECK'
@@ -300,11 +355,12 @@ CHECK
 That is a smoke test, not the server's validator: the server applies the full schema-v1 rules and is
 the authority on what it will serve. This catches the mistakes people actually make by hand.
 
-Then pick the file up:
+Then pick the file up — remembering that on a database that already holds a catalogue this changes
+nothing served, and only refreshes what a future empty database would import:
 
 ```bash
 docker compose up -d --force-recreate regserve
-docker compose logs --tail 20 regserve          # "catalogue loaded from seed file"
+docker compose logs --tail 20 regserve          # "seed file not imported" reason="the database already holds a catalogue"
 curl -fsS https://nparseplugins.prokopto.dev/readyz
 ```
 
@@ -330,7 +386,9 @@ deploying a mismatched pair. The file being replaced is kept as `compose.yaml.pr
 
 **If the bad release included a migration, the image alone is not enough.** Migrations are
 forward-only ([ADR-0006](../adr/0006-atlas-authors-goose-applies.md)) — there are no down
-migrations, and an older binary will refuse a newer schema at boot. Restore the snapshot:
+migrations, and an older binary **refuses to start** against a newer schema rather than serving
+against columns it does not know about. That refusal is deliberate and is the signal to restore the
+snapshot the deploy took immediately before the migration ran:
 
 ```bash
 # On the droplet, as deploy:

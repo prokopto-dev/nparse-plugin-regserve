@@ -17,6 +17,10 @@ PKG       := ./...
 BIN       := regserve
 BUILD_DIR := ./bin
 
+# The local database `make migrate` and `make seed` act on. Never a path inside the container: the
+# production database lives on a volume and is migrated by the server at boot, not from a laptop.
+DB        ?= ./regserve.db
+
 # notyet <phase> <what> — a target that is declared but not yet implemented.
 # No leading '@': call sites add it, so this also works inside shell if/else blocks.
 #
@@ -24,6 +28,17 @@ BUILD_DIR := ./bin
 # the message at the point it appears and hands the remainder to an argument nothing reads.
 define notyet
 printf '\033[33m  not yet implemented\033[0m  %s\n  lands in: %s\n' "$(2)" "$(1)"
+endef
+
+# require <tool> <why> — fail with something actionable instead of "command not found".
+#
+# Deliberately NOT a `notyet` and deliberately not a skip: these targets do real work, and a target
+# that silently does nothing when its tool is missing is a target that reports success for a
+# regeneration that never happened.
+#
+# NO COMMAS IN <why>, for the reason given above.
+define require
+command -v $(1) >/dev/null 2>&1 || { printf '\033[31mmissing tool\033[0m  %s\n  %s\n' "$(1)" "$(2)"; exit 1; }
 endef
 
 ## help: list every documented target
@@ -104,22 +119,32 @@ test:
 ## gen: regenerate the scope catalogue, OpenAPI document and sqlc bindings
 .PHONY: gen
 gen:
-	@$(call notyet,Phase 1,regenerate the authz catalogue plus the OpenAPI document and sqlc bindings)
+	@$(call require,sqlc,db/queries is typed into internal/store/sqlitegen by it — install: go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1)
+	sqlc generate
+	@$(call notyet,Phase 2,the authz scope catalogue and the OpenAPI document)
 
 ## migration: author a migration from db/schema.hcl with Atlas (NAME=<snake_case>)
 .PHONY: migration
 migration:
-	@$(call notyet,Phase 1,atlas migrate diff against db/schema.hcl)
+	@$(call require,atlas,db/schema.hcl is diffed into a migration by it — install: curl -sSf https://atlasgo.sh | sh)
+	@[ -n "$(NAME)" ] || { printf 'NAME is required: make migration NAME=add_something\n'; exit 2; }
+	atlas migrate diff $(NAME) --dir "file://db/migrations-sqlite" --dir-format goose \
+	  --dev-url "sqlite://dev?mode=memory" --to "file://db/schema.hcl"
+	@# Atlas writes correct SQLite that is not OUR SQLite: backtick quoting sqlc cannot parse, and a
+	@# Down block full of DROP statements. See the script for what each fixup prevents.
+	bash scripts/finish-migration.sh
+	atlas migrate hash --dir "file://db/migrations-sqlite"
+	@$(MAKE) --no-print-directory gen
 
-## migrate: apply pending migrations to a local database
+## migrate: apply pending migrations to a local database (DB=./regserve.db)
 .PHONY: migrate
 migrate:
-	@$(call notyet,Phase 1,goose up against the local database)
+	$(GO) run ./cmd/$(BIN) migrate --db $(DB)
 
 ## seed: seed a local database with the current public catalogue
 .PHONY: seed
 seed:
-	@$(call notyet,Phase 2,import the live index.json and owners.json as seed data)
+	@$(call notyet,Phase 2,importing owners.json — the catalogue itself is imported at boot from --seed)
 
 ## docker: build the container image
 .PHONY: docker

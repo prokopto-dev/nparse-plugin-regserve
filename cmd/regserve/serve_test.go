@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"os"
@@ -10,8 +11,31 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/clock"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/plugin"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/registry"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/store"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/store/storetest"
 )
+
+// TestMain runs the goroutine-leak check after the suite; these tests open real databases.
+func TestMain(m *testing.M) { storetest.Main(m) }
+
+// runOut executes the command tree and returns what it wrote to stdout.
+func runOut(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+
+	var out bytes.Buffer
+	cmd := newRootCmd()
+	cmd.SetArgs(args)
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+
+	// Executed on its own line: in `return out.String(), cmd.Execute(...)` Go evaluates the buffer
+	// before the command has written to it, and the test then asserts against "".
+	err := cmd.ExecuteContext(t.Context())
+	return out.String(), err
+}
 
 // run executes the real command tree, so what is under test is what a container runs — including
 // the flag wiring and the environment fallbacks, which is exactly where the deploy was broken.
@@ -159,16 +183,21 @@ func TestServe_SeedPath_FlagBeatsEnvironment(t *testing.T) {
 	})
 }
 
-// TestCatalogueReadiness_NoCatalogue_ExplainsItself — an instance started without a seed answers
+// TestReadiness_NoCatalogue_ExplainsItself — an instance started without a database answers
 // /readyz with a reason rather than 404. The reason matters: 404 on a documented endpoint reads as
 // "the old image is still deployed", which sends an operator looking in the wrong place.
-func TestCatalogueReadiness_NoCatalogue_ExplainsItself(t *testing.T) {
+//
+// Neither reason may name a path. The detail is served verbatim to unauthenticated callers.
+func TestReadiness_NoCatalogue_ExplainsItself(t *testing.T) {
 	t.Parallel()
 
-	err := catalogueReadiness{}.Ready(t.Context())
-	require.ErrorIs(t, err, errNoCatalogue)
-	require.NotContains(t, err.Error(), "/etc/",
-		"the detail is served to unauthenticated callers; it must not publish a filesystem layout")
+	for _, reason := range []error{errNoDatabase, errDatabaseUnavailable} {
+		err := readiness{reason: reason}.Ready(t.Context())
+		require.ErrorIs(t, err, reason)
+		require.NotContains(t, err.Error(), "/etc/",
+			"the detail is served to unauthenticated callers; it must not publish a filesystem layout")
+		require.NotContains(t, err.Error(), "/data")
+	}
 }
 
 // TestEnvDefault_EmptyVariable_CountsAsUnset — `REGSERVE_LOG_LEVEL=` in a compose file is how a
@@ -182,4 +211,114 @@ func TestEnvDefault_EmptyVariable_CountsAsUnset(t *testing.T) {
 	require.Equal(t, "debug", envDefault(false, "info", envLogLevel))
 	require.Equal(t, "warn", envDefault(true, "warn", envLogLevel),
 		"an operator who typed the flag is working around the environment, not asking for it")
+}
+
+// TestOpenDatabase_NoPath_ServesAnyway — canonical §11: a missing or unopenable database is logged
+// and the server still serves, so /healthz stays green and /readyz explains. Only a failed
+// migration or a schema downgrade is fatal at boot.
+func TestOpenDatabase_NoPath_ServesAnyway(t *testing.T) {
+	t.Parallel()
+
+	db, reason := openDatabase(t.Context(), "")
+	require.Nil(t, db)
+	require.ErrorIs(t, reason, errNoDatabase)
+}
+
+// TestOpenDatabase_UnopenablePath_ServesAnyway — /data not mounted. The container answering
+// "not ready, and here is why" is what the deploy's own verification catches; crashing here would
+// restart-loop a container whose volume may be a minute from being remounted.
+func TestOpenDatabase_UnopenablePath_ServesAnyway(t *testing.T) {
+	t.Parallel()
+
+	db, reason := openDatabase(t.Context(), filepath.Join(t.TempDir(), "absent", "regserve.db"))
+	require.Nil(t, db)
+	require.ErrorIs(t, reason, errDatabaseUnavailable)
+}
+
+// TestPrepareCatalogue_EmptyDatabaseWithASeed_ImportsIt — the boot path that carries the live
+// catalogue into the database on the first container running this release.
+//
+// Without it the store-backed catalogue replaces a file-backed one that had the plugins in it, and
+// the first thing every installed client sees is an index with none.
+func TestPrepareCatalogue_EmptyDatabaseWithASeed_ImportsIt(t *testing.T) {
+	t.Parallel()
+
+	db := storetest.New(t)
+	seed, err := plugin.LoadSeed(writeSeed(t, marshalSeed(t, registry.SchemaVersion, validPlugin())))
+	require.NoError(t, err)
+
+	cat, err := prepareCatalogue(t.Context(), db, clock.System{}, &seed)
+	require.NoError(t, err)
+
+	got, err := cat.Listings(t.Context())
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, validPlugin().ID, got[0].ID)
+}
+
+// TestPrepareCatalogue_NoSeed_LeavesTheDatabaseAlone — the shape of every boot after the transition,
+// once the seed mount is removed from the droplet.
+func TestPrepareCatalogue_NoSeed_LeavesTheDatabaseAlone(t *testing.T) {
+	t.Parallel()
+
+	db := storetest.New(t)
+	cat, err := prepareCatalogue(t.Context(), db, clock.System{}, nil)
+	require.NoError(t, err)
+
+	got, err := cat.Listings(t.Context())
+	require.NoError(t, err)
+	require.Empty(t, got)
+}
+
+// TestMigrateCommand_FreshDatabase_AppliesAndReports — `make migrate` runs this, and so does an
+// operator asking what schema a file is at. Reporting through stdout as JSON means a script can
+// read the answer without parsing a log.
+func TestMigrateCommand_FreshDatabase_AppliesAndReports(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "regserve.db")
+
+	out, err := runOut(t, "migrate", "--db", path)
+	require.NoError(t, err)
+	require.Contains(t, out, `"schema"`)
+	require.Contains(t, out, "initial_schema")
+
+	// Idempotent: a second run applies nothing and still succeeds, which is what makes it safe to
+	// put in a Makefile people run without thinking.
+	again, err := runOut(t, "migrate", "--db", path)
+	require.NoError(t, err)
+	require.Contains(t, again, `"applied": []`)
+}
+
+// TestMigrateCommand_NoDatabase_IsFatal — unlike serve, doing nothing here while exiting 0 is how a
+// deploy reports success against a database it never touched.
+func TestMigrateCommand_NoDatabase_IsFatal(t *testing.T) {
+	t.Parallel()
+
+	err := run(t, "migrate")
+	require.ErrorIs(t, err, store.ErrNoPath)
+}
+
+// TestServe_DatabasePath_FlagBeatsEnvironment — deploy/compose.yaml sets REGSERVE_DB_PATH and the
+// Dockerfile declares it; until this release the binary ignored both.
+//
+// Not parallel: t.Setenv forbids it.
+func TestServe_DatabasePath_FlagBeatsEnvironment(t *testing.T) {
+	fromEnv := filepath.Join(t.TempDir(), "from-env", "regserve.db")
+	fromFlag := filepath.Join(t.TempDir(), "from-flag", "regserve.db")
+
+	t.Run("the variable is used when the flag is absent", func(t *testing.T) {
+		t.Setenv(envDBPath, fromEnv)
+
+		_, err := runOut(t, "migrate")
+		require.ErrorContains(t, err, fromEnv)
+	})
+
+	t.Run("the flag wins when both are set", func(t *testing.T) {
+		t.Setenv(envDBPath, fromEnv)
+
+		_, err := runOut(t, "migrate", "--db", fromFlag)
+		require.ErrorContains(t, err, fromFlag)
+		require.NotContains(t, err.Error(), fromEnv)
+	})
 }

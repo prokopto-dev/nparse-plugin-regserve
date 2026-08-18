@@ -1,112 +1,149 @@
 // Package plugin holds the plugin and release domain services.
 //
-// At this stage it provides the catalogue the index endpoints read from. The store-backed
-// implementation replaces Static in Phase 2; the interface it satisfies is declared by the consumer
-// (internal/api.Catalogue), so that swap touches no handler.
+// The catalogue here is what the index endpoints read. It satisfies an interface declared by its
+// consumer (internal/api.Catalogue), which is why the store-backed implementation could replace
+// the file-backed one without a handler moving.
 package plugin
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"os"
-	"sync"
+	"log/slog"
 
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/api"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/core"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/registry"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/store"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/store/sqlitegen"
 )
 
-// Static is an in-memory catalogue.
+// Catalogue serves the listings from the database.
 //
-// It exists so the service can be run and pointed at by a real nParse+ client before the database
-// lands — which matters more than it sounds, because the wire format is the one contract this
-// project cannot unilaterally fix, and exercising it against the actual parser early is the whole
-// point of ADR-0009.
-type Static struct {
-	mu      sync.RWMutex
-	byID    map[core.PluginID]registry.Plugin
-	ordered []registry.Plugin
+// It reads through the store's reader pool, which is query_only: rendering the index cannot take a
+// write lock, so a burst of client polls can never delay a publish.
+type Catalogue struct {
+	db *store.DB
 }
 
-// NewStatic builds a catalogue from listings. The listings are validated as a set, so a Static that
-// constructs successfully cannot render an invalid index.
-func NewStatic(listings []registry.Plugin) (*Static, error) {
-	idx, err := registry.NewIndex(listings)
+// NewCatalogue wraps an open database.
+func NewCatalogue(db *store.DB) *Catalogue { return &Catalogue{db: db} }
+
+// Listings returns every plugin with a live release, ordered by id.
+//
+// "Live" is one approved, non-superseded release — a single row, guaranteed by the partial unique
+// index rather than by this query picking one (ADR-0010). A claimed plugin awaiting review has no
+// such row and is therefore not in the index: it was never listed, rather than dropped from a
+// listing.
+func (c *Catalogue) Listings(ctx context.Context) ([]registry.Plugin, error) {
+	rows, err := c.db.Read().ListListings(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read the catalogue: %w", err)
 	}
 
-	byID := make(map[core.PluginID]registry.Plugin, len(idx.Plugins))
-	for _, p := range idx.Plugins {
-		id, perr := core.ParsePluginID(p.ID)
-		if perr != nil {
-			return nil, perr
+	out := make([]registry.Plugin, 0, len(rows))
+	for _, row := range rows {
+		p, err := listingFrom(row)
+		if err != nil {
+			// The whole request fails rather than the one row being dropped. A short index is
+			// indistinguishable from "those plugins were delisted", so a client would show users a
+			// catalogue that had quietly lost entries, with nothing anywhere saying so. A 500 is
+			// visible in a log, on /readyz and in the deploy's own verification.
+			slog.ErrorContext(ctx, "the catalogue cannot be rendered", "plugin_id", row.ID, "error", err)
+			return nil, err
 		}
-		byID[id] = p
+		out = append(out, p)
 	}
-	return &Static{byID: byID, ordered: idx.Plugins}, nil
-}
-
-// LoadStatic reads a schema-v1 index document from disk and builds a catalogue from it.
-//
-// The seed file is the same shape the service serves, so the live catalogue can be captured with
-// curl and replayed locally without a conversion step.
-func LoadStatic(path string) (*Static, error) {
-	raw, err := os.ReadFile(path) // #nosec G304 -- the path is an operator-supplied CLI flag
-	if err != nil {
-		return nil, fmt.Errorf("read seed file %s: %w", path, err)
-	}
-	idx, err := registry.ParseIndex(raw)
-	if err != nil {
-		return nil, fmt.Errorf("parse seed file %s: %w", path, err)
-	}
-	return NewStatic(idx.Plugins)
-}
-
-// Listings returns every visible plugin.
-func (s *Static) Listings(_ context.Context) ([]registry.Plugin, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	out := make([]registry.Plugin, len(s.ordered))
-	copy(out, s.ordered)
 	return out, nil
 }
 
 // Listing returns one plugin, or api.ErrListingNotFound.
-func (s *Static) Listing(_ context.Context, id core.PluginID) (registry.Plugin, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	p, ok := s.byID[id]
-	if !ok {
+//
+// Unknown and delisted are the same answer on purpose: a client cannot tell a delisted plugin from
+// one that never existed, and neither can somebody enumerating ids.
+func (c *Catalogue) Listing(ctx context.Context, id core.PluginID) (registry.Plugin, error) {
+	row, err := c.db.Read().GetListing(ctx, id.String())
+	switch {
+	case errors.Is(err, store.ErrNoRows):
 		return registry.Plugin{}, api.ErrListingNotFound
+	case err != nil:
+		return registry.Plugin{}, fmt.Errorf("read the listing for %s: %w", id, err)
+	}
+
+	p, err := listingFrom(sqlitegen.ListListingsRow(row))
+	if err != nil {
+		// Reporting "not found" for a row that exists would be a confident mistake: the id is
+		// claimed, and the truth is that we cannot serve it.
+		slog.ErrorContext(ctx, "the listing cannot be rendered", "plugin_id", id.String(), "error", err)
+		return registry.Plugin{}, err
 	}
 	return p, nil
 }
 
-// Ready reports whether this catalogue can still be rendered.
+// Ready reports whether the catalogue can be served, and says why when it cannot.
 //
-// It re-renders rather than returning a boolean captured at boot. A readiness probe that answers
-// from a flag set during startup cannot notice a catalogue that has since become unservable, and
-// once Phase 1 lets the catalogue be reloaded without a restart that gap is the whole failure:
-// /readyz would keep saying "ready" while /index.json returned 500.
+// It re-reads and re-renders rather than answering from a flag set at boot. A readiness probe that
+// remembers what was true at startup cannot notice a database that has since gone away, and it
+// would keep answering 200 while /index.json returned 500 to every client.
 //
-// The error is returned verbatim to an unauthenticated caller by /readyz, so it must stay a
-// statement about the catalogue. registry's errors name plugin ids and nothing else, which are
-// public by definition.
-func (s *Static) Ready(ctx context.Context) error {
-	listings, err := s.Listings(ctx)
+// The error reaches an unauthenticated caller verbatim through /readyz, so it must stay a
+// statement about the catalogue: no paths, no driver internals.
+func (c *Catalogue) Ready(ctx context.Context) error {
+	if err := c.db.Ping(ctx); err != nil {
+		// The ping error names the pool and nothing else; the path is in the boot log.
+		return errors.New("the database is not answering")
+	}
+
+	listings, err := c.Listings(ctx)
 	if err != nil {
-		return fmt.Errorf("read the catalogue: %w", err)
+		return errors.New("the catalogue could not be read")
 	}
 	if _, err := registry.NewIndex(listings); err != nil {
 		return fmt.Errorf("render the catalogue: %w", err)
 	}
+
+	// Claimed ids with nothing approved behind them are not an error — a plugin awaiting review is
+	// the normal state of a new submission — but they are the difference between "we have twelve
+	// plugins" and "we serve nine", and that difference should never have to be discovered.
+	if waiting, err := c.db.Read().ListPluginsWithNoApprovedRelease(ctx); err == nil && len(waiting) > 0 {
+		slog.InfoContext(ctx, "plugins claimed with no approved release",
+			"count", len(waiting), "plugin_ids", waiting)
+	}
 	return nil
 }
 
+// ErrUnservableListing is returned when a row exists but cannot be rendered into a listing.
+//
+// The only case the schema permits is an approved release whose hash is NULL, which the
+// release_approved_has_a_hash CHECK forbids — so this is the row that got there by a route nobody
+// has thought of yet. Serving it with an empty hash would hand every client an artifact it must
+// refuse to install, so the request fails instead and says which plugin did it.
+var ErrUnservableListing = errors.New("listing has no usable artifact hash")
+
+// listingFrom maps a row onto the wire type.
+func listingFrom(row sqlitegen.ListListingsRow) (registry.Plugin, error) {
+	if row.ArtifactSha256 == nil || *row.ArtifactSha256 == "" {
+		return registry.Plugin{}, fmt.Errorf("%w: %s", ErrUnservableListing, row.ID)
+	}
+	return registry.Plugin{
+		ID:          row.ID,
+		Name:        row.Name,
+		Description: row.Description,
+		Author:      row.Author,
+		Homepage:    row.Homepage,
+		Latest: registry.Release{
+			Version:     row.Version,
+			URL:         row.ArtifactUrl,
+			SHA256:      *row.ArtifactSha256,
+			RequiresSDK: row.SdkSpecifier,
+			// Nil stays nil: the field is string-or-null on the wire, and an absent constraint is
+			// not the same statement as an empty one.
+			MinAppVersion: row.MinimumAppVersion,
+		},
+	}, nil
+}
+
 var (
-	_ api.Catalogue    = (*Static)(nil)
-	_ api.ReadyChecker = (*Static)(nil)
+	_ api.Catalogue    = (*Catalogue)(nil)
+	_ api.ReadyChecker = (*Catalogue)(nil)
 )

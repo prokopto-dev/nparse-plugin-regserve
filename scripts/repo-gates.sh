@@ -53,14 +53,28 @@ else
 fi
 
 # --- MIG003 — a shipped migration is never edited ---------------------------------------------
+# A migration that has shipped in a tagged release has already run on the only copy of the
+# ownership records. Editing it changes what a FRESH database gets and nothing about the one in
+# production, so the two diverge silently — and forward-only means there is no down path to notice.
+#
+# The lock file is empty until the first release is tagged, and an empty lock is reported VACANT
+# rather than passed: a green tick for a check that compared nothing is exactly the tick people
+# learn to trust and stop reading.
 if [ -f db/SHIPPED.lock ] && compgen -G "db/migrations-sqlite/*.sql" >/dev/null; then
+  checked=0
   while read -r want file; do
+    case "${want:-}" in ''|'#'*) continue ;; esac
     [ -z "${file:-}" ] && continue
+    checked=$((checked + 1))
     [ -f "$file" ] || { report MIG003 "shipped migration is missing: $file"; continue; }
     got=$(shasum -a 256 "$file" | awk '{print $1}')
     [ "$got" = "$want" ] || report MIG003 "shipped migration changed: $file"
   done < db/SHIPPED.lock
-  [ $fail -eq 0 ] && pass MIG003 "shipped migrations match db/SHIPPED.lock"
+  if [ "$checked" -eq 0 ]; then
+    vacant MIG003 "shipped migrations frozen by db/SHIPPED.lock"
+  elif [ $fail -eq 0 ]; then
+    pass MIG003 "$checked shipped migration(s) match db/SHIPPED.lock"
+  fi
 else
   vacant MIG003 "shipped migrations frozen by db/SHIPPED.lock"
 fi

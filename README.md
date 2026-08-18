@@ -3,9 +3,9 @@
 The live plugin registry for [nParse+](https://github.com/prokopto-dev/nparse-plus). One Go binary,
 SQLite, API-first. Pre-1.0.
 
-**Status: scaffolding.** The index endpoints work end to end and are byte-compatible with the
-catalogue in production today. Authentication, publishing and moderation are designed, specified,
-and not yet built — see [`ROADMAP.md`](ROADMAP.md).
+**Status: early.** The index endpoints work end to end, are byte-compatible with the catalogue in
+production today, and are served from SQLite. Authentication, publishing and moderation are
+designed, specified, and not yet built — see [`ROADMAP.md`](ROADMAP.md).
 
 ## The problem
 
@@ -47,15 +47,22 @@ make build
 
 # Serve the catalogue currently in production, locally.
 curl -fsS https://prokopto-dev.github.io/nparseplus-plugins/index.json -o /tmp/seed.json
-./bin/regserve serve --addr 127.0.0.1:8080 --seed /tmp/seed.json
+./bin/regserve serve --addr 127.0.0.1:8080 --db /tmp/regserve.db --seed /tmp/seed.json
 
 curl -fsS http://127.0.0.1:8080/index.json
 curl -fsS http://127.0.0.1:8080/plugins/merchant-mode/index.json
 curl -fsS http://127.0.0.1:8080/readyz
 ```
 
-`--seed` can also be given as `REGSERVE_SEED_PATH`; the flag wins when both are set. Without either,
-the server starts, `/healthz` is `ok`, and `/readyz` reports that no catalogue is loaded.
+The catalogue lives in the database. `--seed` is imported **once**, into an empty database, and is
+then ignored forever — a database that already holds plugins is never overwritten by a file, which
+is what lets the running deployment cross over without a maintenance window. Delete
+`/tmp/regserve.db` to import a fresh seed.
+
+Both flags fall back to environment variables — `REGSERVE_DB_PATH` and `REGSERVE_SEED_PATH` — and
+the flag wins when both are set. Started without a database, the server still comes up: `/healthz`
+is `ok`, `/readyz` explains that there is no database, and the index endpoints are not registered.
+`regserve migrate --db <path>` applies migrations without serving.
 
 The document it serves is schema v1, the format a released nParse+ client already parses. Since the
 client is multi-registry, a running instance can be added under *Settings → Plugins* as an extra
@@ -68,7 +75,7 @@ registry with no app change at all.
 | `GET /index.json` | The catalogue, schema v1. What a client reads |
 | `GET /plugins/{id}/index.json` | One plugin, same format — the shape `PluginMeta.update_url` expects |
 | `GET /healthz` | Liveness. Touches nothing |
-| `GET /readyz` | Readiness, and it says *why* when it is not. Today that means a catalogue is loaded and still renders |
+| `GET /readyz` | Readiness, and it says *why* when it is not: the database answers and the catalogue still renders |
 
 The index endpoints sit outside `/api/v1` on purpose: their shape is pinned by a parser we do not
 own, so they must not move when the product API versions

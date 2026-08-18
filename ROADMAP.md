@@ -20,13 +20,24 @@ The repository, its rules, and the mechanisms that enforce them.
 client. The catalogue reaches it as `/opt/regserve/seed.json` on the droplet, mounted read-only and
 loaded at boot — deliberately temporary, and replaced by the store-backed catalogue in Phase 1.
 
-## Phase 1 — persistence
+## Phase 1 — persistence ✅
 
 - `db/schema.hcl` as declarative truth; Atlas authors, goose applies at boot
 - sqlc bindings into `internal/store/sqlitegen`; the two-pool store with `store.Tx`
 - Test template database cloned per test; `goleak` in `TestMain`
 - `make gen`, `make migration`, `make migrate` do real work
 - The store-backed catalogue replaces `plugin.Static`
+- **Not in the original plan, and required by it:** the seed importer. Phase 1 removes the file the
+  live catalogue is served from and Phase 2 owned the importer, so nothing would have put the
+  catalogue into the new database. `--seed` is now imported **once**, into an empty database, and
+  ignored thereafter — a non-empty database is never overwritten by a file, which makes the
+  transition zero-touch and the rollback a snapshot restore rather than a data-entry exercise.
+
+**What works now:** the full schema exists — `account`, `identity`, `identity_provider`, `plugin`,
+`release`, `plugin_owner`, `account_trust`, `audit_log` — with the append-only and no-delete
+triggers, and tests that make each of them fire. Only `plugin` and `release` have code; the rest is
+structure for Phases 2–3. `/readyz` reports the database. The deployed server serves the same
+catalogue it served before, out of SQLite.
 
 ## Phase 2 — identity
 
@@ -35,7 +46,8 @@ loaded at boot — deliberately temporary, and replaced by the store-backed cata
 - OAuth with `state` and PKCE; sessions on `__Host-regserve_session`
 - Accounts with linked `(provider, subject)` identities
 - `internal/authz` catalogue; PAT mint and verify; the capability floor
-- Seeding ownership from the existing `owners.json`, resolving handles to numeric ids
+- Seeding ownership from the existing `owners.json`, resolving handles to numeric ids (`make seed`;
+  the catalogue itself is already imported at boot)
 
 ## Phase 3 — publishing
 
