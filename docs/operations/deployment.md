@@ -70,9 +70,16 @@ If the GHCR package is public, nothing to do. If it is private:
 echo "<github-pat>" | docker login ghcr.io -u <your-github-username> --password-stdin
 ```
 
-### 3. In this repository — secrets
+### 3. In this repository — secrets, scoped to the `production` environment
 
-`Settings → Secrets and variables → Actions → Secrets`:
+**Create the environment first (step 5), then add these as _environment_ secrets on it** —
+`Settings → Environments → production → Environment secrets`.
+
+Not repository secrets. A repository secret is readable by any job in any workflow on the default
+branch; an environment secret is readable only by a job that declares `environment: production`,
+which is the job that cannot start until you approve it. The SSH key that reaches the droplet should
+be gated by the same approval as the deploy itself, otherwise the approval gate protects the
+*action* while leaving the *credential* available to anything else that runs.
 
 | Secret | Value | How to get it |
 |---|---|---|
@@ -87,15 +94,22 @@ Lock the deploy key down further in `/home/deploy/.ssh/authorized_keys` if you w
 braces — prefixing the key with `from="140.82.112.0/20,143.55.64.0/20"` restricts it to GitHub's
 ranges, at the cost of having to update it when those change.
 
-### 4. In this repository — variables
+### 4. In this repository — variables, at the repository level
 
-`Settings → Secrets and variables → Actions → Variables`:
+`Settings → Secrets and variables → Actions → Variables` — **repository** variables, not
+environment ones:
 
 | Variable | Value |
 |---|---|
 | `DEPLOY_USER` | `deploy` |
 | `DEPLOY_PATH` | `/opt/regserve` |
 | `REGSERVE_HOST` | `nparseplugins.prokopto.dev` |
+
+These are repository-level for two reasons. None of them is sensitive — a username, a path and a
+public hostname — so environment scoping buys nothing. And `REGSERVE_HOST` is referenced in the
+job's `environment.url`, which GitHub evaluates as part of resolving the environment; a variable
+defined *on* that environment is not reliably available at that point, so scoping it there can
+render the deployment URL blank.
 
 ### 5. In this repository — the production environment
 
