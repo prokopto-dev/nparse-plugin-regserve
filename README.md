@@ -51,7 +51,11 @@ curl -fsS https://prokopto-dev.github.io/nparseplus-plugins/index.json -o /tmp/s
 
 curl -fsS http://127.0.0.1:8080/index.json
 curl -fsS http://127.0.0.1:8080/plugins/merchant-mode/index.json
+curl -fsS http://127.0.0.1:8080/readyz
 ```
+
+`--seed` can also be given as `REGSERVE_SEED_PATH`; the flag wins when both are set. Without either,
+the server starts, `/healthz` is `ok`, and `/readyz` reports that no catalogue is loaded.
 
 The document it serves is schema v1, the format a released nParse+ client already parses. Since the
 client is multi-registry, a running instance can be added under *Settings → Plugins* as an extra
@@ -64,7 +68,7 @@ registry with no app change at all.
 | `GET /index.json` | The catalogue, schema v1. What a client reads |
 | `GET /plugins/{id}/index.json` | One plugin, same format — the shape `PluginMeta.update_url` expects |
 | `GET /healthz` | Liveness. Touches nothing |
-| `GET /readyz` | Readiness, and it says *why* when it is not |
+| `GET /readyz` | Readiness, and it says *why* when it is not. Today that means a catalogue is loaded and still renders |
 
 The index endpoints sit outside `/api/v1` on purpose: their shape is pinned by a parser we do not
 own, so they must not move when the product API versions
