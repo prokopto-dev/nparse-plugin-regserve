@@ -4,8 +4,14 @@
 # machine holding the only copy of the ownership records is neither. This workflow needs an
 # environment approval on production and takes a snapshot before it swaps anything.
 #
-# What actually happens on the host is `docker compose pull && up -d`. Traefik already owns :443 and
-# picks the new container up from its labels, so there is no reverse-proxy step here.
+# What actually happens on the host is `docker compose pull && up -d`, against the compose file this
+# workflow ships alongside the image. Traefik already owns :443 and picks the new container up from
+# its labels, so there is no reverse-proxy step here.
+#
+# The split of what travels and what stays: the IMAGE and the COMPOSE FILE come from the release,
+# because both are tracked, non-secret and version-locked to each other. The `.env` stays on the
+# droplet, because it holds secrets and a secret routed through a pipeline is a secret in that
+# pipeline's logs, cache and every fork's pull-request context.
 #
 # The catalogue itself is NOT shipped by this workflow. Until the store lands (Phase 1) it is
 # /opt/regserve/seed.json on the droplet, mounted into the container; this workflow asserts it is
@@ -72,6 +78,18 @@ jobs:
           printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
+      # Staged as a separate file, not written over the live one. Nothing on the droplet changes
+      # until the heredoc below has validated it against the host's real .env.
+      - name: Stage the compose file
+        env:
+          HOST: ${{ vars.REGSERVE_HOST }}
+          USER_NAME: ${{ vars.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+        run: |
+          set -euo pipefail
+          scp -o StrictHostKeyChecking=yes deploy/compose.yaml \
+            "${USER_NAME}@${HOST}:${DEPLOY_PATH}/compose.yaml.incoming"
+
       - name: Deploy
         env:
           # A repository VARIABLE, not a secret. The hostname is in deploy/env.example, in the
@@ -95,6 +113,32 @@ jobs:
           deploy_path="$1"
           image_ref="$2"
           cd "$deploy_path"
+
+          # Adopt the compose file that shipped with this release, BEFORE anything is pulled.
+          #
+          # It used to be hand-copied once at setup and never again, so a release could add a flag
+          # the running stack never picked up. That is not hypothetical: the release that added
+          # `--seed` would have started against a compose file that knew nothing about it, and the
+          # container would have come up with no catalogue while /healthz reported "ok".
+          if [ ! -s compose.yaml.incoming ]; then
+            echo "FATAL: compose.yaml.incoming did not arrive; the staging step should have sent it." >&2
+            exit 1
+          fi
+
+          # Validate the INCOMING file against this host's real .env. `config` resolves every
+          # interpolation, so it fails here on a malformed compose file AND on any ${VAR:?} the .env
+          # is missing — both of which would otherwise surface during `up -d`, with the old
+          # container already stopped.
+          docker compose -f compose.yaml.incoming --env-file .env config -q
+
+          if [ -f compose.yaml ]; then
+            cp compose.yaml compose.yaml.prev
+          fi
+          # `cat >`, not `mv`: writing through the existing file keeps its owner and mode, which a
+          # rename from a scp-created file would silently replace.
+          cat compose.yaml.incoming > compose.yaml
+          rm -f compose.yaml.incoming
+          echo "compose.yaml is the one that shipped with this release"
 
           # Preflight, BEFORE anything is pulled or swapped.
           #
