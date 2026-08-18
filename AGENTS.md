@@ -174,7 +174,18 @@ the PR body instead. Filing is expected, not noise.
 - Do not weaken, skip, delete, or `-update` a test to make CI green. A failing test is information.
 - Do not add a dependency. Propose it with the reason and the licence; a human decides.
 - Do not disable a lint rule, a hook, or a CI gate to land a change.
-- Do not push to `main`, force push, push a tag, publish, or deploy.
+- Do not push to `main`, force push, push a tag, cut a release, publish an image, or deploy. Pushing
+  a feature branch and opening a PR is the normal way work leaves this machine, and is fine.
+
+**Most of these are now yours to keep.** `.claude/settings.json` used to refuse them outright; its
+only remaining `deny` entries are reads of `.env`, keys and database files. Editing a generated file
+or `go.mod` asks first — a question, not a wall, and `go get` rewrites `go.mod` without ever reaching
+that question. `git push`, `git tag`, `gh release`, `docker push` and `go mod tidy` run unprompted.
+Exactly one rule above still has a mechanism: `MIG003`, which hashes shipped migrations against
+`db/SHIPPED.lock`. The rest are honour rules, and by this file's own governing rule that makes them
+wishes — so they are recorded here as what they are rather than as gates that no longer exist. If
+you want one back, add the gate and register it in
+[`docs/concepts/invariants.md`](docs/concepts/invariants.md).
 
 ## Working on it
 
