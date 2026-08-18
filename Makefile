@@ -19,6 +19,9 @@ BUILD_DIR := ./bin
 
 # notyet <phase> <what> — a target that is declared but not yet implemented.
 # No leading '@': call sites add it, so this also works inside shell if/else blocks.
+#
+# NO COMMAS IN <what>. Make splits $(call ...) arguments on commas, so a comma silently truncates
+# the message at the point it appears and hands the remainder to an argument nothing reads.
 define notyet
 printf '\033[33m  not yet implemented\033[0m  %s\n  lands in: %s\n' "$(2)" "$(1)"
 endef
@@ -101,7 +104,7 @@ test:
 ## gen: regenerate the scope catalogue, OpenAPI document and sqlc bindings
 .PHONY: gen
 gen:
-	@$(call notyet,Phase 1,regenerate authz catalogue, OpenAPI and sqlc bindings)
+	@$(call notyet,Phase 1,regenerate the authz catalogue plus the OpenAPI document and sqlc bindings)
 
 ## migration: author a migration from db/schema.hcl with Atlas (NAME=<snake_case>)
 .PHONY: migration

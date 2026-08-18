@@ -39,7 +39,7 @@ from it is vendored here at `internal/registry/testdata/index-v1.schema.json`.
 | Path | Holds |
 |---|---|
 | `cmd/regserve/` | The only binary. Cobra wiring, no logic |
-| `internal/api/` | Every HTTP route. Huma v2 registration, problem+json, ETag, idempotency |
+| `internal/api/` | Every HTTP route. problem+json today; Huma v2 registration, ETag and idempotency are the intended shape (canonical §6) and are not built yet |
 | `internal/authz/` | **The** catalogue — permissions and PAT scopes. Generates the DDL seed, the OpenAPI extensions, the scope enum and the docs page |
 | `internal/auth/` | PAT mint and verify, sessions, OAuth state and PKCE |
 | `internal/identity/{,discord,google,github}/` | Provider registry, credential dispatch, identity resolution |
@@ -47,7 +47,7 @@ from it is vendored here at `internal/registry/testdata/index-v1.schema.json`.
 | `internal/registry/` | schema-v1 index rendering. The wire format lives here and nowhere else |
 | `internal/plugin/`, `ownership/`, `moderation/` | Domain services |
 | `internal/store/` | The only holder of `*sql.DB`. `sqlitegen/` is generated and never hand-edited |
-| `internal/core/` | ULID, typed ids, `Secret` |
+| `internal/core/` | Typed ids and `Secret`. ULID lands with the first table that needs one (Phase 1) |
 | `internal/clock/` | The only `time.Now` |
 | `db/` | `schema.hcl` is the single schema truth; `queries/*.sql`; `migrations-sqlite/` |
 | `test/repo/` | Tests about the repository itself, not the product: they assert the gates below actually fire |

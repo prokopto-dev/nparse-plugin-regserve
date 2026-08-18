@@ -7,6 +7,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// envLogLevel is consulted when --log-level is not given. deploy/compose.yaml has always set it;
+// until now nothing read it, so a container asked for debug logging and got info without saying so.
+const envLogLevel = "REGSERVE_LOG_LEVEL"
+
 // Stamped by -ldflags at build time. Defaults are what a `go run` reports, and saying "dev"
 // out loud is better than reporting a version that does not exist.
 var (
@@ -30,13 +34,33 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage: true,
 	}
 
-	cmd.PersistentFlags().StringVar(&logLevel, "log-level", "info", "debug, info, warn or error")
+	cmd.PersistentFlags().StringVar(&logLevel, "log-level", "info",
+		"debug, info, warn or error; falls back to $"+envLogLevel)
 	cmd.PersistentPreRunE = func(_ *cobra.Command, _ []string) error {
-		return configureLogging(logLevel)
+		return configureLogging(
+			envDefault(cmd.PersistentFlags().Changed("log-level"), logLevel, envLogLevel))
 	}
 
 	cmd.AddCommand(newServeCmd(), newVersionCmd(), newHealthcheckCmd())
 	return cmd
+}
+
+// envDefault resolves one setting from a flag and an environment variable.
+//
+// The flag wins whenever it was actually typed, including when what was typed equals the default:
+// an operator who runs the container with `--log-level debug` is working around the environment,
+// not asking to be overridden by it.
+//
+// An empty variable counts as unset. `REGSERVE_LOG_LEVEL=` in a compose file is how a value is
+// cleared, and treating it as a request for "" would turn that into a parse error at boot.
+func envDefault(flagChanged bool, flagValue, envKey string) string {
+	if flagChanged {
+		return flagValue
+	}
+	if v := os.Getenv(envKey); v != "" {
+		return v
+	}
+	return flagValue
 }
 
 func configureLogging(level string) error {

@@ -13,10 +13,12 @@ The repository, its rules, and the mechanisms that enforce them.
   analysers `CLOCK001`, `SQL001`, `NET001`, `ROUTE001`, `SCHEMA002`
 - `internal/core`, `internal/clock`, `internal/registry` with `SCHEMA001` and `SIZE001`
 - The index endpoints, health and readiness, request ids, the closed error enum
-- Container image, release pipeline, approved deploy to the droplet
+- Container image, release pipeline, approved deploy to the droplet, with the deploy asserting
+  `/readyz` and `schema_version: 1` against the live host before it reports success
 
-**What works now:** a running server serves the production catalogue, byte-identical, to a real
-client.
+**What works now:** the deployed server serves the production catalogue, byte-identical, to a real
+client. The catalogue reaches it as `/opt/regserve/seed.json` on the droplet, mounted read-only and
+loaded at boot — deliberately temporary, and replaced by the store-backed catalogue in Phase 1.
 
 ## Phase 1 — persistence
 

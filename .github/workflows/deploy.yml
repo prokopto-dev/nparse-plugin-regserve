@@ -6,6 +6,10 @@
 #
 # What actually happens on the host is `docker compose pull && up -d`. Traefik already owns :443 and
 # picks the new container up from its labels, so there is no reverse-proxy step here.
+#
+# The catalogue itself is NOT shipped by this workflow. Until the store lands (Phase 1) it is
+# /opt/regserve/seed.json on the droplet, mounted into the container; this workflow asserts it is
+# there before it touches anything.
 
 name: Deploy
 
@@ -70,7 +74,13 @@ jobs:
 
       - name: Deploy
         env:
-          HOST: ${{ secrets.DEPLOY_HOST }}
+          # A repository VARIABLE, not a secret. The hostname is in deploy/env.example, in the
+          # deployment runbook and in public DNS, so secrecy bought nothing — while the log
+          # masking that comes with a secret turned "the name does not resolve" into
+          # `ssh: Could not resolve hostname ***` and cost four failed deploys. One name is used
+          # for SSH and for HTTPS, so this is also the string DEPLOY_KNOWN_HOSTS must be
+          # keyscanned against. The credential and the host-key pin stay secrets.
+          HOST: ${{ vars.REGSERVE_HOST }}
           USER_NAME: ${{ vars.DEPLOY_USER }}
           DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
           IMAGE_REF: ${{ steps.image.outputs.ref }}
@@ -85,6 +95,23 @@ jobs:
           deploy_path="$1"
           image_ref="$2"
           cd "$deploy_path"
+
+          # Preflight, BEFORE anything is pulled or swapped.
+          #
+          # The catalogue is a file placed by hand on this box (docs/operations/deployment.md), so
+          # CI never sees it and cannot fail on it any earlier than this. The container is started
+          # with --seed, which means a missing or empty file is a boot failure — and discovering
+          # that after `compose up` means discovering it with the old container already gone. This
+          # is the same argument as the snapshot below, one step further back.
+          #
+          # Non-empty is as far as a shell check honestly goes; whether the JSON parses is asserted
+          # by the verify step at the end, and by the server itself refusing to start.
+          if [ ! -s seed.json ]; then
+            echo "FATAL: ${deploy_path}/seed.json is missing or empty." >&2
+            echo "It is the catalogue this release serves. See docs/operations/deployment.md." >&2
+            exit 1
+          fi
+          echo "seed.json present ($(wc -c < seed.json) bytes)"
 
           # Snapshot before anything changes. Migrations are forward-only (ADR-0006), so this file
           # is the only undo that exists. Taking it after the pull would be taking it after the
@@ -126,6 +153,11 @@ jobs:
             [ "$i" -eq 30 ] && { echo "healthz never came up"; exit 1; }
             sleep 5
           done
+
+          # Readiness, which for now means "a catalogue is loaded and still renders". It answers
+          # before /index.json is fetched because it says WHY when it is not ready, and a 503 with
+          # a reason is a better first line in a failed deploy's log than a curl exit code.
+          curl -fsS --max-time 15 "${HOST_URL}/readyz"
 
           # The point of the whole service: the index must be servable and parseable. A deploy that
           # boots but serves a broken index is a deploy that took every client's plugin browser

@@ -18,6 +18,10 @@ import (
 // BasePath is the product API. The index endpoints deliberately sit OUTSIDE it — their shape is
 // pinned by a parser we do not own, so they must not move when the product API versions. See
 // ADR-0009 and canonical §6.
+//
+// No route is mounted under it yet; the product API lands in Phase 2. It is declared here now so
+// the first handler that needs a prefix reaches for this constant rather than typing the string,
+// which is how a service ends up with two spellings of its own base path.
 const BasePath = "/api/v1"
 
 // Catalogue is what the API needs in order to render the index.
@@ -45,7 +49,10 @@ type ReadyChecker interface {
 // tests, and later the spec generator — should be constructing the same thing, and a positional
 // list of six optional dependencies is a list somebody eventually passes in the wrong order.
 type Config struct {
-	// Version, Commit and BuildDate are ldflags stamps, reported by GET /api/v1/meta.
+	// Version, Commit and BuildDate are ldflags stamps. No endpoint serves them yet — the meta
+	// operation under BasePath arrives with the product API in Phase 2. Until then `regserve
+	// version` is where they are readable, and they are carried here so that endpoint needs no
+	// change to the wiring.
 	Version   string
 	Commit    string
 	BuildDate string
@@ -60,6 +67,10 @@ type Config struct {
 	Catalogue Catalogue
 
 	// Readiness backs /readyz. Nil means the endpoint is not registered.
+	//
+	// The serve command always supplies one, including on an instance with no catalogue: a
+	// readiness check that reports "not ready, and here is why" is working, and answering 404
+	// instead reads to an operator like an older build is deployed.
 	Readiness ReadyChecker
 }
 

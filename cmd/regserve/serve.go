@@ -25,6 +25,30 @@ const (
 	shutdownTimeout   = 15 * time.Second  // drain in-flight requests before exiting
 )
 
+// envSeedPath is consulted when --seed is not given, so an image can be pointed at a catalogue
+// without rewriting its command line. deploy/compose.yaml passes the flag; a bare `docker run`
+// has only the environment.
+const envSeedPath = "REGSERVE_SEED_PATH"
+
+// errNoCatalogue is what /readyz reports on an instance started without a seed.
+//
+// It names the flag rather than the path it would have read: the detail is returned verbatim to an
+// unauthenticated caller, and the container's filesystem layout is not something to publish.
+var errNoCatalogue = errors.New("no catalogue is loaded; the server was started without --seed")
+
+// catalogueReadiness is Phase 0 readiness: ready means there is a catalogue and it still renders.
+//
+// A named type rather than a closure because Phase 1 replaces it with the store-backed check that
+// pings the database, and that swap should be one line in runServe.
+type catalogueReadiness struct{ cat *plugin.Static }
+
+func (c catalogueReadiness) Ready(ctx context.Context) error {
+	if c.cat == nil {
+		return errNoCatalogue
+	}
+	return c.cat.Ready(ctx)
+}
+
 func newServeCmd() *cobra.Command {
 	var (
 		addr string
@@ -35,13 +59,15 @@ func newServeCmd() *cobra.Command {
 		Use:   "serve",
 		Short: "Serve the registry",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runServe(cmd.Context(), addr, seed)
+			return runServe(cmd.Context(), addr,
+				envDefault(cmd.Flags().Changed("seed"), seed, envSeedPath))
 		},
 	}
 
 	cmd.Flags().StringVar(&addr, "addr", ":8080", "listen address")
 	cmd.Flags().StringVar(&seed, "seed", "",
-		"path to a schema-v1 index.json to serve (temporary, until the store lands)")
+		"path to a schema-v1 index.json to serve (temporary, until the store lands); "+
+			"falls back to $"+envSeedPath)
 
 	return cmd
 }
@@ -49,18 +75,30 @@ func newServeCmd() *cobra.Command {
 func runServe(ctx context.Context, addr, seed string) error {
 	cfg := api.Config{Version: version, Commit: commit, BuildDate: buildDate}
 
+	// A seed that cannot be read or does not parse is fatal, deliberately: LoadStatic validates
+	// through registry.ParseIndex and registry.NewIndex, so the alternative to crashing at boot is
+	// a container that comes up healthy and serves a catalogue no client can read. Failing here is
+	// visible in `docker compose logs` in seconds; the other failure is visible to every user.
+	var ready catalogueReadiness
 	if seed != "" {
 		cat, err := plugin.LoadStatic(seed)
 		if err != nil {
 			return err
 		}
 		cfg.Catalogue = cat
+		ready.cat = cat
 		slog.InfoContext(ctx, "catalogue loaded from seed file", "path", seed)
 	} else {
 		// Registering the index routes with no catalogue behind them would answer 500 where an
 		// honest 404 says "this instance has no catalogue configured".
 		slog.WarnContext(ctx, "no seed file given; the index endpoints are not registered")
 	}
+
+	// Readiness is registered either way. An instance with no catalogue is not a build that lacks
+	// /readyz, it is an instance that is not ready — and saying which is the endpoint's whole job.
+	// Registering it only sometimes turns a misconfiguration into a 404 that reads like "the old
+	// image is still running".
+	cfg.Readiness = ready
 
 	srv := &http.Server{
 		Addr:              addr,

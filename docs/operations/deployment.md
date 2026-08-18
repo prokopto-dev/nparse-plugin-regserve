@@ -10,7 +10,7 @@ The pipeline is two workflows, split deliberately:
 | Workflow | Trigger | What it does | Approval |
 |---|---|---|---|
 | `Release` | push to `main`, tag `v*` | Builds a multi-arch image, pushes to GHCR | none |
-| `Deploy` | successful `Release`, or manual | SSHes to the droplet, snapshots the DB, `compose pull && up -d`, verifies | `production` environment |
+| `Deploy` | successful `Release`, or manual | SSHes to the droplet, checks the seed file, snapshots the DB, `compose pull && up -d`, verifies | `production` environment |
 
 Building is safe and automatic. Applying an image to the machine holding the only copy of the
 ownership records is neither, which is why it is a separate, approvable step.
@@ -34,7 +34,8 @@ install -d -o deploy -g deploy -m 750 /opt/regserve/backups
 Copy two files from this repo into `/opt/regserve/`:
 
 ```bash
-# From your workstation, in a checkout of this repo. Use the same hostname as DEPLOY_HOST.
+# From your workstation, in a checkout of this repo. The hostname is REGSERVE_HOST — one name
+# for SSH and for HTTPS.
 scp deploy/compose.yaml    deploy@nparseplugins.prokopto.dev:/opt/regserve/compose.yaml
 scp deploy/env.example     deploy@nparseplugins.prokopto.dev:/opt/regserve/.env
 ```
@@ -61,7 +62,28 @@ openssl rand -base64 32     # -> REGSERVE_TOKEN_PEPPER
 through a pipeline is a secret in that pipeline's logs, its cache, and the context of every pull
 request from a fork. CI ships an image; the host holds the credentials.
 
-### 2. On the droplet — access to the image
+### 2. On the droplet — the catalogue
+
+Until the store lands (Phase 1) the catalogue is a **file on the droplet**, mounted read-only into
+the container. `compose.yaml` starts the server with `--seed /etc/regserve/seed.json`, and that
+mount comes from `/opt/regserve/seed.json`.
+
+```bash
+# As the deploy user, in /opt/regserve.
+curl -fsS https://prokopto-dev.github.io/nparseplus-plugins/index.json -o seed.json
+chmod 644 seed.json
+```
+
+`644` is not laziness: the container runs as uid `65532`, which matches nothing on the host, so the
+file has to be world-readable or the server cannot open it.
+
+The service is deliberately unable to start without it. A missing file fails `compose up` outright
+(`create_host_path: false`, so Docker will not helpfully create a directory in its place), an
+unreadable or malformed one exits at boot naming the file, and the deploy workflow checks it before
+it pulls anything. The failure this arrangement refuses to have is the quiet one: a container that
+comes up, answers `/healthz` with `ok`, and serves 404 to every installed client.
+
+### 3. On the droplet — access to the image
 
 If the GHCR package is public, nothing to do. If it is private:
 
@@ -70,9 +92,9 @@ If the GHCR package is public, nothing to do. If it is private:
 echo "<github-pat>" | docker login ghcr.io -u <your-github-username> --password-stdin
 ```
 
-### 3. In this repository — secrets, scoped to the `production` environment
+### 4. In this repository — secrets, scoped to the `production` environment
 
-**Create the environment first (step 5), then add these as _environment_ secrets on it** —
+**Create the environment first (step 6), then add these as _environment_ secrets on it** —
 `Settings → Environments → production → Environment secrets`.
 
 Not repository secrets. A repository secret is readable by any job in any workflow on the default
@@ -84,20 +106,28 @@ be gated by the same approval as the deploy itself, otherwise the approval gate 
 | Secret | Value | How to get it |
 |---|---|---|
 | `DEPLOY_SSH_KEY` | The **private** half of a keypair made for this and nothing else | `ssh-keygen -t ed25519 -C "regserve-deploy" -f ./regserve-deploy -N ""` — paste the contents of `regserve-deploy`, then append `regserve-deploy.pub` to `/home/deploy/.ssh/authorized_keys` on the droplet |
-| `DEPLOY_KNOWN_HOSTS` | The droplet's host key | `ssh-keyscan -t ed25519 <the same name you put in DEPLOY_HOST>` — run this **once, from a network you trust**, and paste the output |
-| `DEPLOY_HOST` | `nparseplugins.prokopto.dev` — a hostname, never an IP | The A record you already added |
+| `DEPLOY_KNOWN_HOSTS` | The droplet's host key | `ssh-keyscan -t ed25519 nparseplugins.prokopto.dev` — the **exact string** in `REGSERVE_HOST`, scanned **once, from a network you trust**; paste the output |
+
+There is no `DEPLOY_HOST`. The deploy SSHes to `vars.REGSERVE_HOST` (step 5), the same name it then
+fetches over HTTPS — one record, one string to keep in step with `DEPLOY_KNOWN_HOSTS`.
+
+That name was a secret until it cost four deploys. It is published in `deploy/env.example`, in this
+file and in public DNS, so secrecy bought nothing; what it did buy was log masking, which rendered
+`ssh: Could not resolve hostname ***` and hid which name was wrong. The credential
+(`DEPLOY_SSH_KEY`) and the host-key pin (`DEPLOY_KNOWN_HOSTS`) are still secrets, so the security
+posture is unchanged: knowing the hostname gets you as far as knowing the hostname.
 
 #### Use a hostname, and keyscan that same hostname
 
 A droplet's public IP is not guaranteed stable — a rebuild or a resize can change it, and a
 hard-coded IP turns that into a deploy that fails at the worst moment. Point an A record at the
-droplet and put **that** in `DEPLOY_HOST`.
+droplet and put **that** in `REGSERVE_HOST`.
 
 The part that bites: `known_hosts` entries are keyed by the exact name used to connect. If you
 `ssh-keyscan` the IP and then connect to a hostname, the entry does not match, and the deploy fails
 with a host-key error that reads like a man-in-the-middle rather than a configuration mistake — so
 the natural reaction is to disable the check, which is the one thing that must not happen. Keyscan
-the same string you put in `DEPLOY_HOST`:
+the same string you put in `REGSERVE_HOST`:
 
 ```bash
 ssh-keyscan -t ed25519 nparseplugins.prokopto.dev
@@ -106,7 +136,7 @@ ssh-keyscan -t ed25519 nparseplugins.prokopto.dev
 This droplet uses the **service record itself** — `nparseplugins.prokopto.dev` — for SSH as well as
 for HTTPS. One name, one record, nothing extra to maintain.
 
-The tradeoff to remember: if the registry is ever moved to a different host, `DEPLOY_HOST` and
+The tradeoff to remember: if the registry is ever moved to a different host, `REGSERVE_HOST` and
 `DEPLOY_KNOWN_HOSTS` move with it, because SSH access follows the service name. Updating both at the
 same time as the A record is the whole of the discipline that requires.
 
@@ -125,7 +155,7 @@ mismatch until you re-run `ssh-keyscan` and update `DEPLOY_KNOWN_HOSTS`. That fa
 behaviour, not a bug — a changed host key is indistinguishable from an interception, and the only
 safe response is to re-verify out of band.
 
-### 4. In this repository — variables, at the repository level
+### 5. In this repository — variables, at the repository level
 
 `Settings → Secrets and variables → Actions → Variables` — **repository** variables, not
 environment ones:
@@ -134,7 +164,7 @@ environment ones:
 |---|---|
 | `DEPLOY_USER` | `deploy` |
 | `DEPLOY_PATH` | `/opt/regserve` |
-| `REGSERVE_HOST` | `nparseplugins.prokopto.dev` |
+| `REGSERVE_HOST` | `nparseplugins.prokopto.dev` — the SSH target, the HTTPS host and the environment URL |
 
 These are repository-level for two reasons. None of them is sensitive — a username, a path and a
 public hostname — so environment scoping buys nothing. And `REGSERVE_HOST` is referenced in the
@@ -142,20 +172,29 @@ job's `environment.url`, which GitHub evaluates as part of resolving the environ
 defined *on* that environment is not reliably available at that point, so scoping it there can
 render the deployment URL blank.
 
-### 5. In this repository — the production environment
+### 6. In this repository — the production environment
 
 `Settings → Environments → New environment → production`.
 
 Add yourself as a **required reviewer**. This is what turns a merge into a build and a deliberate
 click into a deploy. Optionally restrict the environment to the `main` branch and tags.
 
-### 6. First deploy
+### 7. First deploy
 
 ```bash
 gh workflow run Deploy -f image_tag=edge
 ```
 
-Then check it: `https://nparseplugins.prokopto.dev/healthz` and `/index.json`.
+Then check it — all three, in this order, because each failure means something different:
+
+```bash
+curl -fsS https://nparseplugins.prokopto.dev/healthz   # the process is up
+curl -fsS https://nparseplugins.prokopto.dev/readyz    # a catalogue is loaded and renders
+curl -fsS https://nparseplugins.prokopto.dev/index.json | head -c 400
+```
+
+`/readyz` says *why* when it is not ready. "no catalogue is loaded" means the seed never reached the
+container; anything else means it did and would not render.
 
 ---
 
@@ -163,10 +202,16 @@ Then check it: `https://nparseplugins.prokopto.dev/healthz` and `/index.json`.
 
 1. Merge to `main`. `Release` builds and pushes `:edge` and `:sha-<full>`.
 2. `Deploy` is queued and waits for your approval on the `production` environment.
-3. On approval it snapshots `regserve.db` into `/opt/regserve/backups/pre-<timestamp>.db`, pins
-   `REGSERVE_IMAGE` in `.env` to the exact image, pulls, and restarts the container.
-4. It polls `/healthz`, then fetches `/index.json` and asserts it parses and declares
-   `schema_version: 1`.
+3. On approval it asserts `/opt/regserve/seed.json` exists and is non-empty, snapshots
+   `regserve.db` into `/opt/regserve/backups/pre-<timestamp>.db`, pins `REGSERVE_IMAGE` in `.env`
+   to the exact image, pulls, and restarts the container.
+4. It polls `/healthz`, then `/readyz`, then fetches `/index.json` and asserts it parses and
+   declares `schema_version: 1`.
+
+The seed check in step 3 comes **before** the pull for the same reason the snapshot does: after
+`compose up` the old container is already gone, so a failure there is a failure with nothing to fall
+back to. It is a shell test — exists, non-empty — and no more than that honestly can be; the file's
+contents are the server's business, and the server refuses to start on a file it cannot use.
 
 Step 4 is not ceremony. A container that boots but serves a malformed index has taken down the
 plugin browser for every installed client at once, and that failure is invisible from the outside —
@@ -177,6 +222,52 @@ Tagged releases (`v1.2.0`) publish `:1.2.0`, `:1.2` and `:latest`. To deploy one
 ```bash
 gh workflow run Deploy -f image_tag=1.2.0
 ```
+
+## Updating the catalogue
+
+Until Phase 1 the catalogue is `/opt/regserve/seed.json` and nothing else. Publishing a plugin means
+editing that file, and it takes a container recreate because the server reads it once, at boot.
+
+```bash
+# On the droplet, as deploy, in /opt/regserve.
+cp seed.json seed.json.prev                       # the only rollback there is
+
+curl -fsS https://prokopto-dev.github.io/nparseplus-plugins/index.json -o seed.json
+```
+
+**Validate before recreating.** A hand-edited seed that does not parse crash-loops the container,
+and the deploy-time preflight does not run here:
+
+```bash
+python3 - seed.json <<'CHECK'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("schema_version") == 1, f"schema_version is {d.get('schema_version')}, not 1"
+assert isinstance(d["plugins"], list), "plugins must be a list"
+for p in d["plugins"]:
+    assert p["latest"]["url"].lower().startswith("https://"), f"{p['id']}: url is not https"
+    assert len(p["latest"]["sha256"]) == 64, f"{p['id']}: sha256 is not 64 characters"
+print(f"{len(d['plugins'])} plugin(s) - looks servable")
+CHECK
+```
+
+That is a smoke test, not the server's validator: the server applies the full schema-v1 rules and is
+the authority on what it will serve. This catches the mistakes people actually make by hand.
+
+Then pick the file up:
+
+```bash
+docker compose up -d --force-recreate regserve
+docker compose logs --tail 20 regserve          # "catalogue loaded from seed file"
+curl -fsS https://nparseplugins.prokopto.dev/readyz
+```
+
+`up -d --force-recreate`, not `restart`. Docker binds a **file** mount by inode, and any tool that
+writes by rename — `mv`, and most editors — leaves the running container looking at the old file
+with no error anywhere. Recreating the container re-resolves the path. Re-apply `chmod 644` if you
+replaced the file rather than overwriting it.
+
+To roll back: `cp seed.json.prev seed.json` and recreate again.
 
 ## Rolling back
 
