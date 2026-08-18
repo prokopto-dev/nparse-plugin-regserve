@@ -133,8 +133,10 @@ downloaded, and a change to it is a new release row with its own approval state.
 
 ## 9. Outbound requests
 
-Only `internal/identity/{discord,google,github}` and `internal/artifact` may make them. Gate:
-`NET001`.
+Only `internal/identity/*` and `internal/artifact` may make them. Gate: `NET001`. Today that is
+`internal/identity/github`, the only provider
+([ADR-0011](../adr/0011-github-is-the-only-identity-provider.md)); the gate is written against the
+tree, so a second provider needs no change to it.
 
 Every outbound request:
 
@@ -151,7 +153,7 @@ deliberate rather than becoming precedent.
 
 ## 10. Secrets
 
-The three OAuth client secrets and the token pepper are the security model. They come from the
+The GitHub OAuth client secret and the token pepper are the security model. They come from the
 environment, are held in `core.Secret` (whose `String()` and `MarshalJSON` redact), and are never
 logged, never returned by an endpoint, and never written to the database.
 

@@ -59,11 +59,17 @@ itself one.
 **403.** Your account is authenticated but has no linked GitHub identity, and publishing requires
 one.
 
-This is separate from `forbidden` because the fix is completely different: you are not missing a
-permission, you are missing an identity, and the `detail` names the endpoint that links one. Discord
-and Google accounts can log in and browse; artifacts live on GitHub and ownership is checked against
-it, so publishing needs a GitHub identity. See
-[ADR-0004](../adr/0004-github-required-to-publish.md).
+**Currently unreachable, deliberately retained.** GitHub is the only identity provider
+([ADR-0011](../adr/0011-github-is-the-only-identity-provider.md)), so every account is created by a
+GitHub login and every account has the identity this code says is missing. The code stays in the
+closed enum because the enum is public API — removing one breaks every client that handled it — and
+because the condition returns the moment a second, non-publishing provider is added, which the
+`can_publish` `CHECK` is still written to allow.
+
+It is separate from `forbidden` because the fix would be completely different: you are not missing a
+permission, you are missing an identity, and the `detail` would name the endpoint that links one.
+Artifacts live on GitHub and ownership is checked against it, so publishing needs a GitHub identity.
+See [ADR-0004](../adr/0004-github-required-to-publish.md).
 
 ## conflict
 

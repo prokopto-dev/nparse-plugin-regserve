@@ -30,7 +30,8 @@ loaded at boot — deliberately temporary, and replaced by the store-backed cata
 
 ## Phase 2 — identity
 
-- `internal/identity/{discord,google,github}` behind the guarded dialer
+- `internal/identity/github` behind the guarded dialer — the only provider
+  ([ADR-0011](docs/adr/0011-github-is-the-only-identity-provider.md))
 - OAuth with `state` and PKCE; sessions on `__Host-regserve_session`
 - Accounts with linked `(provider, subject)` identities
 - `internal/authz` catalogue; PAT mint and verify; the capability floor

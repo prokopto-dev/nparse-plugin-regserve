@@ -1,6 +1,11 @@
 # ADR-0003 — Identity is a `(provider, subject)` pair
 
-**Status:** accepted · **Date:** 2026-08-18 · **Deciders:** Courtney Caldwell
+**Status:** accepted, amended in part by [ADR-0011](0011-github-is-the-only-identity-provider.md)
+· **Date:** 2026-08-18 · **Deciders:** Courtney Caldwell
+
+> The `(provider, subject)` model below stands unchanged. What ADR-0011 withdraws is the plan to
+> implement three providers against it: only `github` ships. Read the rest as the record of what
+> was thought at the time.
 
 ## Context and problem statement
 

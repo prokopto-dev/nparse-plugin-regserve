@@ -1,6 +1,11 @@
 # ADR-0004 — GitHub identity is required to publish
 
-**Status:** accepted · **Date:** 2026-08-18 · **Deciders:** Courtney Caldwell
+**Status:** accepted, amended in part by [ADR-0011](0011-github-is-the-only-identity-provider.md)
+· **Date:** 2026-08-18 · **Deciders:** Courtney Caldwell
+
+> The `can_publish` `CHECK` below stands unchanged. ADR-0011 drops the Discord and Google logins
+> this ADR was drawing a line against, so the non-publishing account it describes no longer
+> exists. Read the rest as the record of what was thought at the time.
 
 ## Context and problem statement
 
