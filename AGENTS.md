@@ -1,0 +1,189 @@
+# Working in this repository
+
+**Status:** normative. Read this before changing anything. `CLAUDE.md` includes this file.
+
+`nparse-plugin-regserve` is the live plugin registry for [nParse+](https://github.com/prokopto-dev/nparse-plus).
+It replaces a static, PR-gated `index.json` with a server: plugin CI publishes a release with a
+scoped token, ownership is a database row, and publishing is a pipeline step instead of a pull
+request. One Go binary, SQLite, API-first. Apache-2.0.
+
+Much of this codebase is written by AI agents under human review, which is why the repository is
+unusually explicit about invariants and unusually aggressive about mechanical enforcement.
+
+**The governing rule: a rule without a gate is a wish.** If you add a rule, add the test, lint rule,
+CI gate or database trigger that enforces it, and name it in
+[`docs/concepts/invariants.md`](docs/concepts/invariants.md). If you cannot, say so in the PR rather
+than writing it down as though it were enforced.
+
+**Full conventions:** [`docs/design/00-canonical-conventions.md`](docs/design/00-canonical-conventions.md)
+is normative. When this file and another document disagree, this file and that one win over the
+other document — and the conflict is a bug worth reporting.
+
+## The one contract that outranks everything
+
+A released nParse+ desktop client, already in users' hands, parses what `GET /index.json` returns.
+Its parser is the pydantic model in `nparseplus.core.plugins.registry`; the JSON Schema generated
+from it is vendored here at `internal/registry/testdata/index-v1.schema.json`.
+
+- **`schema_version` is `1` and changing it breaks every released client.** They refuse the index
+  outright and tell the user to update nParse+. A bump needs a deprecation plan, not a commit.
+- Additive fields are tolerated (pydantic ignores unknown keys). Renaming or removing one is not.
+- The rendered index must stay **under 5 MiB** and answer within **15 seconds** — those are the
+  client's hard limits, not ours. `SIZE001` gates the first.
+- If you change what `internal/registry` emits, `SCHEMA001` is the test that decides whether you
+  were allowed to. Do not edit the vendored schema to make it pass; it is generated upstream by
+  `tools/gen_registry_schema.py` in `nparse-plus` and copied here.
+
+## Where things are
+
+| Path | Holds |
+|---|---|
+| `cmd/regserve/` | The only binary. Cobra wiring, no logic |
+| `internal/api/` | Every HTTP route. Huma v2 registration, problem+json, ETag, idempotency |
+| `internal/authz/` | **The** catalogue — permissions and PAT scopes. Generates the DDL seed, the OpenAPI extensions, the scope enum and the docs page |
+| `internal/auth/` | PAT mint and verify, sessions, OAuth state and PKCE |
+| `internal/identity/{,discord,google,github}/` | Provider registry, credential dispatch, identity resolution |
+| `internal/artifact/` | Artifact download and re-hash. Never extracts, never executes |
+| `internal/registry/` | schema-v1 index rendering. The wire format lives here and nowhere else |
+| `internal/plugin/`, `ownership/`, `moderation/` | Domain services |
+| `internal/store/` | The only holder of `*sql.DB`. `sqlitegen/` is generated and never hand-edited |
+| `internal/core/` | ULID, typed ids, `Secret` |
+| `internal/clock/` | The only `time.Now` |
+| `db/` | `schema.hcl` is the single schema truth; `queries/*.sql`; `migrations-sqlite/` |
+| `test/repo/` | Tests about the repository itself, not the product: they assert the gates below actually fire |
+
+`internal/identity/` and `internal/artifact/` are **the only packages permitted to make outbound
+HTTP requests.** Everything else that needs a remote fact asks one of them.
+
+## The laws
+
+Each has a mechanism. The mechanism is authoritative; this list is a description of it.
+
+1. **HTTP routes are declared only in `internal/api`.** Route-registry architectural test, `ROUTE001`.
+2. **`*sql.DB` is held only by `internal/store`.** Import-graph test; `SQL001`.
+3. **Outbound HTTP only from `internal/identity/*` and `internal/artifact`,** through the guarded
+   client whose dialer denies private, link-local, loopback and cloud-metadata addresses. `NET001`.
+   This is wider than the sibling projects' rule by exactly one package, because this service must
+   fetch artifacts to hash them; the reason is recorded in `docs/concepts/invariants.md` so the
+   widening stays deliberate.
+4. **`internal/registry` is the only package that knows the wire format.** No other package may
+   marshal a `schema_version`, a `latest` object, or anything else a client parses. `SCHEMA001`
+   validates its output against the vendored schema.
+5. **`time.Now` appears only in `internal/clock`.** `CLOCK001`, an AST analyser, so an aliased
+   import does not defeat it.
+6. **Every operation declares `Security` and `x-regserve-permission`.** Coverage is derived from the
+   route registry, so a new uncovered route is a red test, not a missing one.
+
+## Non-negotiable invariants
+
+- **A submitted sha256 is never trusted.** The server downloads the artifact itself and computes the
+  hash. The hash is the security boundary — the URL is only transport. A release whose bytes could
+  not be fetched is *not* published; it goes to review. Never derive the stored hash from the
+  submission.
+- **Artifacts are hashed and discarded.** Never extracted, never written to a persistent path,
+  never executed, never imported. The 50 MiB cap is enforced *during* the read, not after.
+- **Plugin ids are permanent and never recycled.** Delisting removes the listing and keeps the
+  claim. An id whose plugin is gone must never become available to someone else — that is how you
+  ship an update to somebody else's users.
+- **`audit_log` is append-only.** Never `UPDATE` or `DELETE` it, in Go, in SQL, or in a migration.
+  Corrections are new rows. A DB trigger raises if you try; a test asserts the trigger fires.
+- **Release history is kept even though only `latest` ships.** The wire format carries one release
+  per plugin; the database carries all of them. Do not "clean up" superseded rows — they are the
+  audit trail for what was approved and by whom.
+- **There is no all-powerful token.** Ownership changes, token minting and trust-level changes are
+  session-only and carry no scope at all. There is no `admin:*`.
+- **A new plugin id always gets human review.** Trust levels govern version bumps of an
+  already-approved plugin, never the first appearance of an id.
+- **Only GitHub identities may publish.** Discord and Google are login-and-browse. This is a CHECK
+  against `identity_provider.kind`, not an operator toggle.
+
+## Go idioms
+
+House Go, not general Go. Inherited from Dragon Kill Party and tod-serve, where each rule has a
+mechanism.
+
+- **Errors:** wrap with `%w` *and* context — `fmt.Errorf("rehash artifact %s: %w", releaseID, err)`.
+  Context is a lowercase noun phrase, no punctuation. Sentinels live in the owning package. Compare
+  with `errors.Is`/`errors.As`, never `==`. Never discard: `_ = f()` is a waiver, not a default, and
+  it needs a comment saying why. Never `panic` outside `main` wiring.
+- **Context:** `ctx context.Context` is the first parameter of every function that does I/O, with no
+  exceptions for ones that "don't need it yet". Never store a `ctx` in a struct field.
+  `context.Background()` appears only in `main`, `TestMain` and job-worker roots.
+- **The clock is injected, always.** Time-dependent tests use `testing/synctest`; `time.Sleep` is
+  grep-banned in tests.
+- **Logging:** `slog`, structured. No `fmt.Printf`, no `log.` package. **Never log a token secret, a
+  session id, an OAuth access token, a client secret, or the server pepper.** The 8-character public
+  token prefix is loggable and is how a leaked token is found; the secret never is.
+- **Randomness is `crypto/rand`.** `math/rand` is depguard-banned. Token secrets, OAuth `state` and
+  PKCE verifiers have no non-cryptographic variant.
+- **Tests:** table-driven, `TestThing_Condition_Expectation`. `t.Parallel()` everywhere. **`require`,
+  never `assert`** — `assert` continues after failure and buries the real first failure under a page
+  of cascading noise. Whole-value comparisons with `go-cmp` over cherry-picked fields. No mocks of
+  the database; integration tests use real SQLite in `t.TempDir()`. Use `t.Context()`.
+- **Banned:** naked returns, package-level mutable state, `any` in domain signatures, a second type
+  for the same concept, manual formatting (`gofumpt` + `goimports` win every disagreement).
+
+## House style for prose
+
+- **Comments say why, not what.** Name the failure the line prevents. A change that removes a reason
+  should replace it with a better one.
+- **Say when you don't know.** The failure mode designed against throughout is a *confident mistake*,
+  not a miss. An artifact that could not be downloaded reports "not verified" and goes to review; it
+  never reports success.
+- **Never hide a row silently.** If a filter drops a plugin from the index, count it somewhere
+  visible. A listing that vanishes without explanation is indistinguishable from a bug.
+- **Write down why not, alongside why.** Every design document names what it rejected.
+- 100-column wrap. Tables are fine over it.
+
+## Security posture
+
+This service holds three OAuth client secrets, a token pepper, and every publisher's identity. It
+also fetches URLs supplied by users, which is an SSRF surface by construction.
+
+- The artifact fetcher re-asserts `https` on **every** redirect hop, caps redirects, caps bytes
+  during the read, and dials through a resolver that refuses private, link-local, loopback,
+  multicast and cloud-metadata addresses. Removing any one of those is a security change and needs
+  to be argued in the PR.
+- Treat every field of a publish request as hostile input, including the ones that look structural.
+- When you are unsure whether something is a vulnerability, write the test that demonstrates it and
+  open an issue. Do not quietly harden and move on — the test is what stops it regressing.
+
+## When you are uncertain
+
+Stop and ask. Do not guess at: the wire format a released client parses, a scope that does not exist
+in `internal/authz`, or what should happen to an id whose owner has vanished.
+
+If two instructions conflict, the invariant wins and the conflict is a bug: say so.
+
+## Out-of-scope findings: file an issue
+
+A finding you are *not* uncertain about — real, actionable, and genuinely not this PR's job — does
+not stop anything: **file the issue yourself, with `gh issue create`, and carry on.** One issue per
+distinct actionable item, using the existing labels. Do not expand the PR to fix it; link it from
+the PR body instead. Filing is expected, not noise.
+
+## Do not
+
+- Do not edit generated files (`internal/store/sqlitegen/`, `openapi/openapi.json`,
+  `db/migrations-sqlite/`). Change the source and run `make gen`.
+- Do not edit a migration that has shipped in a tagged release. Write a new one.
+- Do not edit `internal/registry/testdata/index-v1.schema.json` to make a test pass. It is generated
+  upstream; a mismatch means the renderer is wrong, not the schema.
+- Do not weaken, skip, delete, or `-update` a test to make CI green. A failing test is information.
+- Do not add a dependency. Propose it with the reason and the licence; a human decides.
+- Do not disable a lint rule, a hook, or a CI gate to land a change.
+- Do not push to `main`, force push, push a tag, publish, or deploy.
+
+## Working on it
+
+```bash
+make help      # every target, documented
+make status    # what is still stubbed — derived from notyet call sites, never hand-maintained
+make check     # what CI runs
+make gen       # regenerate the scope catalogue, OpenAPI and sqlc bindings
+```
+
+Commits are signed off (`git commit -s`, DCO). Conventional Commits are enforced on the **PR title
+only** — squash-merge makes it the commit subject. WIP commits can say anything.
+
+Docs change in the same PR as the behaviour they describe.

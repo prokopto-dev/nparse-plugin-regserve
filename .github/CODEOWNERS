@@ -1,0 +1,28 @@
+# Default owner for everything.
+*                                           @prokopto-dev
+
+# The wire format and its gate. A change here can break every nParse+ install in the field, and the
+# vendored schema is generated upstream — neither should ever be reviewed casually.
+/internal/registry/                         @prokopto-dev
+/internal/registry/testdata/                @prokopto-dev
+
+# The trust model: what gets published, by whom, and on whose say-so.
+/internal/artifact/                         @prokopto-dev
+/internal/auth/                             @prokopto-dev
+/internal/authz/                            @prokopto-dev
+/internal/identity/                         @prokopto-dev
+/internal/moderation/                       @prokopto-dev
+/internal/ownership/                        @prokopto-dev
+
+# Schema and migrations are forward-only; a bad one is fixed forward under time pressure.
+/db/                                        @prokopto-dev
+
+# The rules themselves, and anything that can reach production.
+/AGENTS.md                                  @prokopto-dev
+/docs/design/00-canonical-conventions.md    @prokopto-dev
+/docs/concepts/invariants.md                @prokopto-dev
+/docs/adr/                                  @prokopto-dev
+/scripts/                                   @prokopto-dev
+/test/repo/                                 @prokopto-dev
+/.github/workflows/                         @prokopto-dev
+/deploy/                                    @prokopto-dev

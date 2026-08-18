@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(make:*)",
+      "Bash(go build:*)",
+      "Bash(go test:*)",
+      "Bash(go vet:*)",
+      "Bash(go fmt:*)",
+      "Bash(gofmt:*)",
+      "Bash(gofumpt:*)",
+      "Bash(bash scripts/:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(gh issue:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr list:*)"
+    ],
+    "ask": [
+      "Bash(docker:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh workflow run:*)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./**/*.pem)",
+      "Read(./**/*.key)",
+      "Read(./**/*.db)",
+
+      "Edit(./go.mod)",
+      "Edit(./go.sum)",
+      "Edit(./LICENSE)",
+      "Edit(./internal/store/sqlitegen/**)",
+      "Edit(./db/migrations-sqlite/**)",
+      "Edit(./db/SHIPPED.lock)",
+      "Edit(./internal/registry/testdata/index-v1.schema.json)",
+      "Edit(./openapi/openapi.json)",
+
+      "Bash(git push:*)",
+      "Bash(git tag:*)",
+      "Bash(gh release:*)",
+      "Bash(docker push:*)",
+      "Bash(go get:*)",
+      "Bash(go install:*)",
+      "Bash(go mod tidy:*)"
+    ]
+  }
+}

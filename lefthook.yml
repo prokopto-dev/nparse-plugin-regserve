@@ -1,0 +1,21 @@
+# Tracked hooks. `lefthook install` wires them up; `git config core.hooksPath .githooks` also works
+# if you would rather not install anything.
+
+prepare-commit-msg:
+  commands:
+    dco:
+      # Contributions are under the DCO. Adding the trailer here means nobody's first PR bounces
+      # on a missing sign-off — which is the most demoralising possible first interaction.
+      run: |
+        grep -q '^Signed-off-by:' {1} || \
+          printf '\nSigned-off-by: %s <%s>\n' "$(git config user.name)" "$(git config user.email)" >> {1}
+
+pre-commit:
+  commands:
+    hooks:
+      run: bash .githooks/pre-commit
+
+pre-push:
+  commands:
+    gates:
+      run: bash .githooks/pre-push

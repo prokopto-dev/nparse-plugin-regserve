@@ -1,0 +1,92 @@
+# The unit of deployment on the droplet.
+#
+# Traefik is already running and owns :80/:443 and TLS. This file adds one service to the network
+# Traefik watches and describes the route with labels; it publishes NO ports of its own, so the
+# only way in is through Traefik.
+#
+# Copy this to the droplet (see docs/operations/deployment.md), put the secrets in a sibling .env,
+# and never commit that .env.
+
+name: regserve
+
+services:
+  regserve:
+    image: ${REGSERVE_IMAGE:-ghcr.io/prokopto-dev/nparse-plugin-regserve:latest}
+    restart: unless-stopped
+
+    # No `ports:`. Publishing one would expose the service on the droplet's public IP directly,
+    # bypassing Traefik and its TLS — which is the sort of thing nobody notices until it is found.
+    expose:
+      - "8080"
+
+    environment:
+      REGSERVE_DB_PATH: /data/regserve.db
+      REGSERVE_PUBLIC_URL: https://${REGSERVE_HOST:?set REGSERVE_HOST in .env}
+      REGSERVE_LOG_LEVEL: ${REGSERVE_LOG_LEVEL:-info}
+
+      # Secrets. These live in .env on the droplet and are deliberately NOT passed through CI:
+      # a secret that travels through a pipeline is a secret in that pipeline's logs, cache and
+      # every fork's pull-request context. CI ships an image; the host holds the credentials.
+      REGSERVE_TOKEN_PEPPER: ${REGSERVE_TOKEN_PEPPER:?set REGSERVE_TOKEN_PEPPER in .env}
+      REGSERVE_GITHUB_CLIENT_ID: ${REGSERVE_GITHUB_CLIENT_ID:-}
+      REGSERVE_GITHUB_CLIENT_SECRET: ${REGSERVE_GITHUB_CLIENT_SECRET:-}
+      REGSERVE_DISCORD_CLIENT_ID: ${REGSERVE_DISCORD_CLIENT_ID:-}
+      REGSERVE_DISCORD_CLIENT_SECRET: ${REGSERVE_DISCORD_CLIENT_SECRET:-}
+      REGSERVE_GOOGLE_CLIENT_ID: ${REGSERVE_GOOGLE_CLIENT_ID:-}
+      REGSERVE_GOOGLE_CLIENT_SECRET: ${REGSERVE_GOOGLE_CLIENT_SECRET:-}
+
+    volumes:
+      - regserve-data:/data
+
+    # The image runs as uid 65532 and the named volume is chown-ed on first creation. If you switch
+    # to a bind mount, chown it to 65532:65532 first or the first boot fails on an unwritable /data.
+    user: "65532:65532"
+
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    cap_drop:
+      - ALL
+
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: ${TRAEFIK_NETWORK:-traefik}
+
+      traefik.http.routers.regserve.rule: Host(`${REGSERVE_HOST}`)
+      traefik.http.routers.regserve.entrypoints: ${TRAEFIK_ENTRYPOINT:-websecure}
+      traefik.http.routers.regserve.tls: "true"
+      traefik.http.routers.regserve.tls.certresolver: ${TRAEFIK_CERTRESOLVER:-letsencrypt}
+      traefik.http.services.regserve.loadbalancer.server.port: "8080"
+
+      # Traefik's own health view of the container. Without it a failed deploy keeps receiving
+      # traffic until somebody notices the 502s.
+      traefik.http.services.regserve.loadbalancer.healthcheck.path: /healthz
+      traefik.http.services.regserve.loadbalancer.healthcheck.interval: "30s"
+
+      # HSTS. The desktop client refuses non-https artifact URLs and so should the registry itself;
+      # this makes a downgrade fail at the browser rather than at our door.
+      traefik.http.middlewares.regserve-hsts.headers.stsSeconds: "31536000"
+      traefik.http.middlewares.regserve-hsts.headers.stsIncludeSubdomains: "true"
+      traefik.http.routers.regserve.middlewares: regserve-hsts
+
+      # Watchtower, if you run it, must NOT touch this service: an unattended image swap can apply
+      # a migration to the only copy of the ownership records with nobody watching and no snapshot.
+      # Deploys are deliberate here (see .github/workflows/deploy.yml).
+      com.centurylinklabs.watchtower.enable: "false"
+
+    networks:
+      - traefik
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  regserve-data:
+
+networks:
+  traefik:
+    external: true
+    name: ${TRAEFIK_NETWORK:-traefik}

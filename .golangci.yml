@@ -1,0 +1,112 @@
+# golangci-lint v2 configuration.
+#
+# `default: none` — every linter here was turned on deliberately. A linter set inherited from a
+# default is a set nobody can explain, and the first time one fires spuriously somebody disables
+# the whole file rather than the rule.
+#
+# Linters deliberately left OFF are recorded at the bottom, with the reason. That list is as
+# load-bearing as the enabled one: without it, "why isn't wrapcheck on" gets re-litigated yearly.
+
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - errcheck        # an error return that is never assigned at all
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - depguard
+    - forbidigo
+    - bodyclose       # a leaked artifact-download body is a fd leak, and artifacts are 50 MiB
+    - noctx           # every outbound request must carry the caller's ctx
+    - goconst
+    - misspell
+    - gosec           # this service holds OAuth secrets, a token pepper, and fetches remote URLs
+
+  settings:
+    depguard:
+      rules:
+        main:
+          deny:
+            - pkg: github.com/stretchr/testify/assert
+              desc: >-
+                assert continues after a failed assertion, so one broken invariant produces a page
+                of cascading noise and the real first failure scrolls away. Use require.
+            - pkg: math/rand
+              desc: >-
+                Token secrets, OAuth state and PKCE verifiers must come from crypto/rand. There is
+                no use for a predictable generator in this service, so the import is banned
+                outright rather than reviewed case by case.
+            - pkg: math/rand/v2
+              desc: >-
+                Same reason as math/rand. Use crypto/rand.
+
+    forbidigo:
+      forbid:
+        - pattern: ^fmt\.Print.*$
+          msg: CLI output goes to cmd.OutOrStdout(); everything else logs with slog.
+        - pattern: ^log\.(Print|Fatal|Panic).*$
+          msg: Use slog. The stdlib log package has no structure and no level.
+        - pattern: ^http\.(Get|Post|Head|PostForm)$
+          msg: >-
+            The package-level helpers use http.DefaultClient, which has no timeout and the default
+            dialer. Outbound requests must use the guarded client in internal/artifact or
+            internal/identity, whose dialer refuses private and link-local addresses.
+
+    errcheck:
+      # check-blank is deliberately off: `_ = f()` is a WAIVER, caught in review, and it has to stay
+      # rare enough to notice. A linter that accepts it silently would make it the default.
+      check-blank: false
+
+    gosec:
+      excludes:
+        # G104 duplicates errcheck, which is configured more precisely above.
+        - G104
+
+  exclusions:
+    rules:
+      # A test table legitimately repeats a literal — that is what makes it readable as a table.
+      # Extracting one into a constant to satisfy a linter makes the table worse, not better.
+      - path: _test\.go
+        linters: [goconst]
+      # Tests construct deliberately hostile URLs and archives; gosec's URL and file-path rules
+      # fire on exactly the inputs the test exists to prove we reject.
+      - path: _test\.go
+        linters: [gosec]
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/prokopto-dev/nparse-plugin-regserve
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+# ---------------------------------------------------------------------------------------------
+# Deliberately NOT enabled
+#
+#   wrapcheck        — almost entirely false positives on stdlib returns at the current call count.
+#                      The `%w`-plus-context rule in AGENTS.md is a review rule today.
+#   gochecknoglobals — the ban on package-level MUTABLE state is what matters, and this linter
+#                      cannot tell a mutable registry from a const-like var. Review rule.
+#   lll              — prose wraps at 100 by convention; tables and struct tags legitimately run
+#                      over, and a hard cap produces worse line breaks than a human would pick.
+#
+# Rules that look like linter jobs and are NOT, because a linter cannot see them. Each has a gate
+# in scripts/repo-gates.sh:
+#   - time.Now outside internal/clock                     -> CLOCK001 (AST, so an aliased import
+#                                                            does not defeat it)
+#   - net/http client construction outside the two trees   -> NET001
+#   - database/sql outside internal/store                  -> SQL001
+#   - a route registered outside internal/api              -> ROUTE001
+# ---------------------------------------------------------------------------------------------

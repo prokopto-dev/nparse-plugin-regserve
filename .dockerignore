@@ -1,0 +1,13 @@
+.git
+.github
+bin
+dist
+docs
+test
+*.db
+*.db-wal
+*.db-shm
+.env
+.env.*
+*.pem
+*.key

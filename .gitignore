@@ -1,0 +1,29 @@
+# Build output. `make build` writes here; nothing under it is ever committed.
+/bin/
+/dist/
+/regserve
+/regserve.exe
+coverage.out
+coverage.html
+*.test
+*.prof
+
+# Local databases. Debugging this service means `sqlite3 regserve.db`, so these appear in working
+# trees constantly and must never reach a commit — a committed database here is a committed
+# credential corpus: PAT hashes, OAuth subjects and session records all live in it.
+*.db
+*.db-wal
+*.db-shm
+/data/
+
+# Secrets. The server pepper and the three OAuth client secrets are the whole security model.
+.env
+.env.*
+*.pem
+*.key
+
+# Editor and OS noise.
+.DS_Store
+*.swp
+.idea/
+.vscode/

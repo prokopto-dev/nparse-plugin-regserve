@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# The gates, before they cost a CI run. Fast enough to run on every push by design.
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+bash scripts/repo-gates.sh     || exit 1
+bash scripts/docs-check.sh     || exit 1
+bash scripts/verify-commands.sh || exit 1

@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prokopto-dev.github.io/nparseplus-plugins/schema/index-v1.schema.json",
+  "title": "RegistryIndex",
+  "description": "GENERATED FILE \u2014 do not edit by hand. Produced by tools/gen_registry_schema.py in prokopto-dev/nparse-plus from the pydantic models in nparseplus.core.plugins.registry, which are the source of truth for this wire format. Note that plugin-id uniqueness and ownership are NOT expressible here; the registry's validate-index workflow checks those in Python.",
+  "$defs": {
+    "RegistryPlugin": {
+      "description": "A plugin listing in the index.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,39}$"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "author": {
+          "default": "",
+          "title": "Author",
+          "type": "string"
+        },
+        "homepage": {
+          "default": "",
+          "title": "Homepage",
+          "type": "string"
+        },
+        "latest": {
+          "$ref": "#/$defs/RegistryRelease"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "latest"
+      ],
+      "title": "RegistryPlugin",
+      "type": "object"
+    },
+    "RegistryRelease": {
+      "description": "One reviewed, downloadable release of a plugin.",
+      "properties": {
+        "version": {
+          "title": "Version",
+          "type": "string"
+        },
+        "url": {
+          "title": "Url",
+          "type": "string",
+          "pattern": "^[Hh][Tt][Tt][Pp][Ss]://"
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "requires_sdk": {
+          "default": ">=1.0,<2",
+          "title": "Requires Sdk",
+          "type": "string"
+        },
+        "min_app_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min App Version"
+        }
+      },
+      "required": [
+        "version",
+        "url",
+        "sha256"
+      ],
+      "title": "RegistryRelease",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1
+    },
+    "plugins": {
+      "items": {
+        "$ref": "#/$defs/RegistryPlugin"
+      },
+      "title": "Plugins",
+      "type": "array"
+    }
+  },
+  "type": "object"
+}

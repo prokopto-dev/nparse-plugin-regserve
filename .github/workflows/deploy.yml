@@ -1,0 +1,127 @@
+# Deploy to the DigitalOcean droplet.
+#
+# Split from release.yml on purpose: building an image is safe and automatic, applying it to the
+# machine holding the only copy of the ownership records is neither. This workflow needs an
+# environment approval on production and takes a snapshot before it swaps anything.
+#
+# What actually happens on the host is `docker compose pull && up -d`. Traefik already owns :443 and
+# picks the new container up from its labels, so there is no reverse-proxy step here.
+
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to deploy (e.g. 1.2.0, edge, sha-<full>)"
+        required: true
+        default: edge
+
+permissions:
+  contents: read
+
+concurrency:
+  # Never deploy twice at once: two `compose up` runs against one SQLite volume is exactly the
+  # situation the single-writer design assumes cannot happen.
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: deploy / production
+    runs-on: ubuntu-24.04
+
+    # Requires the `production` environment. Put a required reviewer on it in repo settings: that
+    # is what makes a deploy a decision rather than a side effect of merging.
+    environment:
+      name: production
+      url: https://${{ vars.REGSERVE_HOST }}
+
+    # Do not deploy a build that failed.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Resolve the image reference
+        id: image
+        run: |
+          tag="${{ github.event.inputs.image_tag }}"
+          [ -n "$tag" ] || tag="sha-${{ github.event.workflow_run.head_sha }}"
+          echo "ref=ghcr.io/${{ github.repository }}:${tag}" >> "$GITHUB_OUTPUT"
+
+      - uses: webfactory/ssh-agent@e83874834305fe9a4a2997156cb26c5de65a8555 # v0.10.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      # Pinned host key, NOT ssh-keyscan. Scanning at deploy time trusts whatever answers, which
+      # means a deploy is the one moment an attacker gets a free man-in-the-middle.
+      - name: Pin the host key
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Deploy
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER_NAME: ${{ vars.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+        run: |
+          set -euo pipefail
+          ssh -o StrictHostKeyChecking=yes "${USER_NAME}@${HOST}" bash -seu <<EOF
+            cd "${DEPLOY_PATH}"
+
+            # Snapshot before anything changes. Migrations are forward-only (ADR-0006), so this
+            # file is the only undo that exists. Taking it AFTER the pull would be taking it after
+            # the point of no return.
+            mkdir -p backups
+            stamp=\$(date -u +%Y%m%dT%H%M%SZ)
+            if docker compose ps -q regserve >/dev/null 2>&1; then
+              docker run --rm -v regserve_regserve-data:/data -v "\$PWD/backups:/backups" \
+                alpine:3 sh -c "cp /data/regserve.db /backups/pre-${stamp}.db" || \
+                echo "no database yet; nothing to snapshot"
+            fi
+            ls -1t backups/ | tail -n +11 | xargs -r -I{} rm -- "backups/{}"
+
+            # Record the image being deployed so a manual \`docker compose up\` on the box brings up
+            # the same thing CI last shipped, rather than whatever :latest has become.
+            sed -i "s|^REGSERVE_IMAGE=.*|REGSERVE_IMAGE=${IMAGE_REF}|" .env
+
+            docker compose pull regserve
+            docker compose up -d --remove-orphans regserve
+            docker image prune -f --filter "until=168h"
+          EOF
+
+      - name: Verify the deployment is actually serving
+        env:
+          HOST_URL: https://${{ vars.REGSERVE_HOST }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            if curl -fsS --max-time 10 "${HOST_URL}/healthz" >/dev/null; then
+              echo "healthz is answering"
+              break
+            fi
+            [ "$i" -eq 30 ] && { echo "healthz never came up"; exit 1; }
+            sleep 5
+          done
+
+          # The point of the whole service: the index must be servable and parseable. A deploy that
+          # boots but serves a broken index is a deploy that took every client's plugin browser
+          # down, so this failing is a real failure.
+          curl -fsS --max-time 15 "${HOST_URL}/index.json" -o /tmp/index.json
+          python3 -c "
+          import json,sys
+          d=json.load(open('/tmp/index.json'))
+          assert d['schema_version'] == 1, f\"schema_version is {d['schema_version']}, not 1\"
+          assert isinstance(d['plugins'], list), 'plugins must be a list'
+          print(f\"index ok: {len(d['plugins'])} plugin(s), schema_version={d['schema_version']}\")
+          "

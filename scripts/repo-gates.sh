@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Repository gates. Each is a rule from docs/concepts/invariants.md with a mechanism behind it.
+#
+# A gate that cannot fire yet says so and exits 0 — it does NOT print a green tick it has not
+# earned. A gate reporting success over an empty search space is how a rule quietly stops being
+# enforced the moment the code it guards is written.
+#
+# Exit 1 = a finding. Exit 2 = the gate was invoked wrongly.
+
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+fail=0
+report() { printf '\033[31m%s\033[0m  %s\n' "$1" "$2"; fail=1; }
+pass()   { printf '\033[32m%-10s\033[0m %s\n' "$1" "$2"; }
+vacant() { printf '\033[33m%-10s\033[0m %s\n' "$1" "$2 (no code to check yet)"; }
+
+go_files() { find ./cmd ./internal -name '*.go' -not -name '*_test.go' 2>/dev/null; }
+has_go()   { [ -n "$(go_files)" ]; }
+
+# --- PIN001 — GitHub Actions pinned to a 40-character SHA -------------------------------------
+# Checks the SHAPE of a pin, not that the digest matches its trailing comment. A bare tag is the
+# failure this catches; a lying comment is a review problem.
+if compgen -G ".github/workflows/*.yml" >/dev/null; then
+  bad=$(grep -hoE '^\s*-?\s*uses:\s*[^ ]+' .github/workflows/*.yml \
+        | grep -vE '@[0-9a-f]{40}' | grep -vE 'uses:\s*\./' || true)
+  if [ -n "$bad" ]; then report PIN001 "action not pinned to a 40-char SHA:"; echo "$bad"; \
+  else pass PIN001 "every action is pinned to a 40-character SHA"; fi
+else
+  vacant PIN001 "workflows pinned to SHAs"
+fi
+
+# --- Go architectural gates live in test/repo/arch_test.go -------------------------------------
+# CLOCK001, SQL001, NET001, ROUTE001 and SCHEMA002 parse the tree with go/ast rather than grepping
+# it. Two failures drove that: a grep matches the rule's own name inside the comment explaining the
+# rule, and a grep for `time.Now` misses `clk "time"` followed by `clk.Now()`. A gate with false
+# positives gets disabled; one with false negatives is worse, because it is trusted.
+#
+# They run under `make test`, which `make check` runs. This script keeps the gates that inspect
+# files Go cannot parse.
+printf '\033[36m%-10s\033[0m %s\n' "go gates" "CLOCK001 SQL001 NET001 ROUTE001 SCHEMA002 -> test/repo/arch_test.go (run by \`make test\`)"
+
+# --- MIG002 — migrations are forward-only -----------------------------------------------------
+if compgen -G "db/migrations-sqlite/*.sql" >/dev/null; then
+  for f in db/migrations-sqlite/*.sql; do
+    grep -q -- '-- +goose Down' "$f" || continue
+    awk '/-- \+goose Down/{d=1} d && /RAISE\(ABORT/{found=1} END{exit !found}' "$f" \
+      || report MIG002 "Down block is not RAISE(ABORT, ...): $f"
+  done
+  [ $fail -eq 0 ] && pass MIG002 "every Down block aborts; migrations are forward-only"
+else
+  vacant MIG002 "migrations are forward-only"
+fi
+
+# --- MIG003 — a shipped migration is never edited ---------------------------------------------
+if [ -f db/SHIPPED.lock ] && compgen -G "db/migrations-sqlite/*.sql" >/dev/null; then
+  while read -r want file; do
+    [ -z "${file:-}" ] && continue
+    [ -f "$file" ] || { report MIG003 "shipped migration is missing: $file"; continue; }
+    got=$(shasum -a 256 "$file" | awk '{print $1}')
+    [ "$got" = "$want" ] || report MIG003 "shipped migration changed: $file"
+  done < db/SHIPPED.lock
+  [ $fail -eq 0 ] && pass MIG003 "shipped migrations match db/SHIPPED.lock"
+else
+  vacant MIG003 "shipped migrations frozen by db/SHIPPED.lock"
+fi
+
+exit $fail

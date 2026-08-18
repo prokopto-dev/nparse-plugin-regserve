@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Formats staged Go files and refuses to commit anything that must never be in history.
+set -uo pipefail
+
+staged() { git diff --cached --name-only --diff-filter=ACM; }
+
+# A database file in a commit is a credential in a commit. This repo's SQLite file holds PAT
+# hashes, OAuth subjects and session records; there is no version of "just this once" that is fine.
+if staged | grep -qE '\.db($|-wal$|-shm$)'; then
+  printf '\033[31mrefusing to commit a SQLite database file.\033[0m\n'
+  printf 'It holds PAT hashes, OAuth subjects and session records. Add it to .gitignore.\n'
+  exit 1
+fi
+
+# Same reasoning for secrets: the OAuth client secrets and the token pepper are the security model.
+if staged | grep -qE '(^|/)\.env|\.pem$|\.key$'; then
+  printf '\033[31mrefusing to commit what looks like a secret.\033[0m\n'
+  exit 1
+fi
+
+go_staged=$(staged | grep '\.go$' || true)
+if [ -n "$go_staged" ]; then
+  if command -v gofumpt >/dev/null 2>&1; then
+    echo "$go_staged" | xargs gofumpt -w
+  else
+    echo "$go_staged" | xargs gofmt -w
+  fi
+  echo "$go_staged" | xargs git add
+fi

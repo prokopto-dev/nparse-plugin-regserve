@@ -1,0 +1,20 @@
+nparse-plugin-regserve
+Copyright 2026 Courtney Caldwell and the nparse-plugin-regserve contributors
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+this file except in compliance with the License. You may obtain a copy of the
+License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Documentation in docs/ is licensed under CC BY 4.0.
+
+The name "nParse+" and any associated logo are not licensed under Apache-2.0.
+See TRADEMARK.md.
+
+This project is not affiliated with, endorsed by, or connected to Daybreak Game
+Company, Darkpaw Games, or Project 1999. EverQuest is a trademark of Daybreak
+Game Company LLC. No game assets are bundled.
+
+This server indexes third-party plugins. It does not host, bundle, or vouch for
+their contents beyond the reviewed sha256 recorded against each release.

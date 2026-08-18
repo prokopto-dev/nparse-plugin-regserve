@@ -1,0 +1,31 @@
+# EditorConfig — https://editorconfig.org
+#
+# Indentation, line endings and final newlines only. The real formatters (gofumpt, goimports,
+# shfmt) own everything else and win every disagreement; this file exists so an editor does not
+# damage a file before a formatter ever runs.
+#
+# Enforcement: `make lint` runs the formatters in check mode. This file is a convenience, not
+# the gate.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# Go is tabs, always. gofumpt rewrites anything else.
+[*.go]
+indent_style = tab
+tab_width = 4
+
+# Make requires a literal tab to open a recipe line. Spaces are a syntax error, not an opinion.
+[{Makefile,Makefile.*,*.mk}]
+indent_style = tab
+
+# Markdown: two trailing spaces is a hard line break, so trimming silently changes rendered output.
+[*.md]
+trim_trailing_whitespace = false
