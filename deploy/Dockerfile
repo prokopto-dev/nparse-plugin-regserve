@@ -37,7 +37,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 FROM scratch
 
-# The artifact fetcher and all three OAuth providers speak TLS to the public internet, so the CA
+# The artifact fetcher and the GitHub OAuth provider speak TLS to the public internet, so the CA
 # bundle is not optional. zoneinfo is here because the binary formats timestamps and a scratch image
 # has no tzdata — without it every local-time rendering silently becomes UTC.
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/

@@ -7,7 +7,10 @@ Why things are the way they are, including the downsides. Use
 re-litigating a decision needs the costs stated plainly by the people who accepted them.
 
 Never edit an accepted ADR's decision — write a new one and mark the old one superseded, both
-directions linked.
+directions linked. Where the new ADR narrows the old one rather than replacing it, the status is
+`accepted, amended in part by ADR-NNNN` and a blockquote under it names which part still governs —
+`superseded by` on a decision whose model is still the one in the code sends the next reader past a
+document they need.
 
 | ADR | Decision | Status |
 |---|---|---|

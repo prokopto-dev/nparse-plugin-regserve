@@ -45,7 +45,12 @@ One line: what it costs to undo this in two years. Be specific — "a day", "a r
 
 - Budget one screen, about 900 words. The docs word-count check fails an ADR over budget; over budget
   usually means two decisions in one file.
-- Status values: `proposed` · `accepted` · `superseded by ADR-NNNN` · `deprecated`. Never edit an
-  accepted ADR's decision — write a new one and mark the old one superseded, both directions linked.
+- Status values: `proposed` · `accepted` · `accepted, amended in part by ADR-NNNN` ·
+  `superseded by ADR-NNNN` · `deprecated`. Never edit an accepted ADR's decision — write a new one
+  and mark the old one superseded, both directions linked.
+- **`amended in part` is for a decision a later ADR narrows without replacing.** Reach for it only
+  when part of the decision demonstrably still governs: `superseded by` on an ADR whose model is
+  still the one in the code tells the next reader to ignore a document they need. Say in a
+  blockquote under the status line which part stands and which part went, and link both ways.
 - Present tense, second person for instructions. No marketing voice.
 - Link the enforcing test, gate or trigger by name, not by description.

@@ -4,7 +4,7 @@ import "encoding/json"
 
 // Secret wraps a value that must never reach a log, an error message, or a response body.
 //
-// The three OAuth client secrets and the token pepper are this service's entire security model.
+// The GitHub OAuth client secret and the token pepper are this service's entire security model.
 // The failure this type prevents is the ordinary one: someone adds %v to a debug line, or a config
 // struct gets marshalled into an error, and the secret is in a log file forever. Both String and
 // MarshalJSON redact, so the value has to be asked for deliberately via Reveal.
