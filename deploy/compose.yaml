@@ -74,8 +74,14 @@ services:
         bind:
           create_host_path: false
 
-    # The image runs as uid 65532 and the named volume is chown-ed on first creation. If you switch
-    # to a bind mount, chown it to 65532:65532 first or the first boot fails on an unwritable /data.
+    # The image runs as uid 65532, and it ships /data owned by that uid so Docker applies the same
+    # ownership when it initialises this empty named volume — see deploy/Dockerfile, which is where
+    # the mechanism lives. A root-owned /data means the server cannot create the database and comes
+    # up serving no catalogue at all.
+    #
+    # A BIND MOUNT gets none of that: Docker does not touch the ownership of a host directory. If
+    # you switch to one, `chown 65532:65532` it on the host first, or the first boot fails on an
+    # unwritable /data.
     user: "65532:65532"
 
     security_opt:

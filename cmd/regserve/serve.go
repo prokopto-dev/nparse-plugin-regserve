@@ -214,11 +214,12 @@ func prepareCatalogue(
 		switch {
 		case err != nil:
 			return nil, err
-		case out.Existing > 0:
-			// Every boot after the first. Said out loud so that an operator who edits the seed
-			// file and restarts is not left wondering why nothing changed.
-			slog.InfoContext(ctx, "seed file ignored: the database already holds a catalogue",
-				"path", seed.Path, "plugins_in_database", out.Existing)
+		case out.Skip != "":
+			// Said out loud, with the reason, so that an operator who edits the seed file and
+			// restarts is not left wondering why nothing changed. The reason matters: two of the
+			// three mean "as designed", and the third means the file they are looking at is empty.
+			slog.InfoContext(ctx, "seed file not imported",
+				"path", seed.Path, "reason", string(out.Skip), "plugins_in_database", out.Existing)
 		default:
 			slog.InfoContext(ctx, "catalogue imported from the seed file",
 				"path", seed.Path, "plugins", out.Plugins)

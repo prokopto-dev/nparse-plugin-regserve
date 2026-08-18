@@ -17,6 +17,16 @@ RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
 COPY . .
 
+# The data directory, created here because the final image has no shell to create it in.
+#
+# A new Docker named volume is root-owned, and this image runs as uid 65532: without this the very
+# first boot cannot create /data/regserve.db, the server comes up with no catalogue, and the deploy
+# fails its readiness check AFTER the container swap. Docker initialises an empty volume from the
+# image's directory at the mount point — contents, ownership and mode — so shipping /data owned by
+# 65532 is what makes the volume writable. Verified against both a brand-new volume and one that
+# already existed empty, which is the state on the droplet today.
+RUN mkdir -p /out/data && chown 65532:65532 /out/data
+
 ARG TARGETOS
 ARG TARGETARCH
 ARG VERSION=dev
@@ -44,8 +54,12 @@ COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=build /usr/share/zoneinfo /usr/share/zoneinfo
 COPY --from=build /out/regserve /usr/local/bin/regserve
 
+# The mount point, owned by the uid below. See the RUN in the build stage for why it exists at all.
+# --chown takes numeric ids because scratch has no /etc/passwd for a name to resolve against.
+COPY --from=build --chown=65532:65532 /out/data /data
+
 # Non-root by number: scratch has no /etc/passwd, so a name would not resolve. 65532 is the
-# conventional "nonroot" uid. The data volume must be writable by it — see deploy/compose.yaml.
+# conventional "nonroot" uid.
 USER 65532:65532
 
 # Read by `serve` and by `migrate`. The volume must be writable by uid 65532: SQLite creates its WAL

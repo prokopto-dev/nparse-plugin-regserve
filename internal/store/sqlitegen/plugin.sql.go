@@ -9,6 +9,22 @@ import (
 	"context"
 )
 
+const countCatalogueImports = `-- name: CountCatalogueImports :one
+SELECT count(*) FROM audit_log
+WHERE subject_kind = 'catalogue' AND action = 'catalogue.import'
+`
+
+// Whether a seed has ever been imported into this database. The audit row written by the import is
+// the marker: it is durable, it is append-only, and it does not depend on inferring "we have never
+// imported" from a row count somebody could one day make deletable. Uses the
+// (subject_kind, subject_id) index.
+func (q *Queries) CountCatalogueImports(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countCatalogueImports)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countPlugins = `-- name: CountPlugins :one
 
 SELECT count(*) FROM plugin

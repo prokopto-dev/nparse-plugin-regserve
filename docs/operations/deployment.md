@@ -229,6 +229,11 @@ or unwritable, and the reason is in `docker compose logs`. Neither is fatal to t
 purpose: `/healthz` stays green so a brief volume problem does not restart-loop a container that
 would recover.
 
+The image ships `/data` owned by uid `65532`, and Docker applies that ownership when it initialises
+an empty named volume — so the first boot can create the database. **A bind mount gets none of
+that**: Docker never changes the ownership of a host directory, so `chown 65532:65532` it yourself
+before starting, or the log will read `permission denied` on `/data/regserve.db`.
+
 On the **first** boot against an empty database the log carries one line that matters:
 
 ```bash
@@ -237,8 +242,15 @@ docker compose logs regserve | grep catalogue
 # "catalogue loaded"                       plugins=N
 ```
 
-Every boot after that says `seed file ignored: the database already holds a catalogue` instead. If
-you ever see `the catalogue is empty`, the import did not happen and `/index.json` is about to
+Every boot after that says `seed file not imported` with a `reason`, and there are three:
+
+| `reason` | What it means |
+|---|---|
+| `the database already holds a catalogue` | Normal. Every boot after the first |
+| `a seed has already been imported into this database` | Normal, and the same statement made by the audit log rather than the plugin table |
+| `the seed file lists no plugins` | **The file is empty.** Nothing was written — not even the import marker — so fixing the file and restarting still imports it |
+
+If you ever see `the catalogue is empty`, the import did not happen and `/index.json` is about to
 report an empty registry to every client — check the seed mount before anything else.
 
 ---
@@ -348,7 +360,7 @@ nothing served, and only refreshes what a future empty database would import:
 
 ```bash
 docker compose up -d --force-recreate regserve
-docker compose logs --tail 20 regserve          # "seed file ignored: the database already holds a catalogue"
+docker compose logs --tail 20 regserve          # "seed file not imported" reason="the database already holds a catalogue"
 curl -fsS https://nparseplugins.prokopto.dev/readyz
 ```
 

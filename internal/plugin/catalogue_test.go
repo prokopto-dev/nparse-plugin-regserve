@@ -67,6 +67,7 @@ func importInto(t *testing.T, db *store.DB, plugins ...registry.Plugin) *plugin.
 
 	out, err := plugin.ImportSeed(t.Context(), db, fixedClock(), seed)
 	require.NoError(t, err)
+	require.Empty(t, out.Skip)
 	require.Equal(t, len(plugins), out.Plugins)
 	return plugin.NewCatalogue(db)
 }
@@ -125,6 +126,7 @@ func TestImportSeed_NonEmptyDatabase_ChangesNothing(t *testing.T) {
 	out, err := plugin.ImportSeed(t.Context(), db, fixedClock(), other)
 	require.NoError(t, err, "an ignored seed is not an error; it is every boot after the first")
 	require.Zero(t, out.Plugins)
+	require.Equal(t, plugin.SkipCatalogueExists, out.Skip)
 	require.Equal(t, int64(1), out.Existing)
 
 	served, err := plugin.NewCatalogue(db).Listings(t.Context())
@@ -340,4 +342,90 @@ func TestLoadSeed_UnusableFile_NamesTheFile(t *testing.T) {
 			require.ErrorContains(t, err, path)
 		})
 	}
+}
+
+// TestImportSeed_EmptySeed_WritesNothingAtAll — an index with no plugins is a VALID document, so a
+// truncated upstream fetch or a hand-edited file produces one, and the server has to survive
+// restarting against it.
+//
+// The bug this pins: using "the catalogue is empty" as the one-time condition means an empty seed
+// never satisfies it, so every restart re-runs the import and appends another audit row to a table
+// that can never be pruned. Nothing happened, so nothing is written — including the marker.
+func TestImportSeed_EmptySeed_WritesNothingAtAll(t *testing.T) {
+	t.Parallel()
+
+	db := storetest.New(t)
+	empty, err := plugin.LoadSeed(seedFile(t))
+	require.NoError(t, err)
+
+	for i := range 3 {
+		out, err := plugin.ImportSeed(t.Context(), db, fixedClock(), empty)
+		require.NoError(t, err, "boot %d", i)
+		require.Zero(t, out.Plugins)
+		require.Equal(t, plugin.SkipSeedEmpty, out.Skip)
+	}
+
+	raw := openRaw(t, db.Path())
+	var audits int
+	require.NoError(t, raw.QueryRowContext(t.Context(), `SELECT count(*) FROM audit_log`).Scan(&audits))
+	require.Zero(t, audits, "three restarts against an empty seed wrote %d audit rows", audits)
+}
+
+// TestImportSeed_EmptySeedThenARealOne_StillImports — the reason an empty seed must NOT claim the
+// import marker.
+//
+// An operator who notices the catalogue is empty fixes the file and restarts. If the empty boot had
+// recorded "a seed was imported", that fix would silently do nothing and the registry would stay
+// empty with every log line reporting success.
+func TestImportSeed_EmptySeedThenARealOne_StillImports(t *testing.T) {
+	t.Parallel()
+
+	db := storetest.New(t)
+
+	empty, err := plugin.LoadSeed(seedFile(t))
+	require.NoError(t, err)
+	out, err := plugin.ImportSeed(t.Context(), db, fixedClock(), empty)
+	require.NoError(t, err)
+	require.Equal(t, plugin.SkipSeedEmpty, out.Skip)
+
+	fixed, err := plugin.LoadSeed(seedFile(t, listing("alpha")))
+	require.NoError(t, err)
+	out, err = plugin.ImportSeed(t.Context(), db, fixedClock(), fixed)
+	require.NoError(t, err)
+	require.Empty(t, out.Skip, "the corrected seed must still be imported")
+	require.Equal(t, 1, out.Plugins)
+
+	served, err := plugin.NewCatalogue(db).Listings(t.Context())
+	require.NoError(t, err)
+	require.Len(t, served, 1)
+}
+
+// TestImportSeed_MarkerAlone_StopsASecondImport — the audit record is the one-time condition, not
+// the plugin count.
+//
+// The state is built by hand because the schema forbids reaching it any other way: a plugin row
+// cannot be deleted. That is exactly why the marker is checked separately — the rule must not
+// depend on a trigger in another file staying where it is, and its failure mode is a restart
+// reverting every publish made since the cutover.
+func TestImportSeed_MarkerAlone_StopsASecondImport(t *testing.T) {
+	t.Parallel()
+
+	db := storetest.New(t)
+	raw := openRaw(t, db.Path())
+	_, err := raw.ExecContext(t.Context(),
+		`INSERT INTO audit_log (id, recorded_at, actor_kind, action, subject_kind)
+		 VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FAV', 1700000000000000, 'system', 'catalogue.import', 'catalogue')`)
+	require.NoError(t, err)
+
+	seed, err := plugin.LoadSeed(seedFile(t, listing("alpha")))
+	require.NoError(t, err)
+
+	out, err := plugin.ImportSeed(t.Context(), db, fixedClock(), seed)
+	require.NoError(t, err)
+	require.Zero(t, out.Plugins)
+	require.Equal(t, plugin.SkipAlreadyImported, out.Skip)
+
+	var plugins int
+	require.NoError(t, raw.QueryRowContext(t.Context(), `SELECT count(*) FROM plugin`).Scan(&plugins))
+	require.Zero(t, plugins)
 }

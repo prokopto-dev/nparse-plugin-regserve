@@ -43,13 +43,35 @@ type Seed struct {
 	Index registry.Index
 }
 
+// ImportSkip says why an import wrote nothing. The empty value means it wrote.
+type ImportSkip string
+
+const (
+	// SkipCatalogueExists is the normal case for every boot after the first.
+	SkipCatalogueExists ImportSkip = "the database already holds a catalogue"
+
+	// SkipAlreadyImported is the same statement made by the audit log rather than by the plugin
+	// table. Both are checked: see the comment on ImportSeed.
+	SkipAlreadyImported ImportSkip = "a seed has already been imported into this database"
+
+	// SkipSeedEmpty is a seed that parses and lists no plugins.
+	//
+	// Nothing is written for one — NOT even the import marker. An empty index is a valid document,
+	// so this is reachable by mistake (a truncated upstream fetch, a hand-edited file), and
+	// claiming the marker would mean the operator's corrected seed silently did nothing on the
+	// next boot. An import that imported nothing has not happened.
+	SkipSeedEmpty ImportSkip = "the seed file lists no plugins"
+)
+
 // ImportOutcome is what ImportSeed did.
 type ImportOutcome struct {
-	// Plugins is how many plugins were written. Zero when the database already had a catalogue.
+	// Plugins is how many plugins were written. Zero on every skip.
 	Plugins int
 
-	// Existing is how many plugins the database already held. Anything above zero means nothing
-	// was written, and that is the normal case for every boot after the first.
+	// Skip is empty when Plugins were written, and otherwise says why none were.
+	Skip ImportSkip
+
+	// Existing is how many plugins the database already held, for the log line.
 	Existing int64
 }
 
@@ -72,9 +94,16 @@ func LoadSeed(path string) (Seed, error) {
 
 // ImportSeed writes seed into an EMPTY database, in one transaction.
 //
-// It returns without writing anything if the database already holds a plugin. The count and the
-// writes share a transaction on the single writer connection, so "empty" cannot become "not empty"
-// between the check and the insert.
+// It writes nothing at all unless three things are true: the database holds no plugins, no import
+// has been recorded in the audit log before, and the seed actually lists a plugin. All of it —
+// the checks and the writes — shares one transaction on the single writer connection, so "empty"
+// cannot become "not empty" between the check and the insert.
+//
+// TWO CONDITIONS FOR ONE RULE, on purpose. The plugin count answers "is there a catalogue"; the
+// audit marker answers "did we already do this". They are equivalent only because nothing can
+// delete a plugin row today — a BEFORE DELETE trigger sees to that — and the rule this protects is
+// the one whose failure mode is a restart reverting every publish since the cutover. It should not
+// rest on a trigger in another file staying where it is.
 //
 // Every imported release lands as approved, because it is what the live registry is serving right
 // now and this is a transition, not a re-review. It lands with source = 'import' and no
@@ -95,10 +124,23 @@ func ImportSeed(ctx context.Context, db *store.DB, clk clock.Clock, seed Seed) (
 		if err != nil {
 			return fmt.Errorf("count the plugins already in the database: %w", err)
 		}
-		if existing > 0 {
-			// Not an error. This is every boot after the first, and it is the property that makes
-			// leaving the seed file mounted harmless.
-			out.Existing = existing
+		imports, err := q.CountCatalogueImports(ctx)
+		if err != nil {
+			return fmt.Errorf("count the imports already recorded: %w", err)
+		}
+
+		// None of these is an error. Two of them are every boot after the first, and skipping
+		// quietly is the property that makes leaving the seed file mounted harmless.
+		out.Existing = existing
+		switch {
+		case existing > 0:
+			out.Skip = SkipCatalogueExists
+			return nil
+		case imports > 0:
+			out.Skip = SkipAlreadyImported
+			return nil
+		case len(idx.Plugins) == 0:
+			out.Skip = SkipSeedEmpty
 			return nil
 		}
 

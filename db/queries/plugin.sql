@@ -72,3 +72,11 @@ INSERT INTO "release" (
 -- name: InsertAuditLog :exec
 INSERT INTO audit_log (id, recorded_at, actor_kind, actor_account_id, action, subject_kind, subject_id, detail)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+
+-- name: CountCatalogueImports :one
+-- Whether a seed has ever been imported into this database. The audit row written by the import is
+-- the marker: it is durable, it is append-only, and it does not depend on inferring "we have never
+-- imported" from a row count somebody could one day make deletable. Uses the
+-- (subject_kind, subject_id) index.
+SELECT count(*) FROM audit_log
+WHERE subject_kind = 'catalogue' AND action = 'catalogue.import';
