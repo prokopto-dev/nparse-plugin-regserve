@@ -93,8 +93,39 @@ jobs:
             tag="$INPUT_TAG"
             ref="$INPUT_REF"
           fi
-          [ -n "$tag" ] || { echo "image tag is empty"; exit 1; }
-          [ -n "$ref" ] || { echo "source ref is empty"; exit 1; }
+          [ -n "$tag" ] || { echo "FATAL: image_tag is empty." >&2; exit 1; }
+          [ -n "$ref" ] || { echo "FATAL: source_ref is empty." >&2; exit 1; }
+
+          # Reject these values, do not encode them.
+          #
+          # $GITHUB_OUTPUT is a line-oriented `name=value` file, so a value containing a newline is
+          # not an odd value — it is extra RECORDS. An image_tag of
+          # "edge<newline>image=ghcr.io/attacker/evil:x" appends a second `image=` line, the LAST
+          # one wins, and the deploy pulls and starts whatever it names, on production, past the
+          # environment approval that was meant to be the control.
+          #
+          # The delimiter form would stop the injection and then hand `docker pull` a two-line image
+          # reference instead, which is not an improvement. Neither of these is ever anything but a
+          # plain token, so the honest answer is to refuse.
+          #
+          # `case`, not `grep`: grep is LINE-oriented, so `grep -E '^[A-Za-z0-9._-]+$'` matches the
+          # first line of a multiline value and waves this exact attack through. A shell pattern
+          # tests the whole string, newline included.
+          case "$tag" in
+            -* | *[!A-Za-z0-9._-]*)
+              echo "FATAL: image_tag must be an OCI tag: letters, digits, '.', '_', '-'." >&2
+              exit 1 ;;
+          esac
+          # `..` is not legal in a git ref, and a leading dash would be read as an option by the
+          # commands these values reach.
+          case "$ref" in
+            -* | *..* | *[!A-Za-z0-9._/-]*)
+              echo "FATAL: source_ref must be a commit sha, tag or branch name." >&2
+              exit 1 ;;
+          esac
+          [ "${#tag}" -le 128 ] || { echo "FATAL: image_tag exceeds 128 characters." >&2; exit 1; }
+          [ "${#ref}" -le 255 ] || { echo "FATAL: source_ref exceeds 255 characters." >&2; exit 1; }
+
           {
             echo "tag=${tag}"
             echo "source_ref=${ref}"
