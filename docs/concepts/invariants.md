@@ -72,16 +72,28 @@ behind the exception.
 
 ## Data invariants
 
-Enforced in the schema and by tests, not by convention.
+Enforced in the schema and by tests, not by convention. Every row below is exercised by
+`TestSchema_RefusedStatements` in `internal/store`, which issues the forbidden statement as **raw
+SQL** — not through the generated query set. A guarantee that only holds for the statements this
+repository happens to generate is not a guarantee: a migration, a later phase, or a hand-run
+`UPDATE` during an incident does not go through sqlc.
 
 | Invariant | Mechanism |
 |---|---|
-| `audit_log` is append-only | `BEFORE UPDATE` and `BEFORE DELETE` triggers that `RAISE(ABORT)`; a test asserts each trigger fires |
-| A plugin id is never recycled | `id_claim` rows are never deleted; delisting clears the listing, not the claim. Unique index plus a test |
+| `audit_log` is append-only | `BEFORE UPDATE` and `BEFORE DELETE` triggers that `RAISE(ABORT)`; a test asserts each trigger fires, and another asserts `INSERT` still works |
+| A plugin id is never recycled | The `plugin` row **is** the claim, and a `BEFORE DELETE` trigger aborts. Delisting sets `delisted_at`, which clears the listing and keeps the claim |
+| A delisting states its reason | `CHECK`: `delisted_at` and `delisted_reason` are set together or not at all. A listing that vanishes with no reason is indistinguishable from a bug |
 | Only `github` identities may publish | `identity_provider.can_publish` is a `CHECK` against `kind`, not a column an operator sets. `github` is also the *only* provider ([ADR-0011](../adr/0011-github-is-the-only-identity-provider.md)); the `CHECK` stays because a provider added later is non-publishing until someone argues otherwise |
-| A stored sha256 was computed by the server | `internal/artifact` returns the hash it computed. **Not yet built** — the enforcing test lands with the publish path in Phase 3, and until then this is a review rule wearing a table row's clothes |
-| Every release row keeps its history | No `DELETE` on `release` anywhere; superseding is a state change |
-| Migrations are forward-only | Every `Down` block is `RAISE(ABORT, …)`; gate `MIG002` |
+| A stored sha256 was computed by the server | `internal/artifact` returns the hash it computed. **Not yet built** — the enforcing test lands with the publish path in Phase 3. Two parts of it exist now: `release.source` records `import` for the rows carried over from the static registry, whose hashes this server did **not** compute, and a `CHECK` refuses an approved release with no hash at all |
+| A stored sha256 is 64 lowercase hex characters | `CHECK` with a negated `GLOB`. A hash the client would refuse cannot be stored, so it cannot be served |
+| An artifact URL is `https` | `CHECK`: `artifact_url LIKE 'https://%'`. The URL is transport, but a row that could never be served has no business existing |
+| Every release row keeps its history | A `BEFORE DELETE` trigger on `release` aborts; superseding is a state change |
+| Exactly one release per plugin is live | Partial unique index on `(plugin_id) WHERE state = 'approved'`. `latest` on the wire is derived from that row, and ADR-0010 names the derivation as the risk it accepts — the index makes the ambiguous case unrepresentable rather than unlikely |
+| A version is never reused for a plugin | Unique index on `(plugin_id, version)`, over a table nothing deletes from |
+| Reads cannot write | The reader pool is opened `PRAGMA query_only`, so a write reaching the read path fails instead of becoming a second writer. Tested |
+| The database file is `0600` | `internal/store` creates it at that mode and tightens an existing looser one, logging when it does. Tested |
+| Migrations are forward-only | Every `Down` block is `RAISE(ABORT, …)`; gate `MIG002`. `TestMigrate_DownBlock_CannotRun` goes further and executes each block against a real database, because `MIG002` is a shape check and would pass a file whose abort sat behind a `DROP TABLE` |
+| A schema newer than the binary is fatal | `store.ErrSchemaAhead` at boot. An older binary against a newer database is a rollback that skipped the snapshot restore, and serving anyway fails one request at a time |
 
 ## Review rules — real rules, no mechanism yet
 

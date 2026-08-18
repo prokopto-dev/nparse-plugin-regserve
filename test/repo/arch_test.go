@@ -23,7 +23,11 @@ import (
 // scanned are the trees these gates cover. Test files are excluded: a test may legitimately dial a
 // local httptest server or open a database, and holding tests to the production rules would push
 // people towards testing less.
-var scanned = []string{"../../cmd", "../../internal"}
+//
+// db/ is here because it is a Go package too. A package outside this list is a package the gates
+// do not cover, which is how a rule stops being enforced without anybody deciding to stop
+// enforcing it — the file that escapes is never the one somebody was watching.
+var scanned = []string{"../../cmd", "../../internal", "../../db"}
 
 type goFile struct {
 	path string

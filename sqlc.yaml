@@ -1,0 +1,27 @@
+# sqlc types the SQL in db/queries against the schema the migrations produce (ADR-0006).
+#
+# The schema source is the MIGRATION DIRECTORY, not db/schema.hcl: sqlc cannot read Atlas HCL, and
+# pointing it at a hand-kept copy of the DDL would create a second description of the schema that
+# drifts the first time somebody forgets it. Reading the migrations means the types are generated
+# from the same statements the server will execute at boot.
+#
+# Output goes to internal/store/sqlitegen and is NEVER hand-edited. That package is inside
+# internal/store, which is the only tree allowed to import database/sql (gate SQL001).
+version: "2"
+
+sql:
+  - engine: "sqlite"
+    schema: "db/migrations-sqlite"
+    queries: "db/queries"
+    gen:
+      go:
+        package: "sqlitegen"
+        out: "internal/store/sqlitegen"
+        # A nullable column becomes *string rather than sql.NullString. Two reasons: it maps
+        # directly onto the pointer the index document already uses for a nullable field, and it
+        # keeps database/sql out of the signatures that internal/store hands to its callers --
+        # which is what lets those callers stay on the right side of SQL001.
+        emit_pointers_for_null_types: true
+        # A query that matched nothing returns an empty slice, not nil. `len(x) == 0` is true for
+        # both, but `for range nil` and a nil marshalled as JSON `null` are not the same thing.
+        emit_empty_slices: true

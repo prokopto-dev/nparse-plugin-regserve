@@ -46,10 +46,10 @@ from it is vendored here at `internal/registry/testdata/index-v1.schema.json`.
 | `internal/artifact/` | Artifact download and re-hash. Never extracts, never executes |
 | `internal/registry/` | schema-v1 index rendering. The wire format lives here and nowhere else |
 | `internal/plugin/`, `ownership/`, `moderation/` | Domain services |
-| `internal/store/` | The only holder of `*sql.DB`. `sqlitegen/` is generated and never hand-edited |
-| `internal/core/` | Typed ids and `Secret`. ULID lands with the first table that needs one (Phase 1) |
+| `internal/store/` | The only holder of `*sql.DB`: two pools, `store.Tx`, migrations. `sqlitegen/` is generated and never hand-edited; `storetest/` builds real databases for tests |
+| `internal/core/` | Typed ids (`PluginID`, `ULID`), `Micros`, and `Secret` |
 | `internal/clock/` | The only `time.Now` |
-| `db/` | `schema.hcl` is the single schema truth; `queries/*.sql`; `migrations-sqlite/` |
+| `db/` | `schema.hcl` is the single schema truth; `queries/*.sql`; `migrations-sqlite/`, embedded and applied at boot; `SHIPPED.lock` |
 | `test/repo/` | Tests about the repository itself, not the product: they assert the gates below actually fire |
 
 `internal/identity/` and `internal/artifact/` are **the only packages permitted to make outbound
@@ -94,6 +94,10 @@ Each has a mechanism. The mechanism is authoritative; this list is a description
   session-only and carry no scope at all. There is no `admin:*`.
 - **A new plugin id always gets human review.** Trust levels govern version bumps of an
   already-approved plugin, never the first appearance of an id.
+- **The seed file is imported once, into an empty database, and never again.** A database that
+  already holds plugins is never overwritten by a file on disk. That is what let the live
+  deployment cross from `--seed` to the store with no maintenance window, and it is why leaving the
+  file mounted afterwards is harmless rather than a loaded gun.
 - **Only GitHub identities may publish, and GitHub is the only provider.** This is a CHECK against
   `identity_provider.kind`, not an operator toggle. The `(provider, subject)` model still holds any
   number of providers; one ships. See

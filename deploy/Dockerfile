@@ -48,7 +48,8 @@ COPY --from=build /out/regserve /usr/local/bin/regserve
 # conventional "nonroot" uid. The data volume must be writable by it — see deploy/compose.yaml.
 USER 65532:65532
 
-# Declared for Phase 1. Nothing reads it yet — the server is catalogue-only until the store lands.
+# Read by `serve` and by `migrate`. The volume must be writable by uid 65532: SQLite creates its WAL
+# and shared-memory files beside the database, so the directory matters as much as the file.
 ENV REGSERVE_DB_PATH=/data/regserve.db
 VOLUME ["/data"]
 EXPOSE 8080
@@ -61,8 +62,9 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 
 ENTRYPOINT ["/usr/local/bin/regserve"]
 
-# No --seed here: where the catalogue comes from is a deployment decision, not an image one, and
-# baking a path in would make every `docker run` fail on a file it has no reason to have. Set
-# REGSERVE_SEED_PATH, or override the command — deploy/compose.yaml does the latter. Without one
-# the server starts, serves /healthz, and reports /readyz as not ready with the reason.
+# No --seed here: where the seed comes from is a deployment decision, not an image one, and baking a
+# path in would make every `docker run` fail on a file it has no reason to have. Set
+# REGSERVE_SEED_PATH, or override the command — deploy/compose.yaml does the latter. Without one the
+# server starts against REGSERVE_DB_PATH and serves whatever the database holds, which on a fresh
+# volume is an empty catalogue: the boot log says so, loudly.
 CMD ["serve", "--addr", ":8080"]

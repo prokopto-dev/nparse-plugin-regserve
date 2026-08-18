@@ -1,0 +1,16 @@
+# Migrations that have shipped in a TAGGED RELEASE, frozen by sha256. Gate MIG003 compares each
+# line against the file on disk and fails the build when one has changed.
+#
+# Why: a shipped migration has already run against the only copy of the ownership records. Editing
+# it changes what a FRESH database gets and nothing about the one in production, so the two diverge
+# with nothing to notice — and migrations are forward-only, so there is no down path that would.
+#
+# THERE ARE NO ENTRIES YET, because no release has been tagged. Everything in
+# db/migrations-sqlite/ is still editable, and MIG003 reports itself vacant rather than passing.
+#
+# When a release is tagged, freeze what went out in it:
+#
+#     shasum -a 256 db/migrations-sqlite/*.sql >> db/SHIPPED.lock
+#
+# The format is one `<sha256>  <path>` line per file, which is what shasum already writes. Lines
+# starting with # are ignored.

@@ -112,6 +112,40 @@ three cases against the route registry.
 - Raw SQL lives in `db/queries/*.sql` and is typed by sqlc into `internal/store/sqlitegen/`. Never
   hand-edit generated code; never write SQL elsewhere.
 - Mutations go through `store.Tx`, which hands the callback a `store.Queries` and never a `*sql.Tx`.
+- Reads go through `store.Read()`, whose connections are `PRAGMA query_only`. The writer is a single
+  connection with `_txlock=immediate` ([ADR-0001](../adr/0001-go-single-binary-and-sqlite.md)).
+
+### A column is never named after a wire field
+
+`release.sdk_specifier` and `release.minimum_app_version` carry what the index document calls
+something else, and the difference is load-bearing: sqlc writes column names into Go **string
+literals** in `internal/store/sqlitegen`, so a column named after a wire field would put that field
+name in a second package and fail `SCHEMA002`. The database describes a release; `internal/registry`
+decides how a release is spelled to a client.
+
+### What `db/schema.hcl` cannot say
+
+The community build of Atlas models neither triggers nor data. A `trigger` block in `schema.hcl` is
+parsed and then **silently ignored**, which is worse than absent because a reader would believe it.
+
+So the append-only triggers, the no-delete triggers, and the single `identity_provider` row are
+hand-authored in the initial migration, below a marked boundary, and each is asserted by a test in
+`internal/store` that issues the forbidden statement and requires the abort. Atlas replays the
+migration directory to compute its next diff, so it sees those objects and leaves them alone.
+
+### `make migration` post-processes what Atlas writes
+
+Atlas writes correct SQLite that is not ours. `scripts/finish-migration.sh` runs after every diff,
+is idempotent, and does three things — each one a bug somebody would otherwise hit:
+
+1. **Backticks become double quotes.** sqlc's SQLite parser does not understand backtick quoting and
+   reports the table as not existing, which reads like a missing migration rather than a quoting
+   style.
+2. **A redundant `NULL` column constraint is removed.** `text NULL` and `text` are identical to
+   SQLite, but sqlc stops resolving the type at the explicit keyword and emits `interface{}`. That
+   compiles, so nothing fails until somebody type-asserts one at runtime.
+3. **The `Down` block is replaced** with the `RAISE(ABORT, …)` that `MIG002` requires, rather than
+   the `DROP` statements Atlas generates.
 
 ## 8. Ownership and the trust model
 
