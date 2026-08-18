@@ -34,9 +34,9 @@ install -d -o deploy -g deploy -m 750 /opt/regserve/backups
 Copy two files from this repo into `/opt/regserve/`:
 
 ```bash
-# From your workstation, in a checkout of this repo:
-scp deploy/compose.yaml    deploy@<droplet>:/opt/regserve/compose.yaml
-scp deploy/env.example     deploy@<droplet>:/opt/regserve/.env
+# From your workstation, in a checkout of this repo. Use the same hostname as DEPLOY_HOST.
+scp deploy/compose.yaml    deploy@droplet.prokopto.dev:/opt/regserve/compose.yaml
+scp deploy/env.example     deploy@droplet.prokopto.dev:/opt/regserve/.env
 ```
 
 Then, **on the droplet**, fill in `/opt/regserve/.env` and lock it down:
@@ -84,8 +84,32 @@ be gated by the same approval as the deploy itself, otherwise the approval gate 
 | Secret | Value | How to get it |
 |---|---|---|
 | `DEPLOY_SSH_KEY` | The **private** half of a keypair made for this and nothing else | `ssh-keygen -t ed25519 -C "regserve-deploy" -f ./regserve-deploy -N ""` — paste the contents of `regserve-deploy`, then append `regserve-deploy.pub` to `/home/deploy/.ssh/authorized_keys` on the droplet |
-| `DEPLOY_KNOWN_HOSTS` | The droplet's host key | `ssh-keyscan -t ed25519 <droplet-ip>` — run this **once, from a network you trust**, and paste the output |
-| `DEPLOY_HOST` | The droplet's IP or hostname | — |
+| `DEPLOY_KNOWN_HOSTS` | The droplet's host key | `ssh-keyscan -t ed25519 <the same name you put in DEPLOY_HOST>` — run this **once, from a network you trust**, and paste the output |
+| `DEPLOY_HOST` | A **hostname**, not an IP — e.g. `droplet.prokopto.dev` | Add an A record pointing at the droplet |
+
+#### Use a hostname, and keyscan that same hostname
+
+A droplet's public IP is not guaranteed stable — a rebuild or a resize can change it, and a
+hard-coded IP turns that into a deploy that fails at the worst moment. Point an A record at the
+droplet and put **that** in `DEPLOY_HOST`.
+
+The part that bites: `known_hosts` entries are keyed by the exact name used to connect. If you
+`ssh-keyscan` the IP and then connect to a hostname, the entry does not match, and the deploy fails
+with a host-key error that reads like a man-in-the-middle rather than a configuration mistake — so
+the natural reaction is to disable the check, which is the one thing that must not happen. Keyscan
+the same string you put in `DEPLOY_HOST`:
+
+```bash
+ssh-keyscan -t ed25519 droplet.prokopto.dev
+```
+
+Prefer a host-specific record (`droplet.prokopto.dev`) over the service record
+(`nparseplugins.prokopto.dev`). They resolve to the same machine today, but the service name is
+something you may want to move to another host later — and SSH access following the service around
+is how a deploy ends up pointed at the wrong box.
+
+Belt and braces: a DigitalOcean **Reserved IP** attached to the droplet makes the address itself
+stable, so the A record only changes when you deliberately move it.
 
 `DEPLOY_KNOWN_HOSTS` is pinned rather than scanned at deploy time on purpose: scanning trusts
 whatever answers, which makes every deploy a free opportunity for a man-in-the-middle.
@@ -93,6 +117,11 @@ whatever answers, which makes every deploy a free opportunity for a man-in-the-m
 Lock the deploy key down further in `/home/deploy/.ssh/authorized_keys` if you want belt and
 braces — prefixing the key with `from="140.82.112.0/20,143.55.64.0/20"` restricts it to GitHub's
 ranges, at the cost of having to update it when those change.
+
+If the droplet is ever rebuilt it gets a **new host key**, and every deploy will then fail on a
+mismatch until you re-run `ssh-keyscan` and update `DEPLOY_KNOWN_HOSTS`. That failure is correct
+behaviour, not a bug — a changed host key is indistinguishable from an interception, and the only
+safe response is to re-verify out of band.
 
 ### 4. In this repository — variables, at the repository level
 
