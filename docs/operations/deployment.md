@@ -10,7 +10,7 @@ The pipeline is two workflows, split deliberately:
 | Workflow | Trigger | What it does | Approval |
 |---|---|---|---|
 | `Release` | push to `main`, tag `v*` | Builds a multi-arch image, pushes to GHCR | none |
-| `Deploy` | successful `Release`, or manual | SSHes to the droplet, checks the seed file, snapshots the DB, `compose pull && up -d`, verifies | `production` environment |
+| `Deploy` | successful `Release`, or manual | SSHes to the droplet, ships `compose.yaml`, checks the seed file, snapshots the DB, `compose pull && up -d`, verifies | `production` environment |
 
 Building is safe and automatic. Applying an image to the machine holding the only copy of the
 ownership records is neither, which is why it is a separate, approvable step.
@@ -39,6 +39,19 @@ Copy two files from this repo into `/opt/regserve/`:
 scp deploy/compose.yaml    deploy@nparseplugins.prokopto.dev:/opt/regserve/compose.yaml
 scp deploy/env.example     deploy@nparseplugins.prokopto.dev:/opt/regserve/.env
 ```
+
+> **This is the only time you copy `compose.yaml` by hand.** Every deploy ships the version that
+> came with the release and overwrites what is there, keeping the previous one as
+> `compose.yaml.prev`. It is here at all so you can bring the stack up manually before the first
+> deploy.
+>
+> **So a hand-edit to `/opt/regserve/compose.yaml` survives until the next deploy and no longer.**
+> Change `deploy/compose.yaml` in the repository instead — that is the copy that wins, and it is the
+> one anybody reviewing this service will read.
+>
+> `.env` is the opposite and always will be: it holds secrets, so it stays on the host and no
+> pipeline ever writes it. When a release needs a new variable, the deploy fails on it *before*
+> swapping anything, naming the variable.
 
 Then, **on the droplet**, fill in `/opt/regserve/.env` and lock it down:
 
@@ -182,8 +195,12 @@ click into a deploy. Optionally restrict the environment to the `main` branch an
 ### 7. First deploy
 
 ```bash
-gh workflow run Deploy -f image_tag=edge
+gh workflow run Deploy -f image_tag=edge -f source_ref=main
 ```
+
+`source_ref` is the commit the image was built from, and it is what the compose file is taken from.
+For an automatic deploy the workflow fills both in from the triggering release; for a manual one you
+name them, and they must match — see [Pairing the image with its compose file](#pairing-the-image-with-its-compose-file).
 
 Then check it — all three, in this order, because each failure means something different:
 
@@ -202,26 +219,55 @@ container; anything else means it did and would not render.
 
 1. Merge to `main`. `Release` builds and pushes `:edge` and `:sha-<full>`.
 2. `Deploy` is queued and waits for your approval on the `production` environment.
-3. On approval it asserts `/opt/regserve/seed.json` exists and is non-empty, snapshots
-   `regserve.db` into `/opt/regserve/backups/pre-<timestamp>.db`, pins `REGSERVE_IMAGE` in `.env`
-   to the exact image, pulls, and restarts the container.
-4. It polls `/healthz`, then `/readyz`, then fetches `/index.json` and asserts it parses and
+3. On approval it checks out **the commit that release was built from**, copies its
+   `deploy/compose.yaml` to the droplet, validates it
+   against the host's `.env` (`docker compose config -q`, which fails on a malformed file *and* on
+   any required variable the `.env` is missing), and adopts it — keeping `compose.yaml.prev`.
+4. It asserts `/opt/regserve/seed.json` exists and is non-empty, snapshots `regserve.db` into
+   `/opt/regserve/backups/pre-<timestamp>.db`, pins `REGSERVE_IMAGE` in `.env` to the exact image,
+   pulls, and restarts the container.
+5. It polls `/healthz`, then `/readyz`, then fetches `/index.json` and asserts it parses and
    declares `schema_version: 1`.
 
-The seed check in step 3 comes **before** the pull for the same reason the snapshot does: after
+Steps 3 and 4 are what stop a release and the stack running it from drifting apart. The compose file
+used to be copied once, at setup, and never again — so a release that added a flag started against a
+compose file that had never heard of it. That is not hypothetical: it is exactly how a container came
+up with no catalogue while `/healthz` answered `ok`.
+
+The seed check in step 4 comes **before** the pull for the same reason the snapshot does: after
 `compose up` the old container is already gone, so a failure there is a failure with nothing to fall
 back to. It is a shell test — exists, non-empty — and no more than that honestly can be; the file's
 contents are the server's business, and the server refuses to start on a file it cannot use.
 
-Step 4 is not ceremony. A container that boots but serves a malformed index has taken down the
+Step 5 is not ceremony. A container that boots but serves a malformed index has taken down the
 plugin browser for every installed client at once, and that failure is invisible from the outside —
 the process is healthy, the certificate is valid, and every user sees "registry is malformed".
 
 Tagged releases (`v1.2.0`) publish `:1.2.0`, `:1.2` and `:latest`. To deploy one:
 
 ```bash
-gh workflow run Deploy -f image_tag=1.2.0
+gh workflow run Deploy -f image_tag=1.2.0 -f source_ref=v1.2.0
 ```
+
+### Pairing the image with its compose file
+
+The image and the compose file must come from one commit. The workflow checks out `source_ref` and
+ships **that** commit's `deploy/compose.yaml`, rather than the default branch's — because a deploy
+waits for a human, `main` keeps moving while it waits, and staging a newer compose file against an
+older image would give you a container running with flags, mounts or required variables from a
+release it was never built for. Nothing about that failure looks wrong in the run log.
+
+For an automatic deploy both values come from the triggering release and cannot disagree. For a
+manual one:
+
+| `image_tag` | `source_ref` | Verified? |
+|---|---|---|
+| `sha-<full>` | `<full>` | Yes — the workflow fails if they disagree |
+| `1.2.0` | `v1.2.0` | No — a tag is not commit-derived; the run prints which commit it used |
+| `edge` | `main` | No, and `edge` moves. Prefer `sha-<full>` for anything reproducible |
+
+Where it cannot verify the pairing, the run says so rather than implying a guarantee it has not
+made.
 
 ## Updating the catalogue
 
@@ -274,8 +320,13 @@ To roll back: `cp seed.json.prev seed.json` and recreate again.
 Deploys pin an exact image, so a rollback is a deploy of the previous one:
 
 ```bash
-gh workflow run Deploy -f image_tag=sha-<previous-full-sha>
+gh workflow run Deploy -f image_tag=sha-<previous-full-sha> -f source_ref=<previous-full-sha>
 ```
+
+**Rolling back restores that release's `compose.yaml` too** — the deploy ships the compose file from
+`source_ref`, so naming the old commit rolls back both together. Naming the wrong one is the whole
+hazard, which is why a `sha-<full>` tag is checked against the checkout and fails the run rather than
+deploying a mismatched pair. The file being replaced is kept as `compose.yaml.prev`.
 
 **If the bad release included a migration, the image alone is not enough.** Migrations are
 forward-only ([ADR-0006](../adr/0006-atlas-authors-goose-applies.md)) — there are no down
