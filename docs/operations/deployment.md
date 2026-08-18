@@ -35,8 +35,8 @@ Copy two files from this repo into `/opt/regserve/`:
 
 ```bash
 # From your workstation, in a checkout of this repo. Use the same hostname as DEPLOY_HOST.
-scp deploy/compose.yaml    deploy@droplet.prokopto.dev:/opt/regserve/compose.yaml
-scp deploy/env.example     deploy@droplet.prokopto.dev:/opt/regserve/.env
+scp deploy/compose.yaml    deploy@nparseplugins.prokopto.dev:/opt/regserve/compose.yaml
+scp deploy/env.example     deploy@nparseplugins.prokopto.dev:/opt/regserve/.env
 ```
 
 Then, **on the droplet**, fill in `/opt/regserve/.env` and lock it down:
@@ -85,7 +85,7 @@ be gated by the same approval as the deploy itself, otherwise the approval gate 
 |---|---|---|
 | `DEPLOY_SSH_KEY` | The **private** half of a keypair made for this and nothing else | `ssh-keygen -t ed25519 -C "regserve-deploy" -f ./regserve-deploy -N ""` — paste the contents of `regserve-deploy`, then append `regserve-deploy.pub` to `/home/deploy/.ssh/authorized_keys` on the droplet |
 | `DEPLOY_KNOWN_HOSTS` | The droplet's host key | `ssh-keyscan -t ed25519 <the same name you put in DEPLOY_HOST>` — run this **once, from a network you trust**, and paste the output |
-| `DEPLOY_HOST` | A **hostname**, not an IP — e.g. `droplet.prokopto.dev` | Add an A record pointing at the droplet |
+| `DEPLOY_HOST` | `nparseplugins.prokopto.dev` — a hostname, never an IP | The A record you already added |
 
 #### Use a hostname, and keyscan that same hostname
 
@@ -100,13 +100,15 @@ the natural reaction is to disable the check, which is the one thing that must n
 the same string you put in `DEPLOY_HOST`:
 
 ```bash
-ssh-keyscan -t ed25519 droplet.prokopto.dev
+ssh-keyscan -t ed25519 nparseplugins.prokopto.dev
 ```
 
-Prefer a host-specific record (`droplet.prokopto.dev`) over the service record
-(`nparseplugins.prokopto.dev`). They resolve to the same machine today, but the service name is
-something you may want to move to another host later — and SSH access following the service around
-is how a deploy ends up pointed at the wrong box.
+This droplet uses the **service record itself** — `nparseplugins.prokopto.dev` — for SSH as well as
+for HTTPS. One name, one record, nothing extra to maintain.
+
+The tradeoff to remember: if the registry is ever moved to a different host, `DEPLOY_HOST` and
+`DEPLOY_KNOWN_HOSTS` move with it, because SSH access follows the service name. Updating both at the
+same time as the A record is the whole of the discipline that requires.
 
 Belt and braces: a DigitalOcean **Reserved IP** attached to the droplet makes the address itself
 stable, so the A record only changes when you deliberately move it.

@@ -76,29 +76,42 @@ jobs:
           IMAGE_REF: ${{ steps.image.outputs.ref }}
         run: |
           set -euo pipefail
-          ssh -o StrictHostKeyChecking=yes "${USER_NAME}@${HOST}" bash -seu <<EOF
-            cd "${DEPLOY_PATH}"
+          # QUOTED heredoc, and values cross the wire as positional arguments to `bash -s`.
+          # An unquoted heredoc expands on the RUNNER, so a variable meant for the droplet gets
+          # eaten by the runner's own `set -u` before the script is ever sent. That is not a
+          # theoretical risk: it is what broke the first deploy, on `stamp`.
+          ssh -o StrictHostKeyChecking=yes "${USER_NAME}@${HOST}" \
+            bash -seuo pipefail -s -- "$DEPLOY_PATH" "$IMAGE_REF" <<'REMOTE'
+          deploy_path="$1"
+          image_ref="$2"
+          cd "$deploy_path"
 
-            # Snapshot before anything changes. Migrations are forward-only (ADR-0006), so this
-            # file is the only undo that exists. Taking it AFTER the pull would be taking it after
-            # the point of no return.
-            mkdir -p backups
-            stamp=\$(date -u +%Y%m%dT%H%M%SZ)
-            if docker compose ps -q regserve >/dev/null 2>&1; then
-              docker run --rm -v regserve_regserve-data:/data -v "\$PWD/backups:/backups" \
-                alpine:3 sh -c "cp /data/regserve.db /backups/pre-${stamp}.db" || \
-                echo "no database yet; nothing to snapshot"
-            fi
-            ls -1t backups/ | tail -n +11 | xargs -r -I{} rm -- "backups/{}"
+          # Snapshot before anything changes. Migrations are forward-only (ADR-0006), so this file
+          # is the only undo that exists. Taking it after the pull would be taking it after the
+          # point of no return.
+          mkdir -p backups
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          if docker volume inspect regserve_regserve-data >/dev/null 2>&1; then
+            docker run --rm \
+              -v regserve_regserve-data:/data \
+              -v "$PWD/backups:/backups" \
+              alpine:3 sh -c 'cp /data/regserve.db "/backups/pre-'"$stamp"'.db" 2>/dev/null' \
+              || echo "no database file yet; nothing to snapshot"
+          else
+            echo "no data volume yet; first deploy"
+          fi
+          ls -1t backups/ 2>/dev/null | tail -n +11 | while read -r old; do rm -f -- "backups/$old"; done
 
-            # Record the image being deployed so a manual \`docker compose up\` on the box brings up
-            # the same thing CI last shipped, rather than whatever :latest has become.
-            sed -i "s|^REGSERVE_IMAGE=.*|REGSERVE_IMAGE=${IMAGE_REF}|" .env
+          # Pin the exact image, so a manual `docker compose up` on the box brings up what CI last
+          # shipped rather than whatever :latest has become.
+          sed -i "s|^REGSERVE_IMAGE=.*|REGSERVE_IMAGE=${image_ref}|" .env
+          grep '^REGSERVE_IMAGE=' .env
 
-            docker compose pull regserve
-            docker compose up -d --remove-orphans regserve
-            docker image prune -f --filter "until=168h"
-          EOF
+          docker compose pull regserve
+          docker compose up -d --remove-orphans regserve
+          docker image prune -f --filter "until=168h"
+          docker compose ps
+          REMOTE
 
       - name: Verify the deployment is actually serving
         env:

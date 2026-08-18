@@ -45,37 +45,56 @@ services:
     security_opt:
       - no-new-privileges:true
     read_only: true
+    tmpfs:
+      # read_only makes / immutable, and SQLite needs scratch space for its rollback journal and
+      # for any query that spills to disk. Without this a write fails at runtime rather than at
+      # boot, which is the worst time to discover it.
+      - /tmp:size=64m
     cap_drop:
       - ALL
 
     labels:
       traefik.enable: "true"
-      traefik.docker.network: ${TRAEFIK_NETWORK:-traefik}
+      traefik.docker.network: ${TRAEFIK_NETWORK:-proxy}
 
+      # Two routers, matching the pattern already working for the other services on this droplet:
+      # a plain-HTTP router that only redirects, and a `-secure` router that terminates TLS.
+      #
+      # The entrypoint and certresolver NAMES are whatever the Traefik static config calls them —
+      # they are not standard. On this droplet they are `http`/`https` and a resolver named `http`.
+      # Naming a resolver that does not exist is silent: Traefik routes the host fine and simply
+      # never obtains a certificate, so it presents its self-signed default and every client sees a
+      # TLS error rather than anything pointing at the real cause.
+      traefik.http.routers.regserve.entrypoints: ${TRAEFIK_ENTRYPOINT_HTTP:-http}
       traefik.http.routers.regserve.rule: Host(`${REGSERVE_HOST}`)
-      traefik.http.routers.regserve.entrypoints: ${TRAEFIK_ENTRYPOINT:-websecure}
-      traefik.http.routers.regserve.tls: "true"
-      traefik.http.routers.regserve.tls.certresolver: ${TRAEFIK_CERTRESOLVER:-letsencrypt}
+      traefik.http.middlewares.regserve-https-redirect.redirectscheme.scheme: https
+      traefik.http.routers.regserve.middlewares: regserve-https-redirect
+
+      traefik.http.routers.regserve-secure.entrypoints: ${TRAEFIK_ENTRYPOINT_HTTPS:-https}
+      traefik.http.routers.regserve-secure.rule: Host(`${REGSERVE_HOST}`)
+      traefik.http.routers.regserve-secure.tls: "true"
+      traefik.http.routers.regserve-secure.tls.certresolver: ${TRAEFIK_CERTRESOLVER:-http}
+      traefik.http.routers.regserve-secure.service: regserve
+      traefik.http.routers.regserve-secure.middlewares: regserve-hsts
+
       traefik.http.services.regserve.loadbalancer.server.port: "8080"
 
-      # Traefik's own health view of the container. Without it a failed deploy keeps receiving
-      # traffic until somebody notices the 502s.
+      # Traefik's own health view. Without it a failed deploy keeps receiving traffic until
+      # somebody notices the 502s.
       traefik.http.services.regserve.loadbalancer.healthcheck.path: /healthz
       traefik.http.services.regserve.loadbalancer.healthcheck.interval: "30s"
 
-      # HSTS. The desktop client refuses non-https artifact URLs and so should the registry itself;
-      # this makes a downgrade fail at the browser rather than at our door.
+      # HSTS on the secure router only. Sending it over plain HTTP is meaningless and, on a shared
+      # parent domain, includeSubDomains from the wrong place can lock siblings out of http.
       traefik.http.middlewares.regserve-hsts.headers.stsSeconds: "31536000"
-      traefik.http.middlewares.regserve-hsts.headers.stsIncludeSubdomains: "true"
-      traefik.http.routers.regserve.middlewares: regserve-hsts
 
       # Watchtower, if you run it, must NOT touch this service: an unattended image swap can apply
-      # a migration to the only copy of the ownership records with nobody watching and no snapshot.
-      # Deploys are deliberate here (see .github/workflows/deploy.yml).
+      # a forward-only migration to the only copy of the ownership records with nobody watching and
+      # no snapshot taken. Deploys are deliberate here (.github/workflows/deploy.yml).
       com.centurylinklabs.watchtower.enable: "false"
 
     networks:
-      - traefik
+      - proxy
 
     logging:
       driver: json-file
@@ -87,6 +106,6 @@ volumes:
   regserve-data:
 
 networks:
-  traefik:
+  proxy:
     external: true
-    name: ${TRAEFIK_NETWORK:-traefik}
+    name: ${TRAEFIK_NETWORK:-proxy}
