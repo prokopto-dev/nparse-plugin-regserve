@@ -85,4 +85,28 @@ func (s *Static) Listing(_ context.Context, id core.PluginID) (registry.Plugin, 
 	return p, nil
 }
 
-var _ api.Catalogue = (*Static)(nil)
+// Ready reports whether this catalogue can still be rendered.
+//
+// It re-renders rather than returning a boolean captured at boot. A readiness probe that answers
+// from a flag set during startup cannot notice a catalogue that has since become unservable, and
+// once Phase 1 lets the catalogue be reloaded without a restart that gap is the whole failure:
+// /readyz would keep saying "ready" while /index.json returned 500.
+//
+// The error is returned verbatim to an unauthenticated caller by /readyz, so it must stay a
+// statement about the catalogue. registry's errors name plugin ids and nothing else, which are
+// public by definition.
+func (s *Static) Ready(ctx context.Context) error {
+	listings, err := s.Listings(ctx)
+	if err != nil {
+		return fmt.Errorf("read the catalogue: %w", err)
+	}
+	if _, err := registry.NewIndex(listings); err != nil {
+		return fmt.Errorf("render the catalogue: %w", err)
+	}
+	return nil
+}
+
+var (
+	_ api.Catalogue    = (*Static)(nil)
+	_ api.ReadyChecker = (*Static)(nil)
+)
