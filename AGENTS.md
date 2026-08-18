@@ -42,7 +42,7 @@ from it is vendored here at `internal/registry/testdata/index-v1.schema.json`.
 | `internal/api/` | Every HTTP route. Huma v2 registration, problem+json, ETag, idempotency |
 | `internal/authz/` | **The** catalogue — permissions and PAT scopes. Generates the DDL seed, the OpenAPI extensions, the scope enum and the docs page |
 | `internal/auth/` | PAT mint and verify, sessions, OAuth state and PKCE |
-| `internal/identity/{,discord,google,github}/` | Provider registry, credential dispatch, identity resolution |
+| `internal/identity/{,github}/` | Provider registry, credential dispatch, identity resolution. GitHub is the only provider ([ADR-0011](docs/adr/0011-github-is-the-only-identity-provider.md)) |
 | `internal/artifact/` | Artifact download and re-hash. Never extracts, never executes |
 | `internal/registry/` | schema-v1 index rendering. The wire format lives here and nowhere else |
 | `internal/plugin/`, `ownership/`, `moderation/` | Domain services |
@@ -94,8 +94,10 @@ Each has a mechanism. The mechanism is authoritative; this list is a description
   session-only and carry no scope at all. There is no `admin:*`.
 - **A new plugin id always gets human review.** Trust levels govern version bumps of an
   already-approved plugin, never the first appearance of an id.
-- **Only GitHub identities may publish.** Discord and Google are login-and-browse. This is a CHECK
-  against `identity_provider.kind`, not an operator toggle.
+- **Only GitHub identities may publish, and GitHub is the only provider.** This is a CHECK against
+  `identity_provider.kind`, not an operator toggle. The `(provider, subject)` model still holds any
+  number of providers; one ships. See
+  [ADR-0011](docs/adr/0011-github-is-the-only-identity-provider.md).
 
 ## Go idioms
 
@@ -137,7 +139,7 @@ mechanism.
 
 ## Security posture
 
-This service holds three OAuth client secrets, a token pepper, and every publisher's identity. It
+This service holds one OAuth client secret, a token pepper, and every publisher's identity. It
 also fetches URLs supplied by users, which is an SSRF surface by construction.
 
 - The artifact fetcher re-asserts `https` on **every** redirect hop, caps redirects, caps bytes

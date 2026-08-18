@@ -78,7 +78,7 @@ Enforced in the schema and by tests, not by convention.
 |---|---|
 | `audit_log` is append-only | `BEFORE UPDATE` and `BEFORE DELETE` triggers that `RAISE(ABORT)`; a test asserts each trigger fires |
 | A plugin id is never recycled | `id_claim` rows are never deleted; delisting clears the listing, not the claim. Unique index plus a test |
-| Only `github` identities may publish | `identity_provider.can_publish` is a `CHECK` against `kind`, not a column an operator sets |
+| Only `github` identities may publish | `identity_provider.can_publish` is a `CHECK` against `kind`, not a column an operator sets. `github` is also the *only* provider ([ADR-0011](../adr/0011-github-is-the-only-identity-provider.md)); the `CHECK` stays because a provider added later is non-publishing until someone argues otherwise |
 | A stored sha256 was computed by the server | `internal/artifact` returns the hash it computed. **Not yet built** — the enforcing test lands with the publish path in Phase 3, and until then this is a review rule wearing a table row's clothes |
 | Every release row keeps its history | No `DELETE` on `release` anywhere; superseding is a state change |
 | Migrations are forward-only | Every `Down` block is `RAISE(ABORT, …)`; gate `MIG002` |
