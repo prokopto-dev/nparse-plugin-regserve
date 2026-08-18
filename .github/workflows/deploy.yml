@@ -8,8 +8,9 @@
 # workflow ships alongside the image. Traefik already owns :443 and picks the new container up from
 # its labels, so there is no reverse-proxy step here.
 #
-# The split of what travels and what stays: the IMAGE and the COMPOSE FILE come from the release,
-# because both are tracked, non-secret and version-locked to each other. The `.env` stays on the
+# The split of what travels and what stays: the IMAGE and the COMPOSE FILE come from the release —
+# from the SAME COMMIT, which is why this workflow checks out the triggering release rather than
+# whatever the default branch has become while the deploy waited for approval. The `.env` stays on the
 # droplet, because it holds secrets and a secret routed through a pipeline is a secret in that
 # pipeline's logs, cache and every fork's pull-request context.
 #
@@ -30,6 +31,13 @@ on:
         description: "Image tag to deploy (e.g. 1.2.0, edge, sha-<full>)"
         required: true
         default: edge
+      source_ref:
+        description: >-
+          Commit or tag the image was built from. The compose file is taken from here, so it must
+          match image_tag: sha-<full> -> <full>, 1.2.0 -> v1.2.0. `edge` is built from the tip of
+          main, which moves — prefer sha-<full> for anything you care about being reproducible.
+        required: true
+        default: main
 
 permissions:
   contents: read
@@ -57,14 +65,72 @@ jobs:
       github.event.workflow_run.conclusion == 'success'
 
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
-
-      - name: Resolve the image reference
-        id: image
+      # Resolved BEFORE the checkout, because it decides what the checkout takes.
+      #
+      # The image and the compose file must come from ONE commit. A deploy waits for a human on the
+      # production environment, and `main` keeps moving while it waits — so checking out the default
+      # branch would stage a compose file from a release this image was never built for. It would
+      # not even look wrong: the run is green, the image is the pinned one, and the container comes
+      # up with flags, mounts or required variables from somewhere else entirely.
+      #
+      # Values are passed through `env:` rather than interpolated into the script, so a crafted
+      # dispatch input is data and never a line of shell.
+      - name: Resolve the image and the commit it was built from
+        id: release
+        env:
+          EVENT: ${{ github.event_name }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          INPUT_TAG: ${{ github.event.inputs.image_tag }}
+          INPUT_REF: ${{ github.event.inputs.source_ref }}
+          REPO: ${{ github.repository }}
         run: |
-          tag="${{ github.event.inputs.image_tag }}"
-          [ -n "$tag" ] || tag="sha-${{ github.event.workflow_run.head_sha }}"
-          echo "ref=ghcr.io/${{ github.repository }}:${tag}" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          if [ "$EVENT" = "workflow_run" ]; then
+            # The release that triggered this run. One commit, both values.
+            tag="sha-${RUN_SHA}"
+            ref="$RUN_SHA"
+          else
+            tag="$INPUT_TAG"
+            ref="$INPUT_REF"
+          fi
+          [ -n "$tag" ] || { echo "image tag is empty"; exit 1; }
+          [ -n "$ref" ] || { echo "source ref is empty"; exit 1; }
+          {
+            echo "tag=${tag}"
+            echo "source_ref=${ref}"
+            echo "image=ghcr.io/${REPO}:${tag}"
+          } >> "$GITHUB_OUTPUT"
+          echo "deploying ${tag} from ${ref}"
+
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: ${{ steps.release.outputs.source_ref }}
+
+      # Prove the pairing where it is provable. A `sha-<full>` tag names its own commit, so a
+      # mismatch here means the source ref was wrong and the compose file about to be shipped
+      # belongs to a different release. A moving tag like `edge` cannot be checked, and this says so
+      # rather than implying a guarantee it has not made.
+      - name: Assert the compose file and the image come from one commit
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          head="$(git rev-parse HEAD)"
+          case "$TAG" in
+            sha-*)
+              want="${TAG#sha-}"
+              if [ "$want" != "$head" ]; then
+                echo "FATAL: image was built from ${want} but compose.yaml would come from ${head}." >&2
+                echo "Re-run with source_ref=${want}." >&2
+                exit 1
+              fi
+              echo "image and compose.yaml are both from ${head}"
+              ;;
+            *)
+              echo "NOTE: ${TAG} is not a commit-derived tag, so the pairing cannot be verified."
+              echo "compose.yaml comes from ${head}"
+              ;;
+          esac
 
       - uses: webfactory/ssh-agent@e83874834305fe9a4a2997156cb26c5de65a8555 # v0.10.0
         with:
@@ -101,7 +167,7 @@ jobs:
           HOST: ${{ vars.REGSERVE_HOST }}
           USER_NAME: ${{ vars.DEPLOY_USER }}
           DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
-          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          IMAGE_REF: ${{ steps.release.outputs.image }}
         run: |
           set -euo pipefail
           # QUOTED heredoc, and values cross the wire as positional arguments to `bash -s`.
