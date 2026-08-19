@@ -30,17 +30,23 @@ from it is vendored here at `internal/registry/testdata/index-v1.schema.json`.
 - Additive fields are tolerated (pydantic ignores unknown keys). Renaming or removing one is not.
 - The rendered index must stay **under 5 MiB** and answer within **15 seconds** — those are the
   client's hard limits, not ours. `SIZE001` gates the first.
-- If you change what `internal/registry` emits, `SCHEMA001` is the test that decides whether you
-  were allowed to. Do not edit the vendored schema to make it pass; it is generated upstream by
+- If you change what `internal/registry` emits — **or anything between it and the socket** —
+  `SCHEMA001` is the test that decides whether you were allowed to. It runs a real server, makes a
+  real request, and validates the response bytes, so the HTTP layer is inside the gate rather than
+  downstream of it. Do not edit the vendored schema to make it pass; it is generated upstream by
   `tools/gen_registry_schema.py` in `nparse-plus` and copied here.
+- The index endpoints return their body as **raw bytes** that Huma writes verbatim
+  ([ADR-0012](docs/adr/0012-huma-v2-everywhere-with-the-index-bytes-pinned.md)). That is not an
+  oversight to tidy into a typed response body: a typed body would be marshalled by the framework,
+  which content-negotiates, escapes differently and can add members to the document.
 
 ## Where things are
 
 | Path | Holds |
 |---|---|
 | `cmd/regserve/` | The only binary. Cobra wiring, no logic |
-| `internal/api/` | Every HTTP route. problem+json today; Huma v2 registration, ETag and idempotency are the intended shape (canonical §6) and are not built yet |
-| `internal/authz/` | **The** catalogue — permissions and PAT scopes. Generates the DDL seed, the OpenAPI extensions, the scope enum and the docs page |
+| `internal/api/` | Every HTTP route, registered with Huma v2 ([ADR-0012](docs/adr/0012-huma-v2-everywhere-with-the-index-bytes-pinned.md)). `routes.go` holds the only registration helper, and its signature demands an access declaration. ETag and idempotency (canonical §6) are not built yet |
+| `internal/authz/` | **The** catalogue — permissions and PAT scopes. Generates the DDL seed, the OpenAPI extensions, the scope enum and the docs page. Today it holds only the two types the route registry declares against; the catalogue itself lands in Phase 2 |
 | `internal/auth/` | PAT mint and verify, sessions, OAuth state and PKCE |
 | `internal/identity/{,github}/` | Provider registry, credential dispatch, identity resolution. GitHub is the only provider ([ADR-0011](docs/adr/0011-github-is-the-only-identity-provider.md)) |
 | `internal/artifact/` | Artifact download and re-hash. Never extracts, never executes |
@@ -67,12 +73,18 @@ Each has a mechanism. The mechanism is authoritative; this list is a description
    fetch artifacts to hash them; the reason is recorded in `docs/concepts/invariants.md` so the
    widening stays deliberate.
 4. **`internal/registry` is the only package that knows the wire format.** No other package may
-   marshal a `schema_version`, a `latest` object, or anything else a client parses. `SCHEMA001`
-   validates its output against the vendored schema.
+   marshal a `schema_version`, a `latest` object, or anything else a client parses. `SCHEMA002`
+   enforces that; `SCHEMA001` validates the bytes of a real HTTP **response** against the vendored
+   schema, so what leaves the server is what is checked — not the renderer's return value on its
+   way there.
 5. **`time.Now` appears only in `internal/clock`.** `CLOCK001`, an AST analyser, so an aliased
    import does not defeat it.
 6. **Every operation declares `Security` and `x-regserve-permission`.** Coverage is derived from the
-   route registry, so a new uncovered route is a red test, not a missing one.
+   route registry, so a new uncovered route is a red test, not a missing one. `PERM001` walks the
+   OpenAPI document `api.Spec()` generates from the same registration code the server runs, so an
+   operation cannot be in one and not the other; `OAPI001` pins the `OperationID`s, which are SDK
+   method names and therefore public API. Register through `register()` in `internal/api/routes.go`
+   and pass an `Access` — `Public()`, `Requires()` or `Floor()`. There is no overload that omits it.
 
 ## Non-negotiable invariants
 
@@ -172,7 +184,9 @@ the PR body instead. Filing is expected, not noise.
 
 - Do not edit generated files (`internal/store/sqlitegen/`, `openapi/openapi.json`,
   `db/migrations-sqlite/`). Change the source and run `make gen`. Gate `GEN001` regenerates in CI
-  and fails on any diff, so a hand-edit is caught rather than reviewed for.
+  and fails on any diff, so a hand-edit is caught rather than reviewed for. `openapi/openapi.json`
+  is generated from the route registry by the binary itself: `make gen-openapi` needs no toolchain
+  beyond Go.
 - Do not edit a migration that has shipped in a tagged release. Write a new one.
 - Do not edit `internal/registry/testdata/index-v1.schema.json` to make a test pass. It is generated
   upstream; a mismatch means the renderer is wrong, not the schema.
@@ -201,7 +215,8 @@ as gates that no longer exist. If you want one back, add the gate and register i
 make help      # every target, documented
 make status    # what is still stubbed — derived from notyet call sites, never hand-maintained
 make check     # what CI runs
-make gen       # regenerate the scope catalogue, OpenAPI and sqlc bindings
+make gen       # regenerate the OpenAPI document and the sqlc bindings
+make gen-openapi  # the OpenAPI document alone; needs no generator toolchain
 ```
 
 Commits are signed off (`git commit -s`, DCO). Conventional Commits are enforced on the **PR title
