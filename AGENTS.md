@@ -171,7 +171,8 @@ the PR body instead. Filing is expected, not noise.
 ## Do not
 
 - Do not edit generated files (`internal/store/sqlitegen/`, `openapi/openapi.json`,
-  `db/migrations-sqlite/`). Change the source and run `make gen`.
+  `db/migrations-sqlite/`). Change the source and run `make gen`. Gate `GEN001` regenerates in CI
+  and fails on any diff, so a hand-edit is caught rather than reviewed for.
 - Do not edit a migration that has shipped in a tagged release. Write a new one.
 - Do not edit `internal/registry/testdata/index-v1.schema.json` to make a test pass. It is generated
   upstream; a mismatch means the renderer is wrong, not the schema.
@@ -185,10 +186,13 @@ the PR body instead. Filing is expected, not noise.
 only remaining `deny` entries are reads of `.env`, keys and database files. Editing a generated file
 or `go.mod` asks first — a question, not a wall, and `go get` rewrites `go.mod` without ever reaching
 that question. `git push`, `git tag`, `gh release`, `docker push` and `go mod tidy` run unprompted.
-Exactly one rule above still has a mechanism: `MIG003`, which hashes shipped migrations against
-`db/SHIPPED.lock`. The rest are honour rules, and by this file's own governing rule that makes them
-wishes — so they are recorded here as what they are rather than as gates that no longer exist. If
-you want one back, add the gate and register it in
+Three of the rules above now have mechanisms. `MIG003` hashes shipped migrations against
+`db/SHIPPED.lock`; `MIG004` refuses to build a release image for a `v*` tag whose migrations were
+never frozen into that file, which is what stopped `MIG003` from reporting `vacant` forever; and
+`GEN001` regenerates with the pinned sqlc and Atlas and fails on any diff, so "do not edit a
+generated file" is enforced rather than requested. The rest are honour rules, and by this file's
+own governing rule that makes them wishes — so they are recorded here as what they are rather than
+as gates that no longer exist. If you want one back, add the gate and register it in
 [`docs/concepts/invariants.md`](docs/concepts/invariants.md).
 
 ## Working on it

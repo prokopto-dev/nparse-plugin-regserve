@@ -21,6 +21,13 @@ BUILD_DIR := ./bin
 # production database lives on a volume and is migrated by the server at boot, not from a laptop.
 DB        ?= ./regserve.db
 
+# The generators, pinned. ONE source of truth: `make tools` installs exactly these and CI runs
+# `make tools`, so the version that produced the checked-in code and the version CI regenerates
+# with cannot drift apart (gate GEN001, issue #12). Bumping either is a deliberate change whose
+# diff is the regenerated output.
+SQLC_VERSION  ?= v1.31.1
+ATLAS_VERSION ?= v1.3.0
+
 # notyet <phase> <what> — a target that is declared but not yet implemented.
 # No leading '@': call sites add it, so this also works inside shell if/else blocks.
 #
@@ -96,7 +103,7 @@ lint-go:
 	@if command -v golangci-lint >/dev/null 2>&1; then golangci-lint config verify && golangci-lint run; \
 	 else printf '\033[33m  skipped\033[0m  golangci-lint is not on PATH; CI runs it (see .golangci.yml)\n'; fi
 
-## lint-repo: file-shape gates (PIN001, MIG002, MIG003); the Go gates run under `make test`
+## lint-repo: file-shape gates (PIN001, MIG002, MIG003, MIG004); the Go gates run under `make test`
 .PHONY: lint-repo
 lint-repo:
 	@bash scripts/repo-gates.sh
@@ -119,14 +126,14 @@ test:
 ## gen: regenerate the scope catalogue, OpenAPI document and sqlc bindings
 .PHONY: gen
 gen:
-	@$(call require,sqlc,db/queries is typed into internal/store/sqlitegen by it — install: go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1)
+	@$(call require,sqlc,db/queries is typed into internal/store/sqlitegen by it — install it with: make tools)
 	sqlc generate
 	@$(call notyet,Phase 2,the authz scope catalogue and the OpenAPI document)
 
 ## migration: author a migration from db/schema.hcl with Atlas (NAME=<snake_case>)
 .PHONY: migration
 migration:
-	@$(call require,atlas,db/schema.hcl is diffed into a migration by it — install: curl -sSf https://atlasgo.sh | sh)
+	@$(call require,atlas,db/schema.hcl is diffed into a migration by it — install it with: make tools)
 	@[ -n "$(NAME)" ] || { printf 'NAME is required: make migration NAME=add_something\n'; exit 2; }
 	atlas migrate diff $(NAME) --dir "file://db/migrations-sqlite" --dir-format goose \
 	  --dev-url "sqlite://dev?mode=memory" --to "file://db/schema.hcl"
@@ -150,6 +157,40 @@ seed:
 .PHONY: docker
 docker:
 	@$(call notyet,Phase 4,docker buildx build -f deploy/Dockerfile)
+
+## tools: install the pinned code generators (sqlc, atlas)
+#
+# Into $(GOBIN), which actions/setup-go already puts on PATH, so this works identically on a laptop
+# and on a runner. Pinned rather than "latest": a generator that changes under you rewrites checked-in
+# code in a PR that touched none of it, and the reviewer has no way to tell that from real drift.
+.PHONY: tools
+tools:
+	$(GO) install github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
+	@bin="$$($(GO) env GOPATH)/bin"; \
+	 os=$$(uname -s | tr '[:upper:]' '[:lower:]'); \
+	 arch=$$(uname -m); case "$$arch" in x86_64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; esac; \
+	 mkdir -p "$$bin"; \
+	 curl -fsSL -o "$$bin/atlas" "https://release.ariga.io/atlas/atlas-$$os-$$arch-$(ATLAS_VERSION)"; \
+	 chmod +x "$$bin/atlas"; \
+	 printf 'installed %s and atlas %s into %s\n' "$(SQLC_VERSION)" "$(ATLAS_VERSION)" "$$bin"
+
+## gen-check: fail if generated code or db/schema.hcl drifted from their source (GEN001)
+#
+# Not part of `make check`: it needs the generators on PATH, and `make check` must stay runnable on
+# a toolchain-free machine. CI runs it as its own job (issue #12).
+.PHONY: gen-check
+gen-check:
+	@$(call require,sqlc,GEN001 regenerates the bindings to compare them — install it with: make tools)
+	@$(call require,atlas,GEN001 re-diffs db/schema.hcl to compare it — install it with: make tools)
+	@bash scripts/gen-check.sh
+
+## freeze-migrations: record the migrations a release ships in db/SHIPPED.lock (MIG004)
+#
+# Run this, commit the result, THEN tag. Gate MIG004 refuses to build a release image for a tag
+# whose migrations are not in the lock file.
+.PHONY: freeze-migrations
+freeze-migrations:
+	@bash scripts/freeze-migrations.sh
 
 ## check: everything CI runs
 .PHONY: check

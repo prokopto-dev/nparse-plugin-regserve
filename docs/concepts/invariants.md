@@ -4,13 +4,17 @@
 enforces it. A rule with no mechanism belongs in the "review rules" section at the bottom, honestly
 labelled, not in the table pretending to be enforced.
 
-Gates live in three places, and which one a gate belongs in is decided by what it has to read:
+Gates live in four places, and which one a gate belongs in is decided by what it has to read:
 
 - **`test/repo/arch_test.go`** — anything about Go source. These parse the tree with `go/ast`. A
   grep matches the rule's own name inside the comment explaining the rule, and a grep for
   `time.Now` misses `clk "time"` followed by `clk.Now()`. Both happened here.
 - **`scripts/repo-gates.sh`** — files Go cannot parse: workflow YAML, migration SQL.
 - **`scripts/docs-check.sh`** — documentation shape.
+- **`scripts/gen-check.sh`** — the generators themselves. Separate because it is the only gate
+  needing a toolchain (`make tools`), and `make check` must stay runnable without one. CI runs it
+  as its own job; a gate that skips when its tools are missing would report success for a
+  regeneration that never happened.
 
 `make check` runs all three. Each also asserts it is not **vacant**: a gate that inspected nothing
 fails rather than reporting a green tick it has not earned.
@@ -29,6 +33,8 @@ A green run that checked nothing is worse than a red one, because it teaches peo
 | `PIN001` | Every GitHub Action is pinned to a 40-character SHA | Grep over `.github/workflows/` |
 | `MIG002` | Migrations are forward-only; every `Down` block aborts | Each migration's `Down` block must contain `RAISE(ABORT, …)` |
 | `MIG003` | A migration that has shipped is never edited | sha256 of each file compared against `db/SHIPPED.lock` |
+| `MIG004` | A tagged release never ships a migration that is not frozen | `scripts/freeze-migrations.sh --check`, run by `lint-repo` on a `v*` commit and by the release workflow before the image builds |
+| `GEN001` | Checked-in generated code matches the source it is generated from | `scripts/gen-check.sh` regenerates with the pinned sqlc and Atlas and fails on any diff |
 
 ## Wire-format gates
 

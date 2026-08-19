@@ -51,6 +51,26 @@ jobs:
       - run: make build
       - run: make test
 
+  # GEN001 — checked-in generated code matches its source (issue #12).
+  #
+  # Its own job because it needs sqlc and Atlas, and `make check` has to stay runnable on a machine
+  # with neither: a gate that quietly skips when its toolchain is absent is a gate that reports
+  # success for a regeneration that never happened. The `go` job stays fast and toolchain-free.
+  #
+  # `make tools` installs the versions the Makefile pins, so the generator CI regenerates with and
+  # the one that produced the checked-in code cannot be different.
+  generated:
+    name: check / generated
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+      - run: make tools
+      - run: make gen-check
+
   golangci:
     name: lint / go
     runs-on: ubuntu-24.04
@@ -68,7 +88,7 @@ jobs:
   ci-required:
     name: ci-required
     runs-on: ubuntu-24.04
-    needs: [repo, go, golangci]
+    needs: [repo, go, generated, golangci]
     if: always()
     steps:
       - name: Fail if any required job did not succeed
