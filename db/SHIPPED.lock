@@ -8,9 +8,17 @@
 # THERE ARE NO ENTRIES YET, because no release has been tagged. Everything in
 # db/migrations-sqlite/ is still editable, and MIG003 reports itself vacant rather than passing.
 #
-# When a release is tagged, freeze what went out in it:
+# Freeze what a release ships BEFORE tagging it:
 #
-#     shasum -a 256 db/migrations-sqlite/*.sql >> db/SHIPPED.lock
+#     make freeze-migrations
+#     git add db/SHIPPED.lock && git commit -s -m 'chore(db): freeze shipped migrations'
+#     git tag -s vX.Y.Z
 #
-# The format is one `<sha256>  <path>` line per file, which is what shasum already writes. Lines
-# starting with # are ignored.
+# That order is not advice. Gate MIG004 refuses to build a release image for a `v*` tag whose
+# migrations are not listed here, so a release that skipped the freeze fails instead of shipping
+# with MIG003 comparing nothing. Previously this file documented the one-liner
+# `shasum -a 256 db/migrations-sqlite/*.sql >> db/SHIPPED.lock` and nothing ran it — a rule whose
+# mechanism is "somebody remembers on release day" (issue #14).
+#
+# The format is one `<sha256>  <path>` line per file, which is what shasum already writes, so a
+# hand-appended line and a generated one are the same thing. Lines starting with # are ignored.

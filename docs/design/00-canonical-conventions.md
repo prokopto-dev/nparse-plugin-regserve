@@ -108,9 +108,11 @@ three cases against the route registry.
 - Migrations are **forward-only**. Every `Down` block is `RAISE(ABORT, …)` naming the backup path.
   Recovery is restoring the snapshot taken immediately before the migration ran.
 - A migration that has shipped in a tagged release is never edited. `db/SHIPPED.lock` freezes them
-  by sha256; gate `MIG003`.
+  by sha256; gate `MIG003`. `make freeze-migrations` writes that file and gate `MIG004` refuses to
+  build a release image for a tag that skipped it.
 - Raw SQL lives in `db/queries/*.sql` and is typed by sqlc into `internal/store/sqlitegen/`. Never
-  hand-edit generated code; never write SQL elsewhere.
+  hand-edit generated code; never write SQL elsewhere. Gate `GEN001` regenerates both with the
+  pinned generators (`make tools`) and fails on any diff.
 - Mutations go through `store.Tx`, which hands the callback a `store.Queries` and never a `*sql.Tx`.
 - Reads go through `store.Read()`, whose connections are `PRAGMA query_only`. The writer is a single
   connection with `_txlock=immediate` ([ADR-0001](../adr/0001-go-single-binary-and-sqlite.md)).

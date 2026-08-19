@@ -31,7 +31,9 @@ be reproduced, written months earlier by someone who never tested it. Recovery i
 snapshot taken immediately before the migration ran.
 
 A migration that has shipped in a tagged release is never edited; `db/SHIPPED.lock` freezes them by
-sha256 and gate `MIG003` fails the build if one changes.
+sha256 and gate `MIG003` fails the build if one changes. `make freeze-migrations` is what writes
+that file, and gate `MIG004` refuses to build a release image for a `v*` tag whose migrations are
+not in it — without that, the lock stays empty and `MIG003` compares nothing forever.
 
 ### Consequences
 

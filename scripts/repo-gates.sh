@@ -79,4 +79,29 @@ else
   vacant MIG003 "shipped migrations frozen by db/SHIPPED.lock"
 fi
 
+# --- MIG004 — a tagged release never ships an unfrozen migration -------------------------------
+# MIG003 freezes what the lock file LISTS. This is the gate that makes sure everything is listed,
+# at the one moment it matters: the commit a `v*` tag points at. Without it the lock stays empty,
+# MIG003 reports `vacant` through the first release and every one after it, and the freeze nobody
+# performed is indistinguishable from a freeze that had nothing to do (issue #14).
+#
+# Off a release commit this reports vacant rather than a tick it has not earned — a migration is
+# legitimately editable right up until the tag that ships it. The release workflow runs the same
+# check directly, because a shallow CI checkout may carry no tags for `git tag` to find.
+if compgen -G "db/migrations-sqlite/*.sql" >/dev/null; then
+  release_tag=$(git tag --points-at HEAD 2>/dev/null | grep -E '^v' | head -1)
+  if [ -n "${release_tag:-}" ]; then
+    if out=$(bash scripts/freeze-migrations.sh --check 2>&1); then
+      pass MIG004 "every migration is frozen in db/SHIPPED.lock for $release_tag"
+    else
+      report MIG004 "$release_tag is not safe to ship; see the finding below"
+      printf '%s\n' "$out"
+    fi
+  else
+    vacant MIG004 "migrations frozen in db/SHIPPED.lock before a tagged release"
+  fi
+else
+  vacant MIG004 "migrations frozen in db/SHIPPED.lock before a tagged release"
+fi
+
 exit $fail

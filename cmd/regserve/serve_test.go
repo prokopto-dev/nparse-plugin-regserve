@@ -2,15 +2,21 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/api"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/clock"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/plugin"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/registry"
@@ -321,4 +327,136 @@ func TestServe_DatabasePath_FlagBeatsEnvironment(t *testing.T) {
 		require.ErrorContains(t, err, fromFlag)
 		require.NotContains(t, err.Error(), fromEnv)
 	})
+}
+
+// --- first boot ------------------------------------------------------------------------------
+
+// dialAttemptWindow bounds the wait for the listener. Generous because it only elapses when the
+// server never comes up at all, and short enough that a wedged boot fails the suite rather than
+// hanging CI until the job timeout.
+const dialAttemptWindow = 15 * time.Second
+
+// reservePort asks the kernel for a free port and closes it again.
+//
+// runServe opens its own listener; the point is to know the address BEFORE it does, because the
+// assertion below has to be racing the boot rather than following it.
+func reservePort(ctx context.Context, t *testing.T) string {
+	t.Helper()
+
+	var lc net.ListenConfig
+	ln, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := ln.Addr().String()
+	require.NoError(t, ln.Close())
+	return addr
+}
+
+// waitForAccept returns at the first instant a TCP connection to addr succeeds.
+//
+// No sleep between attempts, deliberately. Sleeping would hand the server time to finish booting
+// and the test would then assert against a settled process — which is the one state nobody needed
+// a test for. The whole value here is arriving as early as a client possibly can.
+func waitForAccept(ctx context.Context, t *testing.T, addr string) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(ctx, dialAttemptWindow)
+	defer cancel()
+
+	var d net.Dialer
+	for ctx.Err() == nil {
+		conn, err := d.DialContext(ctx, "tcp", addr)
+		if err != nil {
+			continue
+		}
+		require.NoError(t, conn.Close())
+		return
+	}
+	t.Fatalf("the server never accepted a connection on %s", addr)
+}
+
+// statusOf performs one GET and returns the status code.
+func statusOf(ctx context.Context, t *testing.T, addr, path string) int {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+path, nil)
+	require.NoError(t, err)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, resp.Body.Close()) }()
+
+	_, err = io.Copy(io.Discard, resp.Body)
+	require.NoError(t, err)
+	return resp.StatusCode
+}
+
+// TestServe_FirstBoot_EveryRouteAnswersTheInstantThePortAccepts — the first-boot ordering, pinned.
+//
+// The Phase 1 deploy (run 32193784028, attempt 1) failed verification with a 404 roughly one second
+// after the container started, and the first explanation offered was that this window exists: the
+// listener accepting while the catalogue is still being built, so `cfg.Catalogue` is nil, so
+// registerIndex was never called and /index.json 404s.
+//
+// That window does not exist. runServe migrates, imports the seed and builds the catalogue before
+// it constructs the handler, and constructs the handler before ListenAndServe — so by the time
+// anything can connect, every route is registered. But that ordering is a property of one
+// function, invisible at every call site, and reordering it would break no other test in this
+// suite. It is asserted here at the earliest moment it is observable: the instant the port accepts
+// a connection, every route the deploy checks must already answer.
+//
+// The database file is a path that does not exist yet, which is what a fresh volume is.
+func TestServe_FirstBoot_EveryRouteAnswersTheInstantThePortAccepts(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	addr := reservePort(ctx, t)
+	dbPath := filepath.Join(t.TempDir(), "regserve.db")
+	seedPath := writeSeed(t, marshalSeed(t, registry.SchemaVersion, validPlugin()))
+
+	done := make(chan error, 1)
+	go func() { done <- runServe(ctx, addr, dbPath, seedPath) }()
+
+	waitForAccept(ctx, t, addr)
+
+	// Exactly the three the deploy's verify step fetches, in the order it fetches them.
+	for _, path := range []string{"/healthz", "/readyz", "/index.json"} {
+		require.Equal(t, http.StatusOK, statusOf(ctx, t, addr, path),
+			"%s must answer the instant the listener accepts: the deploy checks it one second "+
+				"after the container starts, and a 404 there is what sent Phase 1 red", path)
+	}
+
+	cancel()
+	require.NoError(t, <-done)
+}
+
+// TestServe_NoCatalogue_ReadyzExplainsRatherThanVanishing — the signature a nil catalogue actually
+// produces, pinned because a deploy failure was diagnosed with it.
+//
+// When run 32193784028 answered /healthz and then 404'd, the question was whether the application
+// had come up without a catalogue or the edge had not finished routing to it. That was answerable
+// only because the two look different from outside: a nil catalogue leaves /index.json
+// unregistered (404) while /readyz stays registered and answers 503 WITH A REASON. A 404 on
+// /readyz is not a response this binary can produce, so a 404 there means the request never
+// reached it — which is how the 404 was traced to the proxy rather than the server.
+//
+// If /readyz ever becomes conditional too, that inference stops holding and the next deploy
+// failure is unreadable from its log. This is the test that says so.
+func TestServe_NoCatalogue_ReadyzExplainsRatherThanVanishing(t *testing.T) {
+	t.Parallel()
+
+	// The configuration runServe builds when the database could not be opened: readiness is
+	// always supplied, the catalogue is not.
+	srv := httptest.NewServer(api.New(api.Config{Readiness: readiness{reason: errNoDatabase}}))
+	defer srv.Close()
+
+	addr := strings.TrimPrefix(srv.URL, "http://")
+
+	require.Equal(t, http.StatusOK, statusOf(t.Context(), t, addr, "/healthz"),
+		"liveness never depends on the database")
+	require.Equal(t, http.StatusServiceUnavailable, statusOf(t.Context(), t, addr, "/readyz"),
+		"a nil catalogue must answer 503 and say why; 404 here would mean the route is gone")
+	require.Equal(t, http.StatusNotFound, statusOf(t.Context(), t, addr, "/index.json"),
+		"a route that exists but cannot work is worse than an honest 404")
 }
