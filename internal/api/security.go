@@ -1,0 +1,205 @@
+package api
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+	"strings"
+
+	"github.com/danielgtaylor/huma/v2"
+
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/auth"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/authz"
+)
+
+// Authenticator resolves whatever credential a request carried into a principal.
+//
+// A consumer-declared interface, like Catalogue: internal/api describes what it needs and the
+// wiring supplies it. What it deliberately does NOT describe is which credential kinds exist —
+// Resolve takes both and decides, so adding personal access tokens is a change in one package
+// rather than a new method every implementation has to grow.
+type Authenticator interface {
+	Resolve(ctx context.Context, creds auth.Credentials) (auth.Principal, error)
+}
+
+// principalKey is the context key the middleware stores the resolved principal under. It is an
+// unexported struct type so nothing outside this package can write one, which is the difference
+// between "the middleware decided who you are" and "somebody set a value".
+type principalKey struct{}
+
+// PrincipalFrom returns the principal the middleware resolved for this request.
+//
+// The boolean is second so that ignoring it cannot compile into a handler acting as an empty
+// account. A handler for an authenticated operation can rely on it being present: the middleware
+// answers 401 before the handler runs, so `false` there means the route was declared public.
+func PrincipalFrom(ctx context.Context) (auth.Principal, bool) {
+	p, ok := ctx.Value(principalKey{}).(auth.Principal)
+	return p, ok
+}
+
+// metaAccess is the Metadata key register() stores the Access under.
+//
+// Metadata rather than Extensions because Metadata is NOT serialised into the OpenAPI document:
+// the extensions are the public description of the rule and this is the rule itself, read back by
+// the middleware that enforces it. One declaration, rendered for readers and executed for callers,
+// so the document cannot describe an access rule the server does not apply.
+const metaAccess = "regserve.access"
+
+// authMiddleware enforces the Access every operation declared.
+//
+// It is the other half of law 6. PERM001 asserts that every operation DECLARES who may call it;
+// this is what makes the declaration do something. Enforcing from the same value the document is
+// rendered from means "the spec says a session is required" and "the server requires a session"
+// cannot drift apart — there is one value and two readers.
+func authMiddleware(api huma.API, authn Authenticator) func(huma.Context, func(huma.Context)) {
+	return func(ctx huma.Context, next func(huma.Context)) {
+		// A token in a query string is rejected with 401, no exception (canonical §6). Query
+		// strings land in access logs, proxy logs and browser history, so a token that appears in
+		// one is already leaked — answering 401 is what stops it also being useful. This runs
+		// before the public check on purpose: a leaked token is a leaked token whatever route it
+		// was sent to.
+		if tokenInQuery(ctx) {
+			writeProblem(api, ctx, http.StatusUnauthorized,
+				"a token in a query string is never accepted; send it as an Authorization header")
+			return
+		}
+
+		access, ok := accessFor(ctx)
+		if !ok {
+			// Unreachable through register(), which always sets it. Refusing rather than allowing
+			// is the only safe reading of "this route did not say who may call it".
+			slog.ErrorContext(ctx.Context(), "operation carries no access declaration",
+				"operation", operationID(ctx))
+			writeProblem(api, ctx, http.StatusInternalServerError, "")
+			return
+		}
+		if access.public {
+			next(ctx)
+			return
+		}
+
+		if authn == nil {
+			// An authenticated route registered on a build with no way to authenticate is a wiring
+			// bug, not a client error. It is a 503 rather than a 500 because the honest statement
+			// is "this instance cannot serve this yet".
+			writeProblem(api, ctx, http.StatusServiceUnavailable,
+				"this instance is not configured to authenticate requests")
+			return
+		}
+
+		principal, err := authn.Resolve(ctx.Context(), credentialsFrom(ctx))
+		switch {
+		case errors.Is(err, auth.ErrNoCredential):
+			writeProblem(api, ctx, http.StatusUnauthorized,
+				"this operation needs a signed-in session or a personal access token")
+			return
+		case errors.Is(err, auth.ErrCredentialRejected):
+			// One message for expired, revoked, unknown and disabled. Distinguishing them would
+			// tell a holder whether the value they have was ever real.
+			writeProblem(api, ctx, http.StatusUnauthorized,
+				"the credential presented was not accepted")
+			return
+		case err != nil:
+			slog.ErrorContext(ctx.Context(), "resolve the request credential", "error", err)
+			writeProblem(api, ctx, http.StatusInternalServerError, "")
+			return
+		}
+
+		if detail, denied := access.deny(principal); denied {
+			writeProblem(api, ctx, http.StatusForbidden, detail)
+			return
+		}
+
+		next(huma.WithValue(ctx, principalKey{}, principal))
+	}
+}
+
+// deny reports why a resolved principal may not perform this operation, and whether it may not.
+//
+// It lives on Access so that the rule and its rendering are the same object. The capability floor
+// is checked BEFORE the scopes: "no token may ever do this" is not a scope that has not been
+// granted, and a 403 that suggests minting a better-scoped token would be advice to do something
+// impossible.
+func (a Access) deny(p auth.Principal) (string, bool) {
+	if !p.ViaToken() {
+		// A session is the account. Per-plugin ownership is checked by the handler at the moment
+		// of the change (ADR-0005), not here — this layer answers "may this credential act at
+		// all", and the handler answers "on this plugin".
+		return "", false
+	}
+	if a.patForbidden {
+		return "this operation is session-only: a token that could perform it would be equivalent " +
+			"to the account, so no token carries it however it is scoped", true
+	}
+	if !authz.Satisfies(a.permission, p.Scopes) {
+		return "this token does not carry a scope that grants " + a.permission.String(), true
+	}
+	return "", false
+}
+
+// credentialsFrom reads whatever the request presented. It never logs either value.
+func credentialsFrom(ctx huma.Context) auth.Credentials {
+	var creds auth.Credentials
+	if c, err := huma.ReadCookie(ctx, auth.SessionCookieName); err == nil {
+		creds.SessionCookie = c.Value
+	}
+	if h := ctx.Header("Authorization"); h != "" {
+		if rest, ok := strings.CutPrefix(h, "Bearer "); ok {
+			creds.BearerToken = strings.TrimSpace(rest)
+		}
+	}
+	return creds
+}
+
+// tokenInQuery reports whether any query parameter carries something shaped like a PAT.
+//
+// It matches on the token's own prefix rather than on parameter names: `?access_token=` is the
+// spelling people expect, but the rule is about the VALUE being in a URL, and a token sent as
+// `?t=` is in exactly as many logs.
+func tokenInQuery(ctx huma.Context) bool {
+	u := ctx.URL()
+	if !strings.Contains(u.RawQuery, auth.TokenPrefix) {
+		return false
+	}
+	for _, values := range u.Query() {
+		for _, v := range values {
+			if strings.HasPrefix(v, auth.TokenPrefix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func accessFor(ctx huma.Context) (Access, bool) {
+	op := ctx.Operation()
+	if op == nil || op.Metadata == nil {
+		return Access{}, false
+	}
+	a, ok := op.Metadata[metaAccess].(Access)
+	return a, ok
+}
+
+func operationID(ctx huma.Context) string {
+	if op := ctx.Operation(); op != nil {
+		return op.OperationID
+	}
+	return ""
+}
+
+// writeProblem writes one of the closed-enum problem documents from middleware.
+//
+// It goes through huma.WriteErr, which goes through huma.NewError, which errors.go has replaced
+// with *Problem — so a refusal raised here is the same document, with the same `code` member and
+// the same `application/problem+json` type, as one a handler returns. Two shapes of error response
+// would mean a client needs two parsers to find out it is not signed in.
+//
+// The `code` is NOT passed: codeForStatus is the one mapping from a status to the closed enum, and
+// letting middleware choose its own would be a second place where 403 decides what it means. A
+// detail is ignored for 5xx by design — see detailFor.
+func writeProblem(api huma.API, ctx huma.Context, status int, detail string) {
+	if err := huma.WriteErr(api, ctx, status, detail); err != nil {
+		slog.ErrorContext(ctx.Context(), "write the problem document", "error", err)
+	}
+}

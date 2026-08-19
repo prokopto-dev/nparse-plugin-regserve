@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -13,7 +15,12 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/api"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/auth"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/clock"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/core"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/identity"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/identity/github"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/identity/guard"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/plugin"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/store"
 )
@@ -33,6 +40,23 @@ const (
 const (
 	envSeedPath = "REGSERVE_SEED_PATH"
 	envDBPath   = "REGSERVE_DB_PATH"
+)
+
+// The identity configuration. All of it comes from the environment and none of it from a flag:
+// these are secrets, and a secret on a command line is a secret in `ps`, in the shell history and
+// in the container's inspect output.
+const (
+	// envPublicURL is the absolute base this service is reached at. It is what the OAuth callback
+	// URL is built from, so it has to match the OAuth App's registration exactly.
+	envPublicURL = "REGSERVE_PUBLIC_URL"
+
+	// envTokenPepper keys every credential hash in the database (canonical §10). Rotating it
+	// invalidates every session and every issued token, because the stored value is
+	// HMAC-SHA256(pepper, secret) and nothing can re-derive the input.
+	envTokenPepper = "REGSERVE_TOKEN_PEPPER" //nolint:gosec // G101: the name of a variable, not a credential
+
+	envGitHubClientID     = "REGSERVE_GITHUB_CLIENT_ID"
+	envGitHubClientSecret = "REGSERVE_GITHUB_CLIENT_SECRET" //nolint:gosec // G101: as above
 )
 
 // The two reasons /readyz reports when there is no catalogue behind it.
@@ -127,6 +151,14 @@ func runServe(ctx context.Context, addr, dbPath, seedPath string) error {
 		}
 		cfg.Catalogue = cat
 		ready.cat = cat
+
+		// Sign-in is configured or it is not, and a half-configured one is fatal. See
+		// configureIdentity: an operator who has set a client id has asked for this to work, and a
+		// server that starts anyway and serves no sign-in page is a server they will debug from
+		// the outside for an hour.
+		if err := configureIdentity(ctx, &cfg, db, clk); err != nil {
+			return err
+		}
 	}
 
 	// Readiness is registered either way. An instance with no catalogue is not a build that lacks
@@ -243,4 +275,83 @@ func prepareCatalogue(
 	}
 
 	return cat, nil
+}
+
+// configureIdentity wires sign-in onto cfg, or explains why it is off.
+//
+// Three states, and only the middle one is a judgement call:
+//
+//   - NOTHING SET. Sign-in is off, said out loud at info. This is the live deployment today: it
+//     serves the catalogue and answers 404 on /auth/github/login, which is honest.
+//   - SOME OF IT SET. Fatal. Somebody has configured half of an OAuth application, and the two
+//     ways that can go wrong quietly are both worse than not starting: a login button that 500s,
+//     or a server that ignores the configuration it was given.
+//   - ALL SET. Sign-in is on, and the public URL must be https — see below.
+func configureIdentity(ctx context.Context, cfg *api.Config, db *store.DB, clk clock.Clock) error {
+	var (
+		publicURL    = strings.TrimSpace(os.Getenv(envPublicURL))
+		clientID     = strings.TrimSpace(os.Getenv(envGitHubClientID))
+		clientSecret = core.NewSecret(os.Getenv(envGitHubClientSecret))
+		pepper       = core.NewSecret(os.Getenv(envTokenPepper))
+	)
+
+	set := 0
+	for _, present := range []bool{clientID != "", !clientSecret.IsZero(), !pepper.IsZero()} {
+		if present {
+			set++
+		}
+	}
+	switch set {
+	case 0:
+		slog.InfoContext(ctx, "sign-in is not configured; the account surface is not served",
+			"needs", []string{envGitHubClientID, envGitHubClientSecret, envTokenPepper})
+		return nil
+	case 3:
+	default:
+		// Deliberately does NOT name which one is missing beyond the variable names, and never
+		// prints a value: the point is to send the operator to their .env, not to confirm which
+		// half of a secret pair they got right.
+		return fmt.Errorf("sign-in is half configured: %s, %s and %s must be set together",
+			envGitHubClientID, envGitHubClientSecret, envTokenPepper)
+	}
+
+	// The session cookie is `__Host-` prefixed (canonical §6), and a browser refuses such a cookie
+	// unless it arrives over https. Serving the sign-in flow from an http origin would therefore
+	// produce a login that appears to work and leaves the user signed out — so it is refused here,
+	// where the message can say why, rather than discovered in a browser's console.
+	if err := guard.RequireHTTPS(publicURL); err != nil {
+		return fmt.Errorf("%s must be an https url: the %s cookie is refused by browsers over "+
+			"http, so sign-in cannot work: %w", envPublicURL, auth.SessionCookieName, err)
+	}
+
+	provider, err := github.New(github.Config{
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		// One spelling of the callback path, taken from the route it is registered at. A second
+		// literal here would be a URL that stops matching the route the day either moves.
+		RedirectURL: strings.TrimSuffix(publicURL, "/") +
+			strings.ReplaceAll(api.PathCallback, "{provider}", identity.KindGitHub.String()),
+	})
+	if err != nil {
+		return fmt.Errorf("configure the github identity provider: %w", err)
+	}
+
+	sessions, err := auth.NewSessions(db, clk, pepper)
+	if err != nil {
+		return err
+	}
+	providers := identity.NewRegistry(provider)
+	login, err := auth.NewOAuth(db, clk, pepper, providers)
+	if err != nil {
+		return err
+	}
+
+	cfg.Authn = auth.NewAuthenticator(sessions)
+	cfg.Login = login
+	cfg.Sessions = sessions
+	cfg.Providers = providers
+
+	slog.InfoContext(ctx, "sign-in configured",
+		"provider", identity.KindGitHub.String(), "public_url", publicURL)
+	return nil
 }

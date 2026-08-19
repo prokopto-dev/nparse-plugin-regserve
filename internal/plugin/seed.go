@@ -2,10 +2,10 @@ package plugin
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/audit"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/clock"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/core"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/registry"
@@ -151,7 +151,7 @@ func ImportSeed(ctx context.Context, db *store.DB, clk clock.Clock, seed Seed) (
 		}
 		out.Plugins = len(idx.Plugins)
 
-		return recordImport(ctx, q, clk, now, seed.Path, out.Plugins)
+		return recordImport(ctx, q, clk, seed.Path, out.Plugins)
 	})
 	if err != nil {
 		return ImportOutcome{}, fmt.Errorf("import seed file %s: %w", seed.Path, err)
@@ -203,29 +203,15 @@ func insertImported(
 //
 // The import is a privileged, unattended write of the entire catalogue, performed by no account.
 // If it is ever the wrong catalogue, this row is what says when it happened and from which file.
+// It goes through internal/audit like every other row: one writer, one set of rules about what
+// `detail` may carry.
 func recordImport(
-	ctx context.Context, q *store.Queries, clk clock.Clock, now core.Micros, path string, plugins int,
+	ctx context.Context, q *store.Queries, clk clock.Clock, path string, plugins int,
 ) error {
-	id, err := core.NewULID(clk.Now())
-	if err != nil {
-		return fmt.Errorf("mint an audit id: %w", err)
-	}
-
-	detail, err := json.Marshal(map[string]any{"plugins": plugins, "path": path})
-	if err != nil {
-		return fmt.Errorf("render the audit detail: %w", err)
-	}
-	detailText := string(detail)
-
-	if err := q.InsertAuditLog(ctx, sqlitegen.InsertAuditLogParams{
-		ID:          id.String(),
-		RecordedAt:  now.Int64(),
-		ActorKind:   "system",
+	return audit.Record(ctx, q, clk, audit.Entry{
+		Actor:       audit.ActorSystem,
 		Action:      "catalogue.import",
 		SubjectKind: "catalogue",
-		Detail:      &detailText,
-	}); err != nil {
-		return fmt.Errorf("record the import in the audit log: %w", err)
-	}
-	return nil
+		Detail:      map[string]any{"plugins": plugins, "path": path},
+	})
 }

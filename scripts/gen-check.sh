@@ -46,8 +46,9 @@ drift() {
   git status --short
   echo
   echo "Regenerate and commit the result:"
-  echo "    make gen           # the openapi document and the sqlc bindings"
+  echo "    make gen           # the openapi document, the permissions page and the sqlc bindings"
   echo "    make gen-openapi   # the openapi document alone; needs no generator toolchain"
+  echo "    make gen-authz     # the permissions page alone; needs no generator toolchain"
   echo "    make migration NAME=<snake_case>   # if db/schema.hcl changed"
   restore
   exit 1
@@ -63,6 +64,17 @@ if ! go run ./cmd/regserve openapi --out openapi/openapi.json; then
   exit 2
 fi
 [ -z "$(git status --porcelain)" ] || drift "openapi/openapi.json is stale or hand-edited: it does not match what internal/api registers"
+
+# --- the permission catalogue's documentation --------------------------------------------------
+# docs/reference/permissions.md is generated from internal/authz plus the route registry. Canonical
+# §5 forbids a hand-written permission list ANYWHERE, and a docs page is exactly where one grows: a
+# plugin author writing a CI job trusts the page, not the Go file.
+if ! go run ./cmd/regserve authz --docs docs/reference/permissions.md; then
+  red GEN001 "generating the permissions page failed"
+  restore
+  exit 2
+fi
+[ -z "$(git status --porcelain)" ] || drift "docs/reference/permissions.md is stale or hand-edited: it does not match the catalogue in internal/authz"
 
 # --- the sqlc bindings ------------------------------------------------------------------------
 if ! sqlc generate; then

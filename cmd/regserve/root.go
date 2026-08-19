@@ -42,7 +42,7 @@ func newRootCmd() *cobra.Command {
 	}
 
 	cmd.AddCommand(newServeCmd(), newMigrateCmd(), newVersionCmd(), newHealthcheckCmd(),
-		newOpenAPICmd())
+		newOpenAPICmd(), newAuthzCmd())
 	return cmd
 }
 

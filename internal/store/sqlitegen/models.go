@@ -48,6 +48,15 @@ type IdentityProvider struct {
 	CreatedAt   int64
 }
 
+type OauthFlow struct {
+	StateHash    string
+	ProviderKind string
+	CodeVerifier string
+	RedirectTo   string
+	CreatedAt    int64
+	ExpiresAt    int64
+}
+
 type Plugin struct {
 	ID             string
 	Name           string
@@ -85,4 +94,14 @@ type Release struct {
 	ReviewedBy        *string
 	ReviewedAt        *int64
 	ReviewNote        *string
+}
+
+type Session struct {
+	ID         string
+	AccountID  string
+	TokenHash  string
+	CreatedAt  int64
+	LastSeenAt int64
+	ExpiresAt  int64
+	RevokedAt  *int64
 }

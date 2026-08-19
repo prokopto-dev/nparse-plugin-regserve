@@ -126,5 +126,15 @@ func register[I, O any](
 ) {
 	op.Security = access.security()
 	op.Extensions = access.extensions(op.Extensions)
+
+	// The same declaration, stored twice for two readers. Extensions are the PUBLIC description of
+	// the rule and go into the OpenAPI document; Metadata is not serialised and is what the
+	// enforcing middleware reads back. One value, so "the spec says a session is required" and
+	// "the server requires a session" cannot become different statements.
+	if op.Metadata == nil {
+		op.Metadata = map[string]any{}
+	}
+	op.Metadata[metaAccess] = access
+
 	huma.Register(api, op, handler)
 }
