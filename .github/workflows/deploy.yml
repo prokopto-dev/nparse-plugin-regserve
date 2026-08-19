@@ -286,28 +286,72 @@ jobs:
           HOST_URL: https://${{ vars.REGSERVE_HOST }}
         run: |
           set -euo pipefail
-          for i in $(seq 1 30); do
-            if curl -fsS --max-time 10 "${HOST_URL}/healthz" >/dev/null; then
-              echo "healthz is answering"
-              break
-            fi
-            [ "$i" -eq 30 ] && { echo "healthz never came up"; exit 1; }
-            sleep 5
-          done
 
-          # Readiness, which for now means "a catalogue is loaded and still renders". It answers
-          # before /index.json is fetched because it says WHY when it is not ready, and a 503 with
-          # a reason is a better first line in a failed deploy's log than a curl exit code.
-          curl -fsS --max-time 15 "${HOST_URL}/readyz"
+          # EVERY check retries, not just the first one.
+          #
+          # What went wrong on the Phase 1 deploy (run 32193784028, attempt 1): /healthz had 30
+          # attempts, /readyz and /index.json had one each. `docker compose up -d` recreates the
+          # container, and for a moment afterwards Traefik has no server for this host — it drops
+          # the router entirely and answers 404 on EVERY path, including one that answered 200 a
+          # second earlier. The /healthz loop rode that window out because it retried. /readyz
+          # landed in it, got a 404, and took the deploy red against a service that was already
+          # serving correctly. The service was never broken; the check was.
+          #
+          # So the asymmetry was the defect: a check with no retry is not stricter than one with a
+          # bounded retry, it is just noisier, and a pipeline that cries wolf gets re-run without
+          # being read — which is exactly what happened.
+          #
+          # A retry is only honest if it is BOUNDED and the give-up is a hard failure. Nothing here
+          # degrades to a warning: after the budget, the deploy is red.
+          ATTEMPTS=30
+          INTERVAL=5
 
-          # The point of the whole service: the index must be servable and parseable. A deploy that
-          # boots but serves a broken index is a deploy that took every client's plugin browser
-          # down, so this failing is a real failure.
-          curl -fsS --max-time 15 "${HOST_URL}/index.json" -o /tmp/index.json
-          python3 -c "
-          import json,sys
+          # attempt <description> <command...> — run until it succeeds or the budget is spent.
+          #
+          # `until` is used rather than `if !`, because `set -e` does not apply to a command in an
+          # until/while condition; writing this with a plain `if` would abort the script on the
+          # first failed try and defeat the retry it is supposed to implement.
+          attempt() {
+            local what="$1"; shift
+            local i=1
+            until "$@"; do
+              if [ "$i" -ge "$ATTEMPTS" ]; then
+                echo "FAILED: ${what} did not succeed in ${ATTEMPTS} attempts" >&2
+                return 1
+              fi
+              i=$((i + 1))
+              sleep "$INTERVAL"
+            done
+            echo "ok (attempt ${i}/${ATTEMPTS}): ${what}"
+          }
+
+          liveness() { curl -fsS --max-time 10 "${HOST_URL}/healthz" -o /dev/null; }
+
+          # Readiness answers before the index is fetched because it says WHY when it is not ready:
+          # a 503 whose body names the reason is a better first line in a failed deploy's log than
+          # a curl exit code. The body is echoed for exactly that reason.
+          readiness() {
+            curl -fsS --max-time 15 "${HOST_URL}/readyz" -o /tmp/readyz.json || return 1
+            cat /tmp/readyz.json
+          }
+
+          # The point of the whole service: the index must be servable AND parseable by the client
+          # that is already installed. Fetch and assertion are one retryable unit — during the
+          # routing window above a body can arrive truncated, and re-fetching is the right response
+          # to that, whereas a permanently malformed index exhausts the budget and fails the deploy.
+          index_serves() {
+            curl -fsS --max-time 15 "${HOST_URL}/index.json" -o /tmp/index.json || return 1
+            python3 -c "
+          import json
           d=json.load(open('/tmp/index.json'))
           assert d['schema_version'] == 1, f\"schema_version is {d['schema_version']}, not 1\"
           assert isinstance(d['plugins'], list), 'plugins must be a list'
           print(f\"index ok: {len(d['plugins'])} plugin(s), schema_version={d['schema_version']}\")
           "
+          }
+
+          attempt "/healthz answers"                       liveness
+          attempt "/readyz reports the catalogue is ready" readiness
+          attempt "/index.json serves a schema-v1 index"   index_serves
+
+          echo "deployment verified: liveness, readiness and a parseable schema-v1 index"
