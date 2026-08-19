@@ -6,9 +6,11 @@ labelled, not in the table pretending to be enforced.
 
 Gates live in four places, and which one a gate belongs in is decided by what it has to read:
 
-- **`test/repo/arch_test.go`** — anything about Go source. These parse the tree with `go/ast`. A
-  grep matches the rule's own name inside the comment explaining the rule, and a grep for
-  `time.Now` misses `clk "time"` followed by `clk.Now()`. Both happened here.
+- **`test/repo/`** — anything about Go source or about what the Go code declares. `arch_test.go`
+  parses the tree with `go/ast`, because a grep matches the rule's own name inside the comment
+  explaining the rule, and a grep for `time.Now` misses `clk "time"` followed by `clk.Now()`. Both
+  happened here. `openapi_test.go` reads the generated OpenAPI document instead, because the rule
+  it enforces is about what an operation *declares*, not about how the file is written.
 - **`scripts/repo-gates.sh`** — files Go cannot parse: workflow YAML, migration SQL.
 - **`scripts/docs-check.sh`** — documentation shape.
 - **`scripts/gen-check.sh`** — the generators themselves. Separate because it is the only gate
@@ -34,7 +36,7 @@ A green run that checked nothing is worse than a red one, because it teaches peo
 | `MIG002` | Migrations are forward-only; every `Down` block aborts | Each migration's `Down` block must contain `RAISE(ABORT, …)` |
 | `MIG003` | A migration that has shipped is never edited | sha256 of each file compared against `db/SHIPPED.lock`, by `lint-repo` in normal CI and by `scripts/freeze-migrations.sh --check` in the release workflow — CI does not run on tags, so the release gate is the only check a `v*` push gets |
 | `MIG004` | A tagged release never ships a migration that is not frozen | `scripts/freeze-migrations.sh --check` validates every existing lock entry, then fails on any migration the lock does not name. Run by `lint-repo` on a `v*` commit and by the release workflow before the image builds |
-| `GEN001` | Checked-in generated code matches the source it is generated from | `scripts/gen-check.sh` regenerates and fails on any diff. The generators themselves are pinned: sqlc through the Go checksum database, Atlas by sha256 in `scripts/atlas.sums`, verified before it is made executable — a required gate is only as trustworthy as the binary that answers it |
+| `GEN001` | Checked-in generated code matches the source it is generated from — the sqlc bindings, `db/schema.hcl` against the migrations, and `openapi/openapi.json` against the route registry | `scripts/gen-check.sh` regenerates and fails on any diff. The generators themselves are pinned: sqlc through the Go checksum database, Atlas by sha256 in `scripts/atlas.sums`, verified before it is made executable — a required gate is only as trustworthy as the binary that answers it |
 
 ## Wire-format gates
 
@@ -43,7 +45,7 @@ These protect the one contract this project does not own. See
 
 | Gate | Rule | Mechanism |
 |---|---|---|
-| `SCHEMA001` | The rendered index validates against the vendored `index-v1.schema.json` | Test in `internal/registry` marshalling real fixtures and validating the output |
+| `SCHEMA001` | The index document a client **receives** validates against the vendored `index-v1.schema.json` | Test in `internal/api` that runs a real `httptest` server, makes a real request, and validates the response bytes — plus the exact-bytes, content-negotiation and pinned-path assertions below |
 | `SCHEMA002` | Only `internal/registry` knows the wire format | AST analyser: those field names in a string literal or struct tag outside that package |
 | `SIZE001` | The rendered index stays under the client's 5 MiB cap | Test that renders a synthetic catalogue and fails as the size approaches the limit |
 
@@ -63,6 +65,17 @@ image is `FROM scratch` and has no curl, so the `HEALTHCHECK` is the binary prob
 a fixed loopback address that no request can influence — the opposite of the SSRF this gate exists
 to prevent. Allowing it by filename rather than by tree means a second outbound call cannot hide
 behind the exception.
+
+## Route-registry gates
+
+Law 6 says coverage of the permission declaration is *derived from the route registry*. These are
+what derives it: `api.Spec()` runs the same registration code the server runs, so an operation
+appears in the generated OpenAPI document the moment it is registered — declared or not.
+
+| Gate | Rule | Mechanism |
+|---|---|---|
+| `PERM001` | Every operation declares who may call it, and its security matches that declaration | Test in `test/repo` walking `api.Spec()`: exactly one of `x-regserve-permission` / `x-regserve-public`, a `security` key that is present (empty for public, non-empty otherwise), permissions and scopes spelled per canonical §12, every scheme defined in `components.securitySchemes`, and a capability-floor operation accepting no PAT. A second AST half asserts nothing in `internal/api` calls Huma's registrars except `register()` in `routes.go`, whose signature demands an `Access`. `TestPERM001_FiresOnADeliberatelyBrokenOperation` runs the same judgement over nine shapes that must all be rejected |
+| `OAPI001` | Every `OperationID` is a unique lowerCamelCase name, and the two pinned index paths are in the document | Test in `test/repo` over `api.Spec()`. An `OperationID` is the generated SDK's method name, so renaming one breaks callers in their language rather than ours; the path half asserts ADR-0009's permanent URLs against the document rather than against the constants that are supposed to produce them |
 
 ## Documentation gates
 

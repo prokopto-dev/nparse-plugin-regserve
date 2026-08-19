@@ -19,8 +19,10 @@ model in `nparseplus.core.plugins.registry`; the schema generated from it is ven
 - Budgets belong to the client, not to us: **< 5 MiB** body, **15 s** to first byte through last,
   at most **5 redirect hops, every one `https`**.
 
-Gate: `SCHEMA001` validates rendered output against the vendored schema; `SIZE001` fails as the
-rendered index approaches the size cap. The vendored schema is generated upstream and copied in —
+Gate: `SCHEMA001` validates the bytes of a real HTTP **response** against the vendored schema —
+the whole stack, not the renderer's return value — and asserts that those bytes are exactly what
+`registry.Index.Marshal` produced, that the response is JSON whatever `Accept` said, and that the
+two pinned paths still answer. `SIZE001` fails as the rendered index approaches the size cap. The vendored schema is generated upstream and copied in —
 editing it here to make a test pass inverts the point of the gate.
 
 ## 2. Time
@@ -81,6 +83,12 @@ three cases against the route registry.
 
 ## 6. HTTP conventions
 
+Every route is registered with Huma v2
+([ADR-0012](../adr/0012-huma-v2-everywhere-with-the-index-bytes-pinned.md)), through `register()`
+in `internal/api/routes.go` — the one signature that requires an access declaration alongside the
+operation. `openapi/openapi.json` is generated from that registry by `make gen`, and gate `GEN001`
+regenerates it in CI to fail on any hand edit.
+
 - Base path `/api/v1` for the product API. The client-facing index endpoints (`/index.json`,
   `/plugins/{id}/index.json`) sit **outside** it, at stable paths, because their shape is pinned by
   a schema we do not own and must not move when the product API versions.
@@ -88,13 +96,28 @@ three cases against the route registry.
   in `internal/api/errors.go`. Adding a code is a spec change and needs a docs page (`DOC001`).
 - **Never return 200 with an error body.**
 - Every operation sets an explicit `OperationID` in lowerCamelCase (`publishRelease`). The generated
-  SDK method name derives from it, so **it is public API and must never be renamed.**
+  SDK method name derives from it, so **it is public API and must never be renamed.** Gate
+  `OAPI001` asserts the shape and the uniqueness; nothing can assert that a rename is not a rename,
+  so that half stays a review rule.
+- Every operation declares its access: `Public()`, `Requires(permission, scopes…)` or `Floor()` for
+  a capability-floor operation. These render `security` plus the `x-regserve-permission`,
+  `x-regserve-public` and `x-regserve-pat-forbidden` extensions, and gate `PERM001` reads them back
+  out of the generated document. A public operation declares `security: []` — present and empty —
+  because an ABSENT `security` inherits the document-level default, so an operation that forgot to
+  say would become authenticated, or not, depending on a setting in another file.
 - `Authorization: Bearer nprs_pat_…` only. **A token in a query string is rejected with 401, no
   exception** — query strings land in access logs, proxy logs and browser history.
 - Session cookie is `__Host-regserve_session`.
 - **Every mutating POST that creates domain state requires `Idempotency-Key`.** The dominant caller
   is a release workflow, and workflows are re-run. A re-run must not mint a second pending release.
-- Handlers return Huma error types; they never touch `http.ResponseWriter`.
+- Handlers return Huma error types; they never touch `http.ResponseWriter`. `*api.Problem` is that
+  type: it implements `huma.StatusError`, `huma.NewError` is replaced with it, and the OpenAPI
+  error schema is reflected from it — so an error Huma raises on its own is the same closed-enum
+  document as one a handler returns.
+- **The index endpoints are the exception, deliberately.** Their body is `[]byte`, which Huma writes
+  verbatim: no negotiation, no transformer, no re-marshalling. The bytes come from
+  `registry.Index.Marshal`. Do not "modernise" this into a typed body — canonical §1 is the reason,
+  and `SCHEMA001` is what notices.
 - One file per resource in `internal/api`, each exporting `registerXxx`. Never a shared registration
   file — it conflicts on every parallel feature PR.
 

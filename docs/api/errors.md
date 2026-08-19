@@ -18,6 +18,12 @@ The enum is **closed**. Adding a code is a spec change and needs an entry on thi
 
 There is never a `200` carrying an error body. If the status says success, it succeeded.
 
+The enum also covers the errors the HTTP framework raises before a handler runs — a body it could
+not parse, a parameter that failed validation, a media type it cannot produce. Those have no code
+of their own: a closed enum does not grow a member per framework status, and to a client they are
+all the same instruction. Every such 4xx is `invalid_request` and every 5xx is `internal_error`,
+with the status itself preserved.
+
 ---
 
 ## not_found
@@ -90,6 +96,11 @@ body returns the original result, which is the point of sending one.
 
 **500.** A bug on our side. The response carries no detail worth acting on; the `X-Request-Id`
 header is what to quote in a report.
+
+The `detail` is a fixed sentence, deliberately. When a handler fails with something that is not
+already a problem document, the framework offers the underlying error for inclusion — a driver
+message, a file path, a query — and this endpoint is unauthenticated. The cause goes to the log,
+where the person who can act on it is looking; the response says only which request it was.
 
 One case worth naming: if a stored listing cannot be rendered into a valid index document, that is a
 `500` rather than a partial index. Serving a document the client's parser would reject makes *every*

@@ -28,6 +28,14 @@ import (
 // client's parser, which is what makes additive change safe. See ADR-0009.
 const SchemaVersion = 1
 
+// SchemaURI is the $id of the JSON Schema this document is defined by.
+//
+// The schema is generated upstream from the pydantic models a released client parses with, and is
+// vendored in this package's testdata. The URI is exported so the OpenAPI document can point a
+// reader at the real definition instead of this repository restating the format — which would be a
+// second definition of a shape we do not own, and the thing SCHEMA002 exists to prevent.
+const SchemaURI = "https://prokopto-dev.github.io/nparseplus-plugins/schema/index-v1.schema.json"
+
 // MaxIndexBytes mirrors MAX_INDEX_BYTES in the client's registry.py.
 //
 // The client streams the response and aborts past this budget, so an index that grows beyond it
@@ -173,4 +181,19 @@ func ParseIndex(raw []byte) (Index, error) {
 		return Index{}, err
 	}
 	return idx, nil
+}
+
+// Marshal renders the index into the exact bytes a client receives.
+//
+// It lives in this package rather than at the HTTP edge because this package is the only one that
+// knows the format (SCHEMA002), and because the bytes must not be produced by a framework's
+// serializer. internal/api hands the result to the response writer unchanged, so content
+// negotiation, an injected $schema field, or a re-ordering marshaller cannot reach the one
+// contract this project cannot change. See ADR-0012.
+func (idx Index) Marshal() ([]byte, error) {
+	raw, err := json.Marshal(idx)
+	if err != nil {
+		return nil, fmt.Errorf("marshal index: %w", err)
+	}
+	return raw, nil
 }

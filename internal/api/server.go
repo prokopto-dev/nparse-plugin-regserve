@@ -3,11 +3,19 @@
 // Routes live in one tree so that "what does this service expose" is answerable by reading a
 // directory, and so the coverage tests — which walk the route registry to assert every operation
 // declares a permission — cannot be defeated by a route registered somewhere they do not look.
+//
+// Registration goes through Huma v2 (ADR-0012): operations are declared, not just handled, so the
+// OpenAPI document is derived from the same code that serves the traffic rather than maintained
+// beside it. What Huma is NOT allowed to do is decide anything about the bytes of the schema-v1
+// index document — see index.go and newHumaAPI below.
 package api
 
 import (
 	"context"
 	"net/http"
+
+	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/api/middleware"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/clock"
@@ -23,6 +31,19 @@ import (
 // the first handler that needs a prefix reaches for this constant rather than typing the string,
 // which is how a service ends up with two spellings of its own base path.
 const BasePath = "/api/v1"
+
+// contentTypeJSON is the only media type this service marshals into. One spelling, because the
+// format map, the default format, the response declarations and the problem+json filter all have
+// to agree, and four string literals are four chances for them not to.
+const contentTypeJSON = "application/json"
+
+// SpecVersion is the version of the API DESCRIPTION, not of the binary.
+//
+// It is deliberately not the ldflags build stamp: openapi/openapi.json is a checked-in generated
+// file and gate GEN001 regenerates it to compare, so a version that changed with every build would
+// report drift on every commit and teach everyone to ignore the gate. Bump it when the described
+// contract changes.
+const SpecVersion = "1.0.0"
 
 // Catalogue is what the API needs in order to render the index.
 //
@@ -46,13 +67,13 @@ type ReadyChecker interface {
 // Config is the only argument to New.
 //
 // One struct rather than a long parameter list, because every caller — the serve command, the
-// tests, and later the spec generator — should be constructing the same thing, and a positional
-// list of six optional dependencies is a list somebody eventually passes in the wrong order.
+// tests, and the spec generator — should be constructing the same thing, and a positional list of
+// six optional dependencies is a list somebody eventually passes in the wrong order.
 type Config struct {
 	// Version, Commit and BuildDate are ldflags stamps. No endpoint serves them yet — the meta
 	// operation under BasePath arrives with the product API in Phase 2. Until then `regserve
 	// version` is where they are readable, and they are carried here so that endpoint needs no
-	// change to the wiring.
+	// change to the wiring. They are NOT the OpenAPI version; see SpecVersion.
 	Version   string
 	Commit    string
 	BuildDate string
@@ -81,17 +102,116 @@ func New(cfg Config) http.Handler {
 	}
 
 	mux := http.NewServeMux()
+	api := newHumaAPI(mux)
 
-	mux.HandleFunc("GET /healthz", handleHealthz)
-	if cfg.Readiness != nil {
-		mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
-			handleReadyz(w, r, cfg.Readiness)
-		})
-	}
-
+	registerHealth(api, cfg.Readiness)
 	if cfg.Catalogue != nil {
-		registerIndex(mux, cfg.Catalogue)
+		registerIndex(api, cfg.Catalogue)
 	}
 
-	return middleware.RequestID(mux)
+	// Plain http.Handler wrappers rather than Huma middleware, because they must also cover the
+	// responses Huma never sees: the 404 and 405 the mux answers by itself. A request id that
+	// covers only the routes that matched is a request id nobody can quote in a bug report.
+	return middleware.RequestID(middleware.SecureHeaders(mux))
+}
+
+// newHumaAPI builds the Huma API, and every line of the config is load-bearing.
+//
+// It is a hand-built huma.Config rather than huma.DefaultConfig, and that is the decision that
+// makes it safe to put /index.json behind a framework at all. DefaultConfig would:
+//
+//   - install a schema-link transformer that adds a `$schema` member to every response body. The
+//     nParse+ client's pydantic models ignore unknown keys, so this would not break them today —
+//     but it is our document gaining a field we did not write, in the one format we do not own;
+//   - negotiate the response format from the Accept header against huma.DefaultFormats, a package
+//     -level map that ANY imported package can add to. `import _ ".../formats/cbor"` anywhere in
+//     the build — ours or a dependency's — would silently make `Accept: application/cbor` serve
+//     the index as CBOR to a client that asked for anything (`*/*` selects the first offered
+//     format). Every released client would report the registry as unreachable;
+//   - serve /openapi.json, /docs and /schemas/{schema} from paths we did not choose.
+//
+// So: the format map is a literal with JSON and nothing else, the transformer list stays empty,
+// and the three doc paths stay unset. Gate SCHEMA001 asserts the result over real HTTP responses.
+func newHumaAPI(mux *http.ServeMux) huma.API {
+	cfg := huma.Config{
+		OpenAPI: &huma.OpenAPI{
+			OpenAPI: "3.1.0",
+			Info: &huma.Info{
+				Title:       "nParse+ plugin registry",
+				Version:     SpecVersion,
+				Description: specDescription,
+				License: &huma.License{
+					Name:       "Apache-2.0",
+					Identifier: "Apache-2.0",
+				},
+			},
+			Servers: []*huma.Server{
+				{URL: "https://nparseplugins.prokopto.dev", Description: "the live registry"},
+			},
+			Components: &huma.Components{
+				SecuritySchemes: securitySchemes(),
+			},
+		},
+
+		// JSON, and only JSON. Both keys are needed: the bare "json" key is what Huma resolves
+		// `application/problem+json` through when it writes an error document, so dropping it
+		// turns every problem response into "unknown content type".
+		Formats: map[string]huma.Format{
+			contentTypeJSON: huma.DefaultJSONFormat,
+			"json":          huma.DefaultJSONFormat,
+		},
+		DefaultFormat: contentTypeJSON,
+
+		// NoFormatFallback stays false on purpose. With one format registered, the fallback is
+		// what turns `Accept: application/cbor` into a JSON response instead of a 406 — a client
+		// that asks for something we do not have gets the document rather than an error about its
+		// header. Turning it on would make a stray Accept header a hard failure.
+		NoFormatFallback: false,
+
+		// Empty: no /openapi.json, no /docs, no /schemas. The document is a checked-in build
+		// artifact (openapi/openapi.json), so serving it would be a second copy that can disagree,
+		// on paths nothing in ADR-0009 reserved.
+		OpenAPIPath: "",
+		DocsPath:    "",
+		SchemasPath: "",
+	}
+
+	return humago.New(mux, cfg)
+}
+
+const specDescription = "The plugin registry for nParse+.\n\n" +
+	"`GET /index.json` and `GET /plugins/{id}/index.json` serve the schema-v1 index document " +
+	"parsed by released nParse+ desktop clients. Their shape is defined upstream, by the pydantic " +
+	"models in `nparseplus.core.plugins.registry`, and is not part of this API's versioning: they " +
+	"sit outside `/api/v1` at fixed paths and may never move (ADR-0009)."
+
+// securitySchemes are the two credentials this service accepts.
+//
+// They are declared here, once, and referred to by name from an Access declaration, so a security
+// requirement cannot cite a scheme the document does not define. Neither is used by an operation
+// yet — identity lands in Phase 2 — but the shape is fixed by canonical §6 and §10 rather than
+// being open, and an operation added later refers to these rather than inventing a third spelling.
+func securitySchemes() map[string]*huma.SecurityScheme {
+	return map[string]*huma.SecurityScheme{
+		SchemePAT: {
+			Type:   "http",
+			Scheme: "bearer",
+			// The format is described here rather than in OpenAPI's `bearerFormat`, whose field
+			// name and template value read to gosec's G101 as a pasted credential. A false
+			// positive is still a finding somebody has to dismiss on every run, and the sentence
+			// carries the same information to the only audience that reads either.
+			Description: "A personal access token, sent as `Authorization: Bearer nprs_pat_…`, " +
+				"where the prefix is followed by an 8-character public identifier and the " +
+				"secret. A token in a query string is rejected with 401, with no exception: " +
+				"query strings land in access logs, proxy logs and browser history.",
+		},
+		SchemeSession: {
+			Type: "apiKey",
+			In:   "cookie",
+			Name: "__Host-regserve_session",
+			Description: "A browser session. It is the only credential that satisfies a " +
+				"capability-floor operation — minting tokens, changing owners, setting trust — " +
+				"because a token that could perform one would be equivalent to the account.",
+		},
+	}
 }
