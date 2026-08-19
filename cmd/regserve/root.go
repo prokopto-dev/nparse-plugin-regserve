@@ -41,7 +41,8 @@ func newRootCmd() *cobra.Command {
 			envDefault(cmd.PersistentFlags().Changed("log-level"), logLevel, envLogLevel))
 	}
 
-	cmd.AddCommand(newServeCmd(), newMigrateCmd(), newVersionCmd(), newHealthcheckCmd())
+	cmd.AddCommand(newServeCmd(), newMigrateCmd(), newVersionCmd(), newHealthcheckCmd(),
+		newOpenAPICmd())
 	return cmd
 }
 

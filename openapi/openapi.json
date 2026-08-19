@@ -1,0 +1,285 @@
+{
+  "components": {
+    "schemas": {
+      "Problem": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "description": "The stable machine-readable code to switch on; the enum is closed",
+            "type": "string"
+          },
+          "detail": {
+            "description": "An explanation specific to this occurrence",
+            "type": "string"
+          },
+          "status": {
+            "description": "The HTTP status code, repeated for client convenience",
+            "format": "int64",
+            "type": "integer"
+          },
+          "title": {
+            "description": "A short, human-readable summary; it does not vary with the occurrence",
+            "type": "string"
+          },
+          "type": {
+            "description": "A URI reference to the documentation for this error code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "title",
+          "status",
+          "code"
+        ],
+        "type": "object"
+      },
+      "StatusBody": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "description": "\"ok\" for liveness, \"ready\" for readiness",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "pat": {
+        "description": "A personal access token, sent as `Authorization: Bearer nprs_pat_…`, where the prefix is followed by an 8-character public identifier and the secret. A token in a query string is rejected with 401, with no exception: query strings land in access logs, proxy logs and browser history.",
+        "scheme": "bearer",
+        "type": "http"
+      },
+      "session": {
+        "description": "A browser session. It is the only credential that satisfies a capability-floor operation — minting tokens, changing owners, setting trust — because a token that could perform one would be equivalent to the account.",
+        "in": "cookie",
+        "name": "__Host-regserve_session",
+        "type": "apiKey"
+      }
+    }
+  },
+  "info": {
+    "description": "The plugin registry for nParse+.\n\n`GET /index.json` and `GET /plugins/{id}/index.json` serve the schema-v1 index document parsed by released nParse+ desktop clients. Their shape is defined upstream, by the pydantic models in `nparseplus.core.plugins.registry`, and is not part of this API's versioning: they sit outside `/api/v1` at fixed paths and may never move (ADR-0009).",
+    "license": {
+      "identifier": "Apache-2.0",
+      "name": "Apache-2.0"
+    },
+    "title": "nParse+ plugin registry",
+    "version": "1.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/healthz": {
+      "get": {
+        "description": "200 for as long as the process is up. It touches no dependency, so a failure here means the process itself is gone.",
+        "operationId": "getLiveness",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusBody"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [],
+        "summary": "Liveness",
+        "tags": [
+          "health"
+        ],
+        "x-regserve-public": true
+      }
+    },
+    "/index.json": {
+      "get": {
+        "description": "Every publicly listed plugin, with its latest approved release, as a schema-v1 index document.",
+        "operationId": "getIndex",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "A schema-v1 index document, as defined by https://prokopto-dev.github.io/nparseplus-plugins/schema/index-v1.schema.json. The format is owned upstream by the nParse+ client and is not versioned with this API.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Type": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [],
+        "summary": "The registry index",
+        "tags": [
+          "index"
+        ],
+        "x-regserve-public": true
+      }
+    },
+    "/plugins/{id}/index.json": {
+      "get": {
+        "description": "The same schema-v1 document scoped to a single plugin, which is the shape PluginMeta.update_url declares. An author can serve updates from here without a listing in the full index.",
+        "operationId": "getPluginIndex",
+        "parameters": [
+          {
+            "description": "The plugin id, as declared in PluginMeta.id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The plugin id, as declared in PluginMeta.id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "A schema-v1 index document, as defined by https://prokopto-dev.github.io/nparseplus-plugins/schema/index-v1.schema.json. The format is owned upstream by the nParse+ client and is not versioned with this API.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Type": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [],
+        "summary": "One plugin's index",
+        "tags": [
+          "index"
+        ],
+        "x-regserve-public": true
+      }
+    },
+    "/readyz": {
+      "get": {
+        "description": "200 when the service can serve requests that touch the database, and 503 naming the reason when it cannot.",
+        "operationId": "getReadiness",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusBody"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [],
+        "summary": "Readiness",
+        "tags": [
+          "health"
+        ],
+        "x-regserve-public": true
+      }
+    }
+  },
+  "servers": [
+    {
+      "description": "the live registry",
+      "url": "https://nparseplugins.prokopto.dev"
+    }
+  ]
+}

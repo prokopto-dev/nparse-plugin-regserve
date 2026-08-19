@@ -46,11 +46,23 @@ drift() {
   git status --short
   echo
   echo "Regenerate and commit the result:"
-  echo "    make gen           # sqlc bindings"
+  echo "    make gen           # the openapi document and the sqlc bindings"
+  echo "    make gen-openapi   # the openapi document alone; needs no generator toolchain"
   echo "    make migration NAME=<snake_case>   # if db/schema.hcl changed"
   restore
   exit 1
 }
+
+# --- the OpenAPI document ----------------------------------------------------------------------
+# openapi/openapi.json is generated from the route registry in internal/api. Hand-editing it is the
+# drift that matters here: the document is the published contract — OperationIDs become SDK method
+# names — so a spec that says something the server does not do is worse than no spec.
+if ! go run ./cmd/regserve openapi --out openapi/openapi.json; then
+  red GEN001 "generating the openapi document failed"
+  restore
+  exit 2
+fi
+[ -z "$(git status --porcelain)" ] || drift "openapi/openapi.json is stale or hand-edited: it does not match what internal/api registers"
 
 # --- the sqlc bindings ------------------------------------------------------------------------
 if ! sqlc generate; then
