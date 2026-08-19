@@ -3,54 +3,20 @@ package registry_test
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 
-	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/stretchr/testify/require"
 
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/registry"
 )
 
-const schemaPath = "testdata/index-v1.schema.json"
-
-// schemaURI is the $id the vendored document declares. The compiler resolves references by URI, so
-// this has to match what is in the file rather than being a path.
-const schemaURI = "https://prokopto-dev.github.io/nparseplus-plugins/schema/index-v1.schema.json"
-
-func compiledSchema(t *testing.T) *jsonschema.Schema {
-	t.Helper()
-
-	f, err := os.Open(schemaPath)
-	require.NoError(t, err, "open the vendored upstream schema")
-	defer func() { _ = f.Close() }()
-
-	doc, err := jsonschema.UnmarshalJSON(f)
-	require.NoError(t, err, "parse the vendored upstream schema")
-
-	c := jsonschema.NewCompiler()
-	require.NoError(t, c.AddResource(schemaURI, doc), "register the schema resource")
-
-	s, err := c.Compile(schemaURI)
-	require.NoError(t, err, "compile the vendored upstream schema")
-	return s
-}
-
-// validateAgainstSchema round-trips through encoding/json so the schema sees exactly the bytes a
-// client would, not the Go values. A field that marshals differently than it looks is the whole
-// class of bug this is here to catch.
-func validateAgainstSchema(t *testing.T, s *jsonschema.Schema, idx registry.Index) error {
-	t.Helper()
-
-	raw, err := json.Marshal(idx)
-	require.NoError(t, err, "marshal the index")
-
-	var generic any
-	require.NoError(t, json.Unmarshal(raw, &generic), "re-parse the marshalled index")
-
-	return s.Validate(generic)
-}
+// Gate SCHEMA001 does NOT live here any more. It validates the bytes of a real HTTP response
+// against the vendored upstream schema, in internal/api/schema001_test.go, because validating the
+// renderer's return value cannot see anything the HTTP layer does to it afterwards — a negotiated
+// format, an injected member, a re-marshalling — and the HTTP layer now has a framework in it
+// (ADR-0012). What is left in this file is the renderer's own behaviour: ordering, nullability,
+// the validation rules, and SIZE001.
 
 func sampleRelease() registry.Release {
 	min := "2.1.0"
@@ -72,74 +38,6 @@ func samplePlugin() registry.Plugin {
 		Homepage:    "https://github.com/prokopto-dev/nparseplus-merchantmode",
 		Latest:      sampleRelease(),
 	}
-}
-
-// --- SCHEMA001 --------------------------------------------------------------------------------
-
-// TestSchema001_RenderedIndex_ValidatesAgainstUpstreamSchema is gate SCHEMA001.
-//
-// The schema in testdata is generated upstream from the pydantic models a released client parses
-// with. If this fails, the renderer drifted from the client — do not edit the schema to agree.
-func TestSchema001_RenderedIndex_ValidatesAgainstUpstreamSchema(t *testing.T) {
-	t.Parallel()
-
-	s := compiledSchema(t)
-	idx, err := registry.NewIndex([]registry.Plugin{samplePlugin()})
-	require.NoError(t, err)
-
-	require.NoError(t, validateAgainstSchema(t, s, idx),
-		"the rendered index must satisfy the schema the client parses with")
-}
-
-// TestSchema001_MinimalPlugin_ValidatesAgainstUpstreamSchema covers the other end: only the fields
-// the schema marks required, with the nullable one actually null. Optional fields defaulting to ""
-// is the documented behaviour, so a listing that omits them must still be renderable.
-func TestSchema001_MinimalPlugin_ValidatesAgainstUpstreamSchema(t *testing.T) {
-	t.Parallel()
-
-	s := compiledSchema(t)
-	idx, err := registry.NewIndex([]registry.Plugin{{
-		ID:   "minimal",
-		Name: "Minimal",
-		Latest: registry.Release{
-			Version:     "1.0.0",
-			URL:         "https://example.com/minimal.zip",
-			SHA256:      strings.Repeat("a", 64),
-			RequiresSDK: registry.DefaultRequiresSDK,
-		},
-	}})
-	require.NoError(t, err)
-
-	require.NoError(t, validateAgainstSchema(t, s, idx))
-}
-
-// TestSchema001_SchemaVersion_IsOne pins the constant.
-//
-// This test exists to be annoying. Changing SchemaVersion is a breaking change for every nParse+
-// release in the field — they refuse the whole index and tell the user to update — so it should
-// take a deliberate act and a conversation, not a one-character edit that CI waves through.
-func TestSchema001_SchemaVersion_IsOne(t *testing.T) {
-	t.Parallel()
-	require.Equal(t, 1, registry.SchemaVersion,
-		"bumping schema_version strands every released client; see ADR-0009")
-}
-
-// TestSchema001_EmptyCatalogue_IsValid — an index with no plugins is a legitimate document, not an
-// error. A fresh instance serves one, and the client must render an empty browse list rather than
-// report the registry as malformed.
-func TestSchema001_EmptyCatalogue_IsValid(t *testing.T) {
-	t.Parallel()
-
-	s := compiledSchema(t)
-	idx, err := registry.NewIndex(nil)
-	require.NoError(t, err)
-
-	require.NoError(t, validateAgainstSchema(t, s, idx))
-
-	raw, err := json.Marshal(idx)
-	require.NoError(t, err)
-	require.Contains(t, string(raw), `"plugins":[]`,
-		"an empty catalogue must marshal as [], never null — pydantic rejects null for a list")
 }
 
 // --- Wire-shape expectations ------------------------------------------------------------------
@@ -260,7 +158,9 @@ func TestSize001_RenderedIndex_StaysUnderTheClientCap(t *testing.T) {
 	idx, err := registry.NewIndex(plugins)
 	require.NoError(t, err)
 
-	raw, err := json.Marshal(idx)
+	// Marshal, not json.Marshal: the budget is about the bytes that leave the server, and those
+	// are the ones the HTTP layer writes verbatim.
+	raw, err := idx.Marshal()
 	require.NoError(t, err)
 
 	require.Less(t, len(raw), budget,

@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/registry/schematest"
 )
 
 // These tests are about SCHEMA001 itself, not about the renderer.
@@ -101,7 +103,7 @@ func TestSchemaGate_InvalidDocuments_AreRejected(t *testing.T) {
 		},
 	}
 
-	s := compiledSchema(t)
+	s := schematest.Compile(t)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -147,6 +149,6 @@ func TestSchemaGate_LiveIndexShape_Validates(t *testing.T) {
 
 	var generic any
 	require.NoError(t, json.Unmarshal([]byte(live), &generic))
-	require.NoError(t, compiledSchema(t).Validate(generic),
+	require.NoError(t, schematest.Compile(t).Validate(generic),
 		"the catalogue currently in production must validate; if it does not, the vendored schema is wrong")
 }
