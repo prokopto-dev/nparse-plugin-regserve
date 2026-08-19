@@ -158,21 +158,23 @@ seed:
 docker:
 	@$(call notyet,Phase 4,docker buildx build -f deploy/Dockerfile)
 
-## tools: install the pinned code generators (sqlc, atlas)
+## tools: install the pinned code generators (sqlc, atlas), verifying what they are
 #
 # Into $(GOBIN), which actions/setup-go already puts on PATH, so this works identically on a laptop
 # and on a runner. Pinned rather than "latest": a generator that changes under you rewrites checked-in
 # code in a PR that touched none of it, and the reviewer has no way to tell that from real drift.
+#
+# The two are fetched differently because only one of them comes with integrity checking. `go
+# install` resolves through the Go checksum database, so the module is verified against a
+# transparency log this repository does not have to maintain. Atlas is a bare binary over HTTPS
+# with no signature and no attestation, so its bytes are pinned by sha256 in scripts/atlas.sums and
+# verified BEFORE it is made executable — see scripts/install-atlas.sh. GEN001 is a required check
+# and it believes whatever Atlas tells it, so an unverified Atlas is an unverified gate.
 .PHONY: tools
 tools:
 	$(GO) install github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
-	@bin="$$($(GO) env GOPATH)/bin"; \
-	 os=$$(uname -s | tr '[:upper:]' '[:lower:]'); \
-	 arch=$$(uname -m); case "$$arch" in x86_64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; esac; \
-	 mkdir -p "$$bin"; \
-	 curl -fsSL -o "$$bin/atlas" "https://release.ariga.io/atlas/atlas-$$os-$$arch-$(ATLAS_VERSION)"; \
-	 chmod +x "$$bin/atlas"; \
-	 printf 'installed %s and atlas %s into %s\n' "$(SQLC_VERSION)" "$(ATLAS_VERSION)" "$$bin"
+	@bash scripts/install-atlas.sh "$(ATLAS_VERSION)" "$$($(GO) env GOPATH)/bin"
+	@printf 'installed sqlc %s\n' "$(SQLC_VERSION)"
 
 ## gen-check: fail if generated code or db/schema.hcl drifted from their source (GEN001)
 #
