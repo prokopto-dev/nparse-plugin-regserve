@@ -32,8 +32,8 @@ A green run that checked nothing is worse than a red one, because it teaches peo
 | `CLOCK001` | `time.Now` appears only in `internal/clock` | AST analyser, resolving the import alias, so `clk "time"` does not defeat it |
 | `PIN001` | Every GitHub Action is pinned to a 40-character SHA | Grep over `.github/workflows/` |
 | `MIG002` | Migrations are forward-only; every `Down` block aborts | Each migration's `Down` block must contain `RAISE(ABORT, …)` |
-| `MIG003` | A migration that has shipped is never edited | sha256 of each file compared against `db/SHIPPED.lock` |
-| `MIG004` | A tagged release never ships a migration that is not frozen | `scripts/freeze-migrations.sh --check`, run by `lint-repo` on a `v*` commit and by the release workflow before the image builds |
+| `MIG003` | A migration that has shipped is never edited | sha256 of each file compared against `db/SHIPPED.lock`, by `lint-repo` in normal CI and by `scripts/freeze-migrations.sh --check` in the release workflow — CI does not run on tags, so the release gate is the only check a `v*` push gets |
+| `MIG004` | A tagged release never ships a migration that is not frozen | `scripts/freeze-migrations.sh --check` validates every existing lock entry, then fails on any migration the lock does not name. Run by `lint-repo` on a `v*` commit and by the release workflow before the image builds |
 | `GEN001` | Checked-in generated code matches the source it is generated from | `scripts/gen-check.sh` regenerates with the pinned sqlc and Atlas and fails on any diff |
 
 ## Wire-format gates

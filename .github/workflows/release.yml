@@ -26,15 +26,20 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  # Gate MIG004, at the only moment it can fire.
+  # Gates MIG003 and MIG004, at the only moment they can fire.
   #
   # A `v*` tag is what makes a migration "shipped": from here on it has run against the only copy
   # of the ownership records, and editing it changes what a FRESH database gets while changing
   # nothing about production — the two then diverge with nothing to notice, because migrations are
-  # forward-only and there is no down path that would. db/SHIPPED.lock is what freezes them and
-  # MIG003 is what compares them, but MIG003 can only check what somebody listed. Nothing listed
-  # anything (issue #14), so this refuses to build the image for a tag that would ship a migration
-  # the lock file has never seen.
+  # forward-only and there is no down path that would.
+  #
+  # BOTH halves have to be checked here, and this is the only place either can be. ci.yml — which
+  # is where MIG003 normally runs, via `make lint-repo` — triggers on pull_request, merge_group and
+  # pushes to main, and NOT on tags. So on the one event that makes a migration shipped, this job
+  # is the whole of the enforcement: coverage (is every migration in the lock at all — issue #14,
+  # which nothing did) AND integrity (does every entry still hash to what it recorded). Checking
+  # only coverage would publish an image for a tag that rewrote a migration already listed there,
+  # which is the invariant the lock exists for.
   #
   # It runs on every push too, where it is a no-op, so the job is not one that only ever executes
   # under the conditions nobody tests.
@@ -44,7 +49,7 @@ jobs:
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
-      - name: Every migration this tag ships is frozen in db/SHIPPED.lock
+      - name: Every migration this tag ships is frozen, and every frozen one is unchanged
         if: github.ref_type == 'tag'
         run: bash scripts/freeze-migrations.sh --check
 

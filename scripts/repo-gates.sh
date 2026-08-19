@@ -94,7 +94,7 @@ if compgen -G "db/migrations-sqlite/*.sql" >/dev/null; then
     if out=$(bash scripts/freeze-migrations.sh --check 2>&1); then
       pass MIG004 "every migration is frozen in db/SHIPPED.lock for $release_tag"
     else
-      report MIG004 "$release_tag would ship a migration that is not frozen in db/SHIPPED.lock"
+      report MIG004 "$release_tag is not safe to ship; see the finding below"
       printf '%s\n' "$out"
     fi
   else

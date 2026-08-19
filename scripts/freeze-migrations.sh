@@ -12,7 +12,14 @@
 # So the freezing is a target and the remembering is a gate:
 #
 #   scripts/freeze-migrations.sh          append every migration not yet frozen  (make freeze-migrations)
-#   scripts/freeze-migrations.sh --check  exit 1 if any migration is unfrozen    (gate MIG004)
+#   scripts/freeze-migrations.sh --check  validate the lock, then exit 1 if any
+#                                         migration is unfrozen        (gates MIG003 and MIG004)
+#
+# --check enforces BOTH halves, and it has to. Coverage alone — "every migration appears in the
+# lock" — passes a tag that edited a migration already listed there, which is the exact invariant
+# the lock exists to protect. It cannot be left to MIG003 in the normal gate run either, because
+# ci.yml triggers on pull_request, merge_group and pushes to main, and NOT on tags: on the one
+# event that makes a migration shipped, this script is the only thing that runs.
 #
 # The order is deliberate: freeze, commit, THEN tag. Having the release workflow write the lock
 # file instead would mean CI pushing to main, which is a larger hazard than the one being fixed —
@@ -39,14 +46,50 @@ shopt -s nullglob
 migrations=("$DIR"/*.sql)
 shopt -u nullglob
 
+# Paths the lock already names. Comments and blank lines are not entries; `shasum` writes
+# "<sha256>  <path>", so the path is the second field.
+listed() { grep -vE '^[[:space:]]*(#|$)' "$LOCK" | awk '{print $2}'; }
+
+# --- MIG003 — every entry the lock names still hashes to what it recorded ----------------------
+# This runs FIRST, and it runs in both modes. A lock that no longer describes the files it names is
+# not a lock, and everything below it — "is this one covered", "append the missing ones" — is built
+# on the assumption that it does. Answering the coverage question over a lock whose contents have
+# been edited is how a tag that rewrote a shipped migration gets waved through with a green tick.
+#
+# In write mode this refuses rather than appending: `make freeze-migrations` reporting "all frozen"
+# while a shipped migration has been edited underneath it is precisely the reassuring lie both
+# gates exist to prevent.
+changed=()
+missing=()
+while read -r want file || [ -n "${want:-}" ]; do
+  case "${want:-}" in ''|'#'*) continue ;; esac
+  [ -z "${file:-}" ] && continue
+  if [ ! -f "$file" ]; then
+    missing+=("$file")
+    continue
+  fi
+  got=$(shasum -a 256 "$file" | awk '{print $1}')
+  [ "$got" = "$want" ] || changed+=("$file")
+done < "$LOCK"
+
+if [ ${#changed[@]} -gt 0 ] || [ ${#missing[@]} -gt 0 ]; then
+  echo "MIG003: $LOCK no longer describes the migrations it names." >&2
+  [ ${#changed[@]} -gt 0 ] && printf '  edited since it shipped: %s\n' "${changed[@]}" >&2
+  [ ${#missing[@]} -gt 0 ] && printf '  listed but missing:      %s\n' "${missing[@]}" >&2
+  echo >&2
+  echo "A shipped migration has already run against the only copy of the production data. Editing" >&2
+  echo "it changes what a FRESH database gets and nothing about the one in production, and there" >&2
+  echo "is no down path that would notice. Restore the file and write a NEW migration instead." >&2
+  exit 1
+fi
+
+# Only now is an empty directory harmless. Checked earlier it would exit 0 over a lock naming
+# files that have all been DELETED, which is a shipped migration disappearing — the same invariant
+# failing, in the one shape the coverage scan below can never see.
 if [ ${#migrations[@]} -eq 0 ]; then
   echo "no migrations in $DIR; nothing to freeze"
   exit 0
 fi
-
-# Paths the lock already names. Comments and blank lines are not entries; `shasum` writes
-# "<sha256>  <path>", so the path is the second field.
-listed() { grep -vE '^[[:space:]]*(#|$)' "$LOCK" | awk '{print $2}'; }
 
 unfrozen=()
 for f in "${migrations[@]}"; do
@@ -54,7 +97,7 @@ for f in "${migrations[@]}"; do
 done
 
 if [ ${#unfrozen[@]} -eq 0 ]; then
-  echo "all ${#migrations[@]} migration(s) are frozen in $LOCK"
+  echo "all ${#migrations[@]} migration(s) are frozen in $LOCK and match their recorded hash"
   exit 0
 fi
 
@@ -67,9 +110,7 @@ if [ "$mode" = check ]; then
   exit 1
 fi
 
-# Append, never rewrite. A file already listed is left exactly as it is: if its hash no longer
-# matches, that is MIG003's finding to report, and re-freezing it here would erase the evidence of
-# precisely the edit both gates exist to catch.
+# Append, never rewrite. Anything already listed was validated above, so this only ever adds lines.
 for f in "${unfrozen[@]}"; do
   shasum -a 256 "$f" >> "$LOCK"
   echo "froze $f"
