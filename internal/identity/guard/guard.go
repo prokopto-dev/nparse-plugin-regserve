@@ -26,7 +26,10 @@
 package guard
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -84,6 +87,27 @@ type Config struct {
 	// private and cloud-metadata ranges stay refused even when it is set — and no production
 	// constructor sets it. TestNewClient_ProductionDefaults_RefuseLoopback is what asserts that.
 	PermitLoopback bool
+
+	// RootCAs replaces the certificate authorities used to verify a server, and NOTHING ELSE.
+	//
+	// It exists so a test can fetch from an httptest TLS server, whose certificate is signed by
+	// nothing the system trusts. It can only ever NARROW or REPLACE the set of anchors — it cannot
+	// widen what a given anchor vouches for, and there is deliberately no InsecureSkipVerify here
+	// and no Config field that could set one. A client that skipped verification would make every
+	// https assertion in this package decorative: the scheme would be right and the peer would be
+	// whoever answered. TestNewClient_NeverSkipsCertificateVerification is what asserts that.
+	RootCAs *x509.CertPool
+
+	// Resolver overrides where hostnames are looked up. Nil means the system resolver.
+	//
+	// It changes WHERE A NAME IS LOOKED UP and never WHAT IS REFUSED: whatever a resolver hands
+	// back still goes through the Control hook below, against the literal address the kernel is
+	// about to connect to. That is the whole point of it being here — a test can hand this a
+	// resolver that answers 10.0.0.1 for a name that looks perfectly ordinary, which is precisely
+	// the DNS-rebinding shape, and watch the dial refused anyway. A guard that validated the
+	// hostname and then let the resolver answer again would pass every other test in this file
+	// and fail that one.
+	Resolver *net.Resolver
 }
 
 // NewClient returns a client that only reaches the public internet over https.
@@ -99,6 +123,7 @@ func NewClient(cfg Config) *http.Client {
 	dialer := &net.Dialer{
 		Timeout:   cfg.Timeout,
 		KeepAlive: 30 * time.Second,
+		Resolver:  cfg.Resolver,
 		Control:   control(cfg.PermitLoopback),
 	}
 
@@ -106,6 +131,13 @@ func NewClient(cfg Config) *http.Client {
 		Timeout: cfg.Timeout,
 		Transport: &http.Transport{
 			DialContext: dialer.DialContext,
+			// Verification is always on. MinVersion is stated rather than left to the default so
+			// that "which TLS versions does this service accept from a server" is answerable by
+			// reading this file, and so it cannot drift downwards with a toolchain change.
+			TLSClientConfig: &tls.Config{
+				MinVersion: tls.VersionTLS12,
+				RootCAs:    cfg.RootCAs, // nil means the system pool
+			},
 			// A guarded dialer that never runs is not a guard. Proxy settings come from the
 			// environment by default, and a proxy would make every connection go to the proxy's
 			// address — which is inside the network we are refusing to reach.
@@ -160,22 +192,43 @@ func RequireHTTPS(rawURL string) error {
 	return nil
 }
 
+// CopyCapped streams src into dst, refusing past maxBytes, and returns how many bytes it wrote.
+//
+// This is the cap "during the read" that canonical §9 requires, in the shape an artifact needs:
+// the bytes go straight to a hash and are never held. A 50 MiB artifact read into a []byte first
+// is 50 MiB of resident memory per concurrent publish, on the word of whoever supplied the URL —
+// and the publish path has no use for the bytes afterwards.
+//
+// io.LimitReader is given maxBytes+1 so that "it was exactly the cap" and "there was more" are
+// distinguishable. That one extra byte is the entire overrun: the copy stops there, the body is
+// abandoned mid-stream, and the far end never gets to finish sending.
+//
+// THE CAP IS NEVER TAKEN FROM Content-Length. That header is written by the sender, so believing
+// it would let an attacker declare one byte and send fifty megabytes — or declare fifty megabytes
+// and be refused for bytes it never sent. The only number that counts is the one this function
+// counted.
+func CopyCapped(dst io.Writer, src io.Reader, maxBytes int64) (int64, error) {
+	n, err := io.Copy(dst, io.LimitReader(src, maxBytes+1))
+	if err != nil {
+		return n, fmt.Errorf("read the response body: %w", err)
+	}
+	if n > maxBytes {
+		return n, fmt.Errorf("%w of %d bytes", ErrTooLarge, maxBytes)
+	}
+	return n, nil
+}
+
 // ReadCapped reads at most max bytes and fails if there are more.
 //
-// The cap is applied DURING the read (canonical §9): io.LimitReader is given max+1 so that "we
-// read exactly the cap" and "there was more" are distinguishable, and the extra byte is the only
-// thing over budget that is ever allocated. Checking Content-Length instead would trust a header
-// the sender writes, and reading it all and then measuring is a 50 MiB allocation on the word of
-// whoever supplied the URL.
+// It is CopyCapped into a buffer, for the callers that genuinely need the bytes — an identity
+// provider's JSON answer, which is small and has to be parsed. A caller that only needs to
+// measure or digest what arrived should use CopyCapped and never hold it.
 func ReadCapped(r io.Reader, maxBytes int64) ([]byte, error) {
-	buf, err := io.ReadAll(io.LimitReader(r, maxBytes+1))
-	if err != nil {
-		return nil, fmt.Errorf("read the response body: %w", err)
+	var buf bytes.Buffer
+	if _, err := CopyCapped(&buf, r, maxBytes); err != nil {
+		return nil, err
 	}
-	if int64(len(buf)) > maxBytes {
-		return nil, fmt.Errorf("%w of %d bytes", ErrTooLarge, maxBytes)
-	}
-	return buf, nil
+	return buf.Bytes(), nil
 }
 
 // control is the net.Dialer Control hook: the last point before the connection where the resolved

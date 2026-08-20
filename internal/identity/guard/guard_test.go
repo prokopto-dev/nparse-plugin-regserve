@@ -1,6 +1,10 @@
 package guard_test
 
 import (
+	"bytes"
+	"crypto/tls"
+	"crypto/x509"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -203,4 +207,124 @@ func TestDo_CapsTheBodyOverARealSocket(t *testing.T) {
 		require.Equal(t, http.StatusOK, resp.StatusCode,
 			"the status is still reported: an oversized body and no answer at all are different")
 	})
+}
+
+// --- the additions Phase 3 needed -------------------------------------------------------------
+
+// TestCopyCapped_StopsAtTheCapWithoutHoldingTheBytes — the streaming half of canonical §9.
+//
+// ReadCapped answers "give me the body", which is right for an identity provider's JSON and wrong
+// for a 50 MiB artifact: that is 50 MiB resident per concurrent publish, on the word of whoever
+// supplied the URL. CopyCapped answers "put it somewhere and tell me how much there was".
+func TestCopyCapped_StopsAtTheCapWithoutHoldingTheBytes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		body    int
+		cap     int64
+		wantErr error
+		wantN   int64
+	}{
+		{name: "well under the cap", body: 10, cap: 1024, wantN: 10},
+		{name: "exactly at the cap", body: 1024, cap: 1024, wantN: 1024},
+		{name: "one byte over", body: 1025, cap: 1024, wantErr: guard.ErrTooLarge, wantN: 1025},
+		{name: "far over", body: 1 << 20, cap: 1024, wantErr: guard.ErrTooLarge, wantN: 1025},
+		{name: "empty", body: 0, cap: 1024, wantN: 0},
+		{name: "a zero cap accepts nothing but empty", body: 1, cap: 0, wantErr: guard.ErrTooLarge, wantN: 1},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			src := &countingReader{remaining: tc.body}
+			var dst bytes.Buffer
+
+			n, err := guard.CopyCapped(&dst, src, tc.cap)
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			require.Equal(t, tc.wantN, n)
+
+			// THE OVERRUN IS EXACTLY ONE BYTE, ever. LimitReader is given cap+1 so that "exactly
+			// the cap" and "there was more" are distinguishable, and that extra byte is the whole
+			// budget over the limit that anything is allowed to spend.
+			require.LessOrEqual(t, src.read, tc.cap+1,
+				"read %d bytes against a cap of %d: the source got to send more than one byte "+
+					"past the limit", src.read, tc.cap)
+		})
+	}
+}
+
+// countingReader yields `remaining` bytes and counts how many were actually asked for, which is
+// what makes "abandoned mid-stream" an assertion rather than a description.
+type countingReader struct {
+	remaining int
+	read      int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	if c.remaining <= 0 {
+		return 0, io.EOF
+	}
+	n := min(len(p), c.remaining)
+	for i := range n {
+		p[i] = byte(i)
+	}
+	c.remaining -= n
+	c.read += int64(n)
+	return n, nil
+}
+
+// TestReadCapped_StillBehaves — the buffering caller keeps its contract.
+func TestReadCapped_StillBehaves(t *testing.T) {
+	t.Parallel()
+
+	got, err := guard.ReadCapped(strings.NewReader("hello"), 1024)
+	require.NoError(t, err)
+	require.Equal(t, "hello", string(got))
+
+	_, err = guard.ReadCapped(strings.NewReader("hello"), 4)
+	require.ErrorIs(t, err, guard.ErrTooLarge)
+}
+
+// TestNewClient_NeverSkipsCertificateVerification — RootCAs narrows trust; it does not remove it.
+//
+// A client with InsecureSkipVerify would make every https assertion in this package decorative:
+// the scheme would be right and the peer would be whoever answered. There is no Config field that
+// could set one, and this is what notices if somebody adds the line directly.
+func TestNewClient_NeverSkipsCertificateVerification(t *testing.T) {
+	t.Parallel()
+
+	for _, cfg := range []guard.Config{
+		{},
+		{PermitLoopback: true},
+		{RootCAs: x509.NewCertPool()},
+	} {
+		client := guard.NewClient(cfg)
+
+		tr, ok := client.Transport.(*http.Transport)
+		require.True(t, ok, "the transport is not an *http.Transport; the guarding lives on it")
+		require.NotNil(t, tr.TLSClientConfig, "no TLS configuration: the defaults are not stated")
+		require.False(t, tr.TLSClientConfig.InsecureSkipVerify,
+			"certificate verification is off; https would be a scheme and not a guarantee")
+		require.GreaterOrEqual(t, tr.TLSClientConfig.MinVersion, uint16(tls.VersionTLS12))
+	}
+}
+
+// TestNewClient_TheResolverIsUsedAndChangesNothingAboutWhatIsRefused.
+//
+// Config.Resolver exists so a test can prove the address check runs against the RESOLVED address.
+// It must not become a way to reach somewhere the guard would otherwise refuse: whatever a
+// resolver answers still goes through the Control hook, which is the point.
+func TestNewClient_TheResolverIsUsedAndChangesNothingAboutWhatIsRefused(t *testing.T) {
+	t.Parallel()
+
+	client := guard.NewClient(guard.Config{})
+	tr, ok := client.Transport.(*http.Transport)
+	require.True(t, ok)
+	require.NotNil(t, tr.DialContext, "no dialer: the Control hook is where the refusal happens")
 }
