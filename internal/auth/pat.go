@@ -236,13 +236,21 @@ func (t *Tokens) Resolve(ctx context.Context, presented string) (Principal, erro
 		return Principal{}, err
 	}
 
-	return Principal{
+	principal := Principal{
 		AccountID:   row.AccountID,
 		DisplayName: row.DisplayName,
 		TokenID:     row.ID,
 		TokenPrefix: row.Prefix,
 		Scopes:      held,
-	}, nil
+	}
+	// The pin travels WITH the principal. Dropping it here would leave a publish handler with an
+	// account and a set of scopes and no way to know the token was minted for one plugin — so a
+	// token leaked from plugin A's pipeline would authorise plugin B, and ADR-0005's containment
+	// argument would be false while the row said it was true.
+	if row.PluginID != nil {
+		principal.PluginID = *row.PluginID
+	}
+	return principal, nil
 }
 
 func (t *Tokens) touch(ctx context.Context, id string, lastUsed *int64, now time.Time) error {

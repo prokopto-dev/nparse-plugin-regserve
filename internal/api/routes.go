@@ -25,6 +25,12 @@ const (
 	// ExtPATForbidden marks a capability-floor operation: one no token may perform, however
 	// scoped, because a token that could would be equivalent to the account. Canonical §5.
 	ExtPATForbidden = "x-regserve-pat-forbidden"
+
+	// ExtPluginParam names the path parameter identifying the plugin an operation acts on, so a
+	// token's plugin pin can be enforced against it. Its ABSENCE on a token-callable operation
+	// under /plugins/{…} is what gate PERM001 fails: a pin nothing compares is decorative, and it
+	// fails open.
+	ExtPluginParam = "x-regserve-plugin-param"
 )
 
 // The security scheme names an operation's requirements refer to. They are declared once, in the
@@ -45,6 +51,25 @@ type Access struct {
 	permission   authz.Permission
 	scopes       []authz.Scope
 	patForbidden bool
+
+	// pluginParam names the PATH PARAMETER that identifies the plugin an operation acts on, and is
+	// empty for an operation that does not act on one. See OnPlugin.
+	pluginParam string
+}
+
+// OnPlugin declares which path parameter names the plugin this operation acts on.
+//
+// It is what makes a token's plugin pin enforceable. A PAT may be minted for one plugin (ADR-0005)
+// so that the credential sitting in one repository's CI can do exactly one thing to exactly one
+// plugin — and that is only true if something compares the pin against the plugin being acted on.
+// Declaring the parameter here means the comparison happens in the middleware, before the handler
+// runs, rather than in each handler that remembers to.
+//
+// The parameter has to be NAMED rather than guessed. `/plugins/{id}/releases` and
+// `/account/tokens/{id}/revoke` both have an `{id}`, and one of them is not a plugin.
+func (a Access) OnPlugin(param string) Access {
+	a.pluginParam = param
+	return a
 }
 
 // Public is an operation anyone may call with no credential at all: the index endpoints a desktop
@@ -126,6 +151,9 @@ func register[I, O any](
 ) {
 	op.Security = access.security()
 	op.Extensions = access.extensions(op.Extensions)
+	if access.pluginParam != "" {
+		op.Extensions[ExtPluginParam] = access.pluginParam
+	}
 
 	// The same declaration, stored twice for two readers. Extensions are the PUBLIC description of
 	// the rule and go into the OpenAPI document; Metadata is not serialised and is what the

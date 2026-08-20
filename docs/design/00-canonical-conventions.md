@@ -109,7 +109,10 @@ regenerates it in CI to fail on any hand edit.
   `OAPI001` asserts the shape and the uniqueness; nothing can assert that a rename is not a rename,
   so that half stays a review rule.
 - Every operation declares its access: `Public()`, `Requires(permission, scopes…)` or `Floor()` for
-  a capability-floor operation. These render `security` plus the `x-regserve-permission`,
+  a capability-floor operation. An operation that acts on a plugin adds `.OnPlugin("id")`, naming
+  the path parameter, so a token's plugin pin can be compared against it — `PERM001` fails a
+  token-callable operation under `/plugins/{…}` without one, and a pinned token calling an
+  operation that declares no parameter is refused rather than allowed. These render `security` plus the `x-regserve-permission`,
   `x-regserve-public` and `x-regserve-pat-forbidden` extensions, and gate `PERM001` reads them back
   out of the generated document. A public operation declares `security: []` — present and empty —
   because an ABSENT `security` inherits the document-level default, so an operation that forgot to
