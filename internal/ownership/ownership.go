@@ -88,6 +88,14 @@ var (
 	ErrAccountDisabled = errors.New("that account is disabled")
 )
 
+// The audit vocabulary this package writes. One spelling each: an incident review queries on
+// (subject_kind, subject_id), and a second spelling would put half the rows somewhere nobody looks.
+const (
+	subjectPlugin = "plugin"
+	detailAccount = "account"
+	detailHandle  = "handle"
+)
+
 // Service reads and changes plugin ownership.
 type Service struct {
 	db  *store.DB
@@ -239,12 +247,12 @@ func (s *Service) Add(ctx context.Context, pluginID, callerID, handle string, ro
 			Actor:       audit.ActorAccount,
 			AccountID:   callerID,
 			Action:      "owner.add",
-			SubjectKind: "plugin",
+			SubjectKind: subjectPlugin,
 			SubjectID:   pluginID,
 			Detail: map[string]any{
-				"account": target.ID,
-				"handle":  target.Handle,
-				"role":    role.String(),
+				detailAccount: target.ID,
+				detailHandle:  target.Handle,
+				"role":        role.String(),
 			},
 		})
 	})
@@ -286,9 +294,9 @@ func (s *Service) Remove(ctx context.Context, pluginID, callerID, targetID strin
 			Actor:       audit.ActorAccount,
 			AccountID:   callerID,
 			Action:      "owner.remove",
-			SubjectKind: "plugin",
+			SubjectKind: subjectPlugin,
 			SubjectID:   pluginID,
-			Detail:      map[string]any{"account": targetID},
+			Detail:      map[string]any{detailAccount: targetID},
 		})
 	})
 }

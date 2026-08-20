@@ -76,3 +76,9 @@ INSERT INTO "release" (
 -- (subject_kind, subject_id) index.
 SELECT count(*) FROM audit_log
 WHERE subject_kind = 'catalogue' AND action = 'catalogue.import';
+
+-- name: GetPlugin :one
+-- Whether an id is claimed at all, and its listing state. Used by the ownership import, which must
+-- NOT create a plugin row for an id owners.json names but this registry does not carry: a claim on
+-- an id nobody can check is exactly the squatting the first-come rule exists to prevent.
+SELECT id, name, delisted_at FROM plugin WHERE id = ?;
