@@ -1,7 +1,7 @@
 -- Browser sessions and the in-flight OAuth handshakes that create them.
 --
 -- Nothing here selects a session by id. The lookup is always by token_hash, because the id is not
--- a credential and the secret is never stored — so "find the session this cookie belongs to" is a
+-- a credential and the secret is never stored, so "find the session this cookie belongs to" is a
 -- keyed-hash lookup and cannot be anything else.
 
 -- name: InsertSession :exec
@@ -31,8 +31,12 @@ WHERE s.token_hash = ?;
 -- ahead of publishing in the write queue.
 UPDATE session SET last_seen_at = ? WHERE id = ?;
 
--- name: RevokeSession :exec
+-- name: RevokeSession :execrows
 -- Idempotent by the WHERE: logging out twice records the first time, not the second.
+--
+-- :execrows rather than :exec because the caller writes an audit row only when this changed
+-- something. An audit row for a second logout would record an event that did not happen, in the
+-- one table nothing can correct by deletion.
 UPDATE session SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL;
 
 -- name: ListSessionsForAccount :many
@@ -42,7 +46,7 @@ WHERE account_id = ?
 ORDER BY created_at DESC;
 
 -- name: DeleteExpiredSessions :exec
--- Sessions carry no history worth keeping past their expiry — the audit log records the logins.
+-- Sessions carry no history worth keeping past their expiry; the audit log records the logins.
 -- Deleting is allowed here precisely because of that, which is why this table has no no-delete
 -- trigger and audit_log does.
 DELETE FROM session WHERE expires_at < ?;

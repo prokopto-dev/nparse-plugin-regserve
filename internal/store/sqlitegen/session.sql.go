@@ -10,9 +10,7 @@ import (
 )
 
 const deleteExpiredOAuthFlows = `-- name: DeleteExpiredOAuthFlows :exec
-= ?;
-
-DELETE FROM oauth_flow WHERE expires_at
+DELETE FROM oauth_flow WHERE expires_at < ?
 `
 
 func (q *Queries) DeleteExpiredOAuthFlows(ctx context.Context, expiresAt int64) error {
@@ -21,12 +19,10 @@ func (q *Queries) DeleteExpiredOAuthFlows(ctx context.Context, expiresAt int64) 
 }
 
 const deleteExpiredSessions = `-- name: DeleteExpiredSessions :exec
-C;
-
-DELETE FROM session WHERE expires_at
+DELETE FROM session WHERE expires_at < ?
 `
 
-// Sessions carry no history worth keeping past their expiry — the audit log records the logins.
+// Sessions carry no history worth keeping past their expiry; the audit log records the logins.
 // Deleting is allowed here precisely because of that, which is why this table has no no-delete
 // trigger and audit_log does.
 func (q *Queries) DeleteExpiredSessions(ctx context.Context, expiresAt int64) error {
@@ -35,9 +31,7 @@ func (q *Queries) DeleteExpiredSessions(ctx context.Context, expiresAt int64) er
 }
 
 const deleteOAuthFlow = `-- name: DeleteOAuthFlow :exec
-= ?;
-
-DELETE FROM oauth_flow WHERE state_hash
+DELETE FROM oauth_flow WHERE state_hash = ?
 `
 
 // SINGLE USE. The row is deleted the moment it is redeemed, which is the property a signed cookie
@@ -48,11 +42,9 @@ func (q *Queries) DeleteOAuthFlow(ctx context.Context, stateHash string) error {
 }
 
 const getOAuthFlow = `-- name: GetOAuthFlow :one
-?);
-
 SELECT state_hash, provider_kind, code_verifier, redirect_to, created_at, expires_at
 FROM oauth_flow
-WHERE state_hash
+WHERE state_hash = ?
 `
 
 func (q *Queries) GetOAuthFlow(ctx context.Context, stateHash string) (OauthFlow, error) {
@@ -70,8 +62,6 @@ func (q *Queries) GetOAuthFlow(ctx context.Context, stateHash string) (OauthFlow
 }
 
 const getSessionByTokenHash = `-- name: GetSessionByTokenHash :one
-);
-
 SELECT
     s.id,
     s.account_id,
@@ -83,7 +73,7 @@ SELECT
     a.disabled_at
 FROM session s
 JOIN account a ON a.id = s.account_id
-WHERE s.token_hash =
+WHERE s.token_hash = ?
 `
 
 type GetSessionByTokenHashRow struct {
@@ -117,10 +107,8 @@ func (q *Queries) GetSessionByTokenHash(ctx context.Context, tokenHash string) (
 }
 
 const insertOAuthFlow = `-- name: InsertOAuthFlow :exec
-< ?;
-
 INSERT INTO oauth_flow (state_hash, provider_kind, code_verifier, redirect_to, created_at, expires_at)
-VALUES (?, ?, ?, ?, ?
+VALUES (?, ?, ?, ?, ?, ?)
 `
 
 type InsertOAuthFlowParams struct {
@@ -147,7 +135,7 @@ func (q *Queries) InsertOAuthFlow(ctx context.Context, arg InsertOAuthFlowParams
 const insertSession = `-- name: InsertSession :exec
 
 INSERT INTO session (id, account_id, token_hash, created_at, last_seen_at, expires_at)
-VALUES (?, ?, ?, ?, ?,
+VALUES (?, ?, ?, ?, ?, ?)
 `
 
 type InsertSessionParams struct {
@@ -162,7 +150,7 @@ type InsertSessionParams struct {
 // Browser sessions and the in-flight OAuth handshakes that create them.
 //
 // Nothing here selects a session by id. The lookup is always by token_hash, because the id is not
-// a credential and the secret is never stored — so "find the session this cookie belongs to" is a
+// a credential and the secret is never stored, so "find the session this cookie belongs to" is a
 // keyed-hash lookup and cannot be anything else.
 func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) error {
 	_, err := q.db.ExecContext(ctx, insertSession,
@@ -177,12 +165,10 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 }
 
 const listSessionsForAccount = `-- name: ListSessionsForAccount :many
-L;
-
 SELECT id, created_at, last_seen_at, expires_at, revoked_at
 FROM session
 WHERE account_id = ?
-ORDER BY created_at DE
+ORDER BY created_at DESC
 `
 
 type ListSessionsForAccountRow struct {
@@ -222,10 +208,8 @@ func (q *Queries) ListSessionsForAccount(ctx context.Context, accountID string) 
 	return items, nil
 }
 
-const revokeSession = `-- name: RevokeSession :exec
-?;
-
-UPDATE session SET revoked_at = ? WHERE id = ? AND revoked_at IS NU
+const revokeSession = `-- name: RevokeSession :execrows
+UPDATE session SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL
 `
 
 type RevokeSessionParams struct {
@@ -234,15 +218,20 @@ type RevokeSessionParams struct {
 }
 
 // Idempotent by the WHERE: logging out twice records the first time, not the second.
-func (q *Queries) RevokeSession(ctx context.Context, arg RevokeSessionParams) error {
-	_, err := q.db.ExecContext(ctx, revokeSession, arg.RevokedAt, arg.ID)
-	return err
+//
+// :execrows rather than :exec because the caller writes an audit row only when this changed
+// something. An audit row for a second logout would record an event that did not happen, in the
+// one table nothing can correct by deletion.
+func (q *Queries) RevokeSession(ctx context.Context, arg RevokeSessionParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, revokeSession, arg.RevokedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const touchSession = `-- name: TouchSession :exec
-?;
-
-UPDATE session SET last_seen_at = ? WHERE id =
+UPDATE session SET last_seen_at = ? WHERE id = ?
 `
 
 type TouchSessionParams struct {

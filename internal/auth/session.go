@@ -176,11 +176,18 @@ func (s *Sessions) Revoke(ctx context.Context, p Principal) error {
 	now := core.MicrosFromTime(s.clk.Now()).Int64()
 
 	return s.db.Tx(ctx, func(q *store.Queries) error {
-		if err := q.RevokeSession(ctx, sqlitegen.RevokeSessionParams{
+		revoked, err := q.RevokeSession(ctx, sqlitegen.RevokeSessionParams{
 			RevokedAt: &now,
 			ID:        p.SessionID,
-		}); err != nil {
+		})
+		if err != nil {
 			return fmt.Errorf("revoke the session: %w", err)
+		}
+		if revoked == 0 {
+			// Already revoked, or gone. Signing out twice is not an error a browser should see —
+			// but it is also not a second sign-out, and audit_log is the one table where a row
+			// recording something that did not happen cannot be taken back.
+			return nil
 		}
 		return audit.Record(ctx, q, s.clk, audit.Entry{
 			Actor:       audit.ActorAccount,

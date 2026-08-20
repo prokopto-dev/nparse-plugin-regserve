@@ -12,6 +12,7 @@ package storetest
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -130,4 +131,56 @@ func templateFile(t *testing.T) string {
 
 	require.NoError(t, templateErr)
 	return templatePath
+}
+
+// Column runs query and returns the first column of every row, as a string.
+//
+// It exists so that a test in another package can assert what a service WROTE rather than what it
+// returned. A helper that read the row back through the same query set could not tell a correct
+// row from a consistent misunderstanding — and the values worth checking that way are exactly the
+// ones no query selects, because nothing in production has a reason to read them: a stored
+// credential hash, for one.
+//
+// It stays here rather than in the calling package because internal/store is the only tree allowed
+// to hold a *sql.DB (gate SQL001), and a test helper that handed one out would be that rule with a
+// door in it.
+func Column(t *testing.T, db *store.DB, query string, args ...any) []string {
+	t.Helper()
+
+	rows, err := raw(t, db).QueryContext(t.Context(), query, args...)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, rows.Close()) }()
+
+	var out []string
+	for rows.Next() {
+		var v string
+		require.NoError(t, rows.Scan(&v))
+		out = append(out, v)
+	}
+	require.NoError(t, rows.Err())
+	return out
+}
+
+// Exec runs a statement that the generated query set deliberately has no method for.
+//
+// Every use is a test arranging a state the service cannot itself produce — a disabled account, a
+// row aged past an expiry. A test that needs this to arrange something the service SHOULD be able
+// to do is a test pointing at a missing method.
+func Exec(t *testing.T, db *store.DB, stmt string, args ...any) {
+	t.Helper()
+
+	_, err := raw(t, db).ExecContext(t.Context(), stmt, args...)
+	require.NoError(t, err)
+}
+
+// raw opens a second connection to the same file. WAL mode is what makes that safe alongside the
+// pools db already holds, and the busy timeout is what makes it wait rather than fail if it meets
+// the writer.
+func raw(t *testing.T, db *store.DB) *sql.DB {
+	t.Helper()
+
+	conn, err := sql.Open("sqlite", "file:"+db.Path()+"?_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	return conn
 }
