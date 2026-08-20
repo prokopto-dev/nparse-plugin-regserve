@@ -22,3 +22,8 @@
 #
 # The format is one `<sha256>  <path>` line per file, which is what shasum already writes, so a
 # hand-appended line and a generated one are the same thing. Lines starting with # are ignored.
+4887463a3fb3fab5aac76dac84ac1665d6b7822910e365d3216fabc7a0310e10  db/migrations-sqlite/20260818210309_initial_schema.sql
+213bd25ebf430a98bf557c6931c10c8e98c17f4f10661a068f35058f2a39da69  db/migrations-sqlite/20260819015527_sessions_and_oauth_flows.sql
+9df76d68873bd5aa655da78ac0b1aa696e26690f7b00aa5c07cdd0477b5ec272  db/migrations-sqlite/20260820124719_personal_access_tokens.sql
+4b11e8810ae2e46f997b3c2bc15f1b57d8100dff1f3e661a0a82e4ea8d0f7a9d  db/migrations-sqlite/20260820131854_release_notes.sql
+edf60f31b97a268f7c536a9bae83afabf9012a50228ada17b882e76114d84385  db/migrations-sqlite/20260820142711_publish_idempotency_and_verified_hash.sql
