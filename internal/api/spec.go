@@ -14,6 +14,7 @@ import (
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/identity"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/ownership"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/registry"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/release"
 )
 
 // Spec returns the OpenAPI document for every operation this service exposes.
@@ -33,6 +34,7 @@ func Spec() *huma.OpenAPI {
 	registerHealth(api, unavailable{})
 	registerIndex(api, unavailable{})
 	registerAuth(api, unavailable{}, unavailable{}, identity.NewRegistry())
+	registerReleases(api, unavailablePublisher{})
 	registerWeb(api, WebDeps{
 		Sessions:  unavailable{},
 		Tokens:    unavailableTokens{},
@@ -107,6 +109,14 @@ func (unavailableTokens) List(context.Context, string) ([]auth.Listing, error) {
 }
 
 func (unavailableTokens) Revoke(context.Context, string, string) error { return errSpecOnly }
+
+// unavailablePublisher stands in for the publish path when the document is generated. The
+// document describes what this BUILD exposes, not what one deployment happens to have wired.
+type unavailablePublisher struct{}
+
+func (unavailablePublisher) Publish(context.Context, release.Request) (release.Outcome, error) {
+	return release.Outcome{}, errSpecOnly
+}
 
 type unavailableOwnership struct{}
 

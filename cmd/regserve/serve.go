@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/api"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/artifact"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/auth"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/clock"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/core"
@@ -23,6 +24,7 @@ import (
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/identity/guard"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/ownership"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/plugin"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/release"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/store"
 )
 
@@ -152,6 +154,21 @@ func runServe(ctx context.Context, addr, dbPath, seedPath string) error {
 		}
 		cfg.Catalogue = cat
 		ready.cat = cat
+
+		// The publish path. Wired whenever there is a database and INDEPENDENTLY of whether
+		// sign-in is configured: a personal access token authenticates a publish with no browser
+		// involved, which is the whole point of ADR-0005's deployment credential. The live
+		// deployment has publishing before it has an OAuth application.
+		//
+		// The fetcher takes the production defaults — no PermitLoopback, the 45s budget that fits
+		// inside WriteTimeout, and the 50 MiB cap enforced during the read.
+		fetcher, err := artifact.NewFetcher(clk, artifact.Config{})
+		if err != nil {
+			// Fatal rather than degraded. A build that cannot construct a fetcher cannot verify an
+			// artifact, and a publish endpoint that cannot verify must not be answering.
+			return fmt.Errorf("build the artifact fetcher: %w", err)
+		}
+		cfg.Publisher = release.NewPublisher(db, clk, fetcher)
 
 		// Sign-in is configured or it is not, and a half-configured one is fatal. See
 		// configureIdentity: an operator who has set a client id has asked for this to work, and a

@@ -31,6 +31,15 @@ type AuditLog struct {
 	Detail         *string
 }
 
+type IdempotencyKey struct {
+	AccountID      string
+	Operation      string
+	IdempotencyKey string
+	RequestHash    string
+	ReleaseID      string
+	CreatedAt      int64
+}
+
 type Identity struct {
 	ID           string
 	AccountID    string

@@ -73,12 +73,13 @@ personal access token outright.
 - ✅ `internal/artifact`: fetch, re-hash, size cap during read, https per redirect hop, SSRF-denying
   dialer — through the client already built in `internal/identity/guard`. Two digest types, so a
   submitted sha256 cannot be assigned where a computed one belongs
-- `POST /api/v1/plugins/{id}/releases` with `Idempotency-Key`
+- ✅ `POST /api/v1/plugins/{id}/releases` with `Idempotency-Key`
 - Id claims, ownership checks, transfers
 - Quarantine rules and the review queue; trust levels
-- Populating `release.notes`, and surfacing it as `release_notes` on `latest`
-- The gate for **"a stored sha256 was computed by the server"** — currently a review rule, and the
-  only row in the invariants register without a mechanism
+- ✅ Populating `release.notes` (surfacing it on `latest` is Phase 4)
+- ✅ The gate for **"a stored sha256 was computed by the server"** — the last row in the invariants
+  register without a mechanism, now carrying four: an unforgeable type, a single door, gate
+  `HASH001`, and a `CHECK` that holds for writes which never go through Go
 
 ## Phase 4 — the ecosystem
 

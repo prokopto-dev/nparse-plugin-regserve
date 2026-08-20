@@ -34,6 +34,89 @@
         ],
         "type": "object"
       },
+      "PublishReleaseBody": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "description": "The sha256 you computed for the artifact, as 64 hex characters. It is COMPARED against the hash this server computes from the bytes it downloads, and then discarded — the published hash is always the server's. A mismatch does not publish; it goes to review.",
+            "maxLength": 64,
+            "minLength": 64,
+            "type": "string"
+          },
+          "artifact_url": {
+            "description": "An https URL the artifact can be downloaded from. It is transport only: the server downloads it and computes the hash itself. A URL carrying credentials in its userinfo is refused, because this value is published in the index to every client.",
+            "maxLength": 2048,
+            "type": "string"
+          },
+          "minimum_app_version": {
+            "description": "The lowest nParse+ version this release runs on, or null for no constraint. Null and empty are the same statement here and both mean no constraint.",
+            "type": "string"
+          },
+          "notes": {
+            "description": "Plain-text patch notes for a human to read in the client. Not Markdown and not HTML (ADR-0013); at most 2048 bytes.",
+            "maxLength": 2048,
+            "type": "string"
+          },
+          "sdk_specifier": {
+            "description": "The nParse+ SDK versions this release supports, as a PEP 440 specifier. Carried, not evaluated.",
+            "maxLength": 128,
+            "type": "string"
+          },
+          "version": {
+            "description": "The release's version. This registry carries it and compares it; the client evaluates version semantics.",
+            "maxLength": 64,
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "artifact_url",
+          "artifact_sha256",
+          "sdk_specifier"
+        ],
+        "type": "object"
+      },
+      "PublishReleaseResult": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_bytes": {
+            "description": "The artifact's size in bytes, counted during the download. Absent when the artifact could not be fetched.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "artifact_sha256": {
+            "description": "The sha256 THIS SERVER computed from the bytes it downloaded. This is the value that is published, and it is not necessarily the one you submitted. Absent when the artifact could not be fetched.",
+            "type": "string"
+          },
+          "release_id": {
+            "description": "This release's permanent id.",
+            "type": "string"
+          },
+          "replayed": {
+            "description": "True when this idempotency key had been seen before and this is the original result rather than a new submission.",
+            "type": "boolean"
+          },
+          "review": {
+            "description": "Why this release is waiting, in a sentence written for a human.",
+            "type": "string"
+          },
+          "state": {
+            "description": "Where the release is: pending while it waits for a human, approved once it is the plugin's live release. A new plugin id always gets human review, and trust never bypasses that.",
+            "type": "string"
+          },
+          "verified": {
+            "description": "Whether this server downloaded the artifact and computed its hash. FALSE MEANS THE BYTES WERE NOT CHECKED: the release is recorded and sent to review, and the review field says why. It is never a success.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "release_id",
+          "state",
+          "verified",
+          "replayed"
+        ],
+        "type": "object"
+      },
       "StatusBody": {
         "additionalProperties": false,
         "properties": {
@@ -399,6 +482,144 @@
         ],
         "x-regserve-pat-forbidden": true,
         "x-regserve-permission": "token.revoke"
+      }
+    },
+    "/api/v1/plugins/{id}/releases": {
+      "post": {
+        "description": "Submits a release of a plugin you hold.\n\n**The server downloads the artifact and computes its sha256 itself.** The `artifact_sha256` you send is compared against that value and then discarded; the hash this registry publishes is always one it derived from bytes it read (ADR-0008). If the two disagree, the release is not published: it is recorded and sent to human review, with the mismatch noted.\n\n**An artifact that could not be downloaded is not published either.** It goes to review with the reason recorded and `verified` false. \"We could not check\" and \"we checked and it was fine\" never produce the same answer.\n\n`Idempotency-Key` is required. A re-run with the same key returns the original result; the same key with a different body is a 409.",
+        "operationId": "publishRelease",
+        "parameters": [
+          {
+            "description": "The plugin's permanent id.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The plugin's permanent id.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "An opaque key identifying this publish attempt. Re-running a workflow with the same key returns the original result instead of submitting a second release; reusing it with a different body is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "description": "An opaque key identifying this publish attempt. Re-running a workflow with the same key returns the original result instead of submitting a second release; reusing it with a different body is a 409.",
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublishReleaseBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublishReleaseResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "pat": [
+              "plugin:publish"
+            ]
+          },
+          {
+            "session": []
+          }
+        ],
+        "summary": "Publish a release",
+        "tags": [
+          "releases"
+        ],
+        "x-regserve-permission": "release.publish",
+        "x-regserve-plugin-param": "id"
       }
     },
     "/auth/logout": {

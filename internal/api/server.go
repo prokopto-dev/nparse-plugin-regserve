@@ -124,6 +124,11 @@ type Config struct {
 	// Ownership backs the plugin settings page. Nil, like a nil Tokens, means the account surface
 	// is not registered — an honest 404 rather than a page that half works.
 	Ownership OwnershipService
+
+	// Publisher backs POST /api/v1/plugins/{id}/releases. Nil means the route is not registered,
+	// on the same principle as a nil Catalogue: a publish endpoint that exists and cannot fetch or
+	// store anything would accept a release and lose it, which is worse than an honest 404.
+	Publisher Publisher
 }
 
 // TokenService is what the account surface needs in order to manage personal access tokens.
@@ -155,6 +160,9 @@ func New(cfg Config) http.Handler {
 	registerHealth(api, cfg.Readiness)
 	if cfg.Catalogue != nil {
 		registerIndex(api, cfg.Catalogue)
+	}
+	if cfg.Publisher != nil {
+		registerReleases(api, cfg.Publisher)
 	}
 	if cfg.Login != nil && cfg.Sessions != nil && cfg.Providers != nil {
 		registerAuth(api, cfg.Login, cfg.Sessions, cfg.Providers)

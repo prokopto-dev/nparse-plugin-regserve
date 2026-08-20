@@ -373,3 +373,32 @@ func requireOwnerRoleTx(ctx context.Context, q *store.Queries, pluginID, account
 	}
 	return nil
 }
+
+// RequireGrantTx demands ANY grant on the plugin, inside the caller's transaction.
+//
+// It is the check a PUBLISH makes, and it is deliberately weaker than requireOwnerRoleTx: a
+// maintainer may publish and may not change who holds the plugin. That difference is the whole
+// reason RoleMaintainer exists, so the two checks are two functions rather than one with a flag —
+// a boolean argument at a call site is a thing somebody passes wrong once.
+//
+// IT RUNS IN THE TRANSACTION, for the reason ADR-0005 gives: the caller's authority and the change
+// it authorises are decided against one snapshot. Ownership is checked per request rather than
+// cascade-revoked, so an owner removed a moment ago must not get one more publish in — and a check
+// made outside the transaction is exactly that window.
+//
+// It is exported because the publish path lives in internal/plugin and this package is the
+// authority on who may change a plugin. A second copy of "is this account allowed" over there is a
+// copy that drifts.
+func RequireGrantTx(ctx context.Context, q *store.Queries, pluginID, accountID string) error {
+	_, err := q.GetPluginOwner(ctx, sqlitegen.GetPluginOwnerParams{
+		PluginID:  pluginID,
+		AccountID: accountID,
+	})
+	switch {
+	case errors.Is(err, store.ErrNoRows):
+		return ErrNotAnOwner
+	case err != nil:
+		return fmt.Errorf("check ownership of %s: %w", pluginID, err)
+	}
+	return nil
+}

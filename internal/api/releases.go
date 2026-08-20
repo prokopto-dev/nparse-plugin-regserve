@@ -1,0 +1,235 @@
+package api
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+
+	"github.com/danielgtaylor/huma/v2"
+
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/artifact"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/core"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/release"
+)
+
+// PathPluginReleases is where a release is submitted. It is under the versioned product API, not
+// beside the pinned index endpoints: this is our shape and it may version, where theirs may not.
+const PathPluginReleases = "/plugins/{id}/releases"
+
+// tagReleases groups publishing in the OpenAPI document and in the SDKs generated from it.
+const tagReleases = "releases"
+
+// idempotencyHeader is the header canonical §6 requires on every mutating POST that creates domain
+// state. The spelling is the conventional one, so an SDK generator and a human both recognise it.
+const idempotencyHeader = "Idempotency-Key"
+
+// Publisher is what internal/api needs in order to accept a release.
+//
+// A consumer-declared interface, like Catalogue: this package says what it needs and the wiring
+// supplies it. It keeps internal/plugin out of this package's import set, which is what lets
+// internal/plugin depend on this one for the Catalogue interface without a cycle.
+type Publisher interface {
+	Publish(ctx context.Context, req release.Request) (release.Outcome, error)
+}
+
+// publishReleaseInput is the request. EVERY FIELD IS HOSTILE INPUT, including the ones that look
+// structural — the domain layer validates all of them again in internal/release.
+type publishReleaseInput struct {
+	PluginID string `path:"id" doc:"The plugin's permanent id."`
+
+	// IdempotencyKey is required by Huma, so a request without one is a 422 before any handler
+	// runs. Canonical §6: the dominant caller is a release workflow, and workflows get re-run.
+	IdempotencyKey string `header:"Idempotency-Key" required:"true" minLength:"1" maxLength:"255" doc:"An opaque key identifying this publish attempt. Re-running a workflow with the same key returns the original result instead of submitting a second release; reusing it with a different body is a 409."`
+
+	Body publishReleaseBody
+}
+
+// publishReleaseBody is the JSON.
+//
+// THE FIELD NAMES ARE NOT THE INDEX DOCUMENT'S. `sdk_specifier` and `minimum_app_version` are the
+// database's spelling, and the index calls the same two things something else. That is deliberate
+// and mechanised: gate SCHEMA002 fails a wire-format field name in a string literal outside
+// internal/registry, and a struct tag is a string literal. The deeper reason is canonical §1 — the
+// index's names belong to a pydantic model in a released client that we cannot patch, and this
+// request's names belong to us and version with /api/v1. Spelling them the same would put the
+// client's vocabulary in a second package and invite somebody to keep the two "in sync", which is
+// the moment the pinned format stops being pinned.
+type publishReleaseBody struct {
+	Version string `json:"version" maxLength:"64" doc:"The release's version. This registry carries it and compares it; the client evaluates version semantics."`
+
+	ArtifactURL string `json:"artifact_url" maxLength:"2048" doc:"An https URL the artifact can be downloaded from. It is transport only: the server downloads it and computes the hash itself. A URL carrying credentials in its userinfo is refused, because this value is published in the index to every client."`
+
+	ArtifactSHA256 string `json:"artifact_sha256" minLength:"64" maxLength:"64" doc:"The sha256 you computed for the artifact, as 64 hex characters. It is COMPARED against the hash this server computes from the bytes it downloads, and then discarded — the published hash is always the server's. A mismatch does not publish; it goes to review."`
+
+	SDKSpecifier string `json:"sdk_specifier" maxLength:"128" doc:"The nParse+ SDK versions this release supports, as a PEP 440 specifier. Carried, not evaluated."`
+
+	MinimumAppVersion *string `json:"minimum_app_version,omitempty" doc:"The lowest nParse+ version this release runs on, or null for no constraint. Null and empty are the same statement here and both mean no constraint."`
+
+	Notes string `json:"notes,omitempty" maxLength:"2048" doc:"Plain-text patch notes for a human to read in the client. Not Markdown and not HTML (ADR-0013); at most 2048 bytes."`
+}
+
+// publishReleaseOutput is the answer.
+type publishReleaseOutput struct {
+	Status int
+	Body   publishReleaseResult
+}
+
+// publishReleaseResult says what happened to the submission.
+//
+// IT NEVER REPORTS SUCCESS FOR AN ARTIFACT THAT WAS NOT CHECKED. `verified` and `state` are
+// separate fields because they answer different questions — "did this server read and hash the
+// bytes" and "is this release live" — and collapsing them into one boolean is how "we could not
+// check" and "we checked and it was fine" become the same answer (ADR-0008).
+type publishReleaseResult struct {
+	ReleaseID string `json:"release_id" doc:"This release's permanent id."`
+
+	State string `json:"state" doc:"Where the release is: pending while it waits for a human, approved once it is the plugin's live release. A new plugin id always gets human review, and trust never bypasses that."`
+
+	Verified bool `json:"verified" doc:"Whether this server downloaded the artifact and computed its hash. FALSE MEANS THE BYTES WERE NOT CHECKED: the release is recorded and sent to review, and the review field says why. It is never a success."`
+
+	SHA256 string `json:"artifact_sha256,omitempty" doc:"The sha256 THIS SERVER computed from the bytes it downloaded. This is the value that is published, and it is not necessarily the one you submitted. Absent when the artifact could not be fetched."`
+
+	Bytes *int64 `json:"artifact_bytes,omitempty" doc:"The artifact's size in bytes, counted during the download. Absent when the artifact could not be fetched."`
+
+	Review string `json:"review,omitempty" doc:"Why this release is waiting, in a sentence written for a human."`
+
+	Replayed bool `json:"replayed" doc:"True when this idempotency key had been seen before and this is the original result rather than a new submission."`
+}
+
+// registerReleases wires the publish endpoint.
+func registerReleases(api huma.API, publisher Publisher) {
+	register(api,
+		// A token needs `plugin:publish`, AND its pin is compared against the `id` path parameter
+		// before the handler runs. OnPlugin is what makes the pin enforceable: ADR-0005's
+		// containment argument is that a credential in one repository's CI can do exactly one
+		// thing to exactly one plugin, and that is only true if something compares the two.
+		// PERM001 fails a token-callable operation under /plugins/{...} that omits it.
+		Requires("release.publish", "plugin:publish").OnPlugin("id"),
+		huma.Operation{
+			// NEVER RENAMED. It is the generated SDK's method name, so a rename breaks callers in
+			// their language rather than ours (canonical §6, gate OAPI001).
+			OperationID: "publishRelease",
+			Method:      http.MethodPost,
+			Path:        BasePath + PathPluginReleases,
+			Summary:     "Publish a release",
+			Description: "Submits a release of a plugin you hold.\n\n" +
+				"**The server downloads the artifact and computes its sha256 itself.** The " +
+				"`artifact_sha256` you send is compared against that value and then discarded; " +
+				"the hash this registry publishes is always one it derived from bytes it read " +
+				"(ADR-0008). If the two disagree, the release is not published: it is recorded " +
+				"and sent to human review, with the mismatch noted.\n\n" +
+				"**An artifact that could not be downloaded is not published either.** It goes " +
+				"to review with the reason recorded and `verified` false. \"We could not check\" " +
+				"and \"we checked and it was fine\" never produce the same answer.\n\n" +
+				"`Idempotency-Key` is required. A re-run with the same key returns the original " +
+				"result; the same key with a different body is a 409.",
+			Tags: []string{tagReleases},
+			Errors: []int{
+				http.StatusBadRequest,
+				http.StatusUnauthorized,
+				http.StatusForbidden,
+				http.StatusNotFound,
+				http.StatusConflict,
+				http.StatusInternalServerError,
+			},
+		},
+		func(ctx context.Context, in *publishReleaseInput) (*publishReleaseOutput, error) {
+			principal, ok := PrincipalFrom(ctx)
+			if !ok {
+				// Unreachable: the middleware answers 401 before a handler for an authenticated
+				// operation runs. Refusing is the only safe reading of "we do not know who this is".
+				slog.ErrorContext(ctx, "publish reached a handler with no principal")
+				return nil, NewProblem(http.StatusInternalServerError, CodeInternalError, "")
+			}
+
+			submission, err := release.NewSubmission(release.RawSubmission{
+				PluginID:          in.PluginID,
+				Version:           in.Body.Version,
+				ArtifactURL:       in.Body.ArtifactURL,
+				ArtifactSHA256:    in.Body.ArtifactSHA256,
+				SDKSpecifier:      in.Body.SDKSpecifier,
+				MinimumAppVersion: in.Body.MinimumAppVersion,
+				Notes:             in.Body.Notes,
+			})
+			if err != nil {
+				return nil, badSubmission(err)
+			}
+
+			outcome, err := publisher.Publish(ctx, release.Request{
+				Submission:     submission,
+				AccountID:      principal.AccountID,
+				IdempotencyKey: in.IdempotencyKey,
+			})
+			if err != nil {
+				return nil, publishProblem(ctx, in.PluginID, err)
+			}
+
+			return &publishReleaseOutput{
+				// 201 whether it is pending or approved: a release resource was created either
+				// way, and the body's `state` is what says whether it is live. A status that
+				// varied with the state would change for existing callers the moment trust levels
+				// land, which is a compatibility break dressed as a feature.
+				Status: http.StatusCreated,
+				Body: publishReleaseResult{
+					ReleaseID: outcome.ReleaseID,
+					State:     outcome.State.String(),
+					Verified:  outcome.Verified,
+					SHA256:    outcome.SHA256,
+					Bytes:     outcome.Bytes,
+					Review:    outcome.Review,
+					Replayed:  outcome.Replayed,
+				},
+			}, nil
+		})
+}
+
+// badSubmission maps a validation failure onto a problem document.
+//
+// Every branch is a 400 with the submitter's own error, because every one of them is a fact about
+// what they sent and none of them says anything about what exists here. The messages come from the
+// domain sentinels rather than being rewritten, so the answer names the field.
+func badSubmission(err error) error {
+	return NewProblem(http.StatusBadRequest, CodeInvalidRequest, err.Error())
+}
+
+// publishProblem maps a publish failure onto a problem document.
+func publishProblem(ctx context.Context, pluginID string, err error) error {
+	switch {
+	case errors.Is(err, release.ErrNotPublishable):
+		// 404 and not 403, and the same answer as a plugin that does not exist. Telling somebody
+		// "that plugin exists and is not yours" enumerates claimed ids for anybody with a
+		// wordlist — and because ids are permanent and never recycled, it also tells a squatter
+		// which names are worth waiting for.
+		return NewProblem(http.StatusNotFound, CodeNotFound,
+			"no such plugin, or you do not hold it")
+
+	case errors.Is(err, release.ErrGitHubIdentityRequired):
+		return NewProblem(http.StatusForbidden, CodeGitHubIdentityRequired,
+			"publishing requires a linked github identity; sign in with GitHub and try again")
+
+	case errors.Is(err, release.ErrVersionExists):
+		return NewProblem(http.StatusConflict, CodeConflict,
+			"that version has already been submitted for this plugin, and a version is used once "+
+				"per plugin ever")
+
+	case errors.Is(err, release.ErrIdempotencyKeyReused):
+		return NewProblem(http.StatusConflict, CodeConflict,
+			"that "+idempotencyHeader+" was used for a different request; use a new key for a new "+
+				"release")
+
+	case errors.Is(err, release.ErrNoIdempotencyKey):
+		return NewProblem(http.StatusBadRequest, CodeInvalidRequest,
+			"an "+idempotencyHeader+" header is required")
+
+	case errors.Is(err, artifact.ErrBadArtifactURL), errors.Is(err, artifact.ErrInvalidDigest),
+		errors.Is(err, core.ErrInvalidPluginID):
+		return badSubmission(err)
+	}
+
+	// Anything else is ours. The cause goes to the log with the plugin id; the caller gets the
+	// fixed sentence and the request id, because echoing a driver error to an authenticated
+	// stranger is how a publish endpoint becomes an information-disclosure bug.
+	slog.ErrorContext(ctx, "publish a release", "plugin_id", pluginID, "error", err)
+	return NewProblem(http.StatusInternalServerError, CodeInternalError, "")
+}
