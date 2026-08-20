@@ -57,7 +57,8 @@ SELECT
     r.artifact_url,
     r.artifact_sha256,
     r.sdk_specifier,
-    r.minimum_app_version
+    r.minimum_app_version,
+    r.notes
 FROM plugin p
 JOIN "release" r ON r.plugin_id = p.id AND r.state = 'approved'
 WHERE p.delisted_at IS NULL AND p.id = ?
@@ -74,6 +75,7 @@ type GetListingRow struct {
 	ArtifactSha256    *string
 	SdkSpecifier      string
 	MinimumAppVersion *string
+	Notes             *string
 }
 
 func (q *Queries) GetListing(ctx context.Context, id string) (GetListingRow, error) {
@@ -90,6 +92,7 @@ func (q *Queries) GetListing(ctx context.Context, id string) (GetListingRow, err
 		&i.ArtifactSha256,
 		&i.SdkSpecifier,
 		&i.MinimumAppVersion,
+		&i.Notes,
 	)
 	return i, err
 }
@@ -146,10 +149,10 @@ const insertRelease = `-- name: InsertRelease :exec
 INSERT INTO "release" (
     id, plugin_id, version, state, source,
     artifact_url, artifact_sha256, artifact_bytes,
-    sdk_specifier, minimum_app_version,
+    sdk_specifier, minimum_app_version, notes,
     submitted_by, submitted_at, verified_at,
     reviewed_by, reviewed_at, review_note
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type InsertReleaseParams struct {
@@ -163,6 +166,7 @@ type InsertReleaseParams struct {
 	ArtifactBytes     *int64
 	SdkSpecifier      string
 	MinimumAppVersion *string
+	Notes             *string
 	SubmittedBy       *string
 	SubmittedAt       int64
 	VerifiedAt        *int64
@@ -171,6 +175,10 @@ type InsertReleaseParams struct {
 	ReviewNote        *string
 }
 
+// The seed importer's insert. It carries notes because the seed document is the index document:
+// a catalogue captured with curl and replayed into an empty database must come back the same, and
+// an import that silently dropped an author's patch notes would make the two disagree with nothing
+// anywhere saying so.
 func (q *Queries) InsertRelease(ctx context.Context, arg InsertReleaseParams) error {
 	_, err := q.db.ExecContext(ctx, insertRelease,
 		arg.ID,
@@ -183,6 +191,7 @@ func (q *Queries) InsertRelease(ctx context.Context, arg InsertReleaseParams) er
 		arg.ArtifactBytes,
 		arg.SdkSpecifier,
 		arg.MinimumAppVersion,
+		arg.Notes,
 		arg.SubmittedBy,
 		arg.SubmittedAt,
 		arg.VerifiedAt,
@@ -204,7 +213,8 @@ SELECT
     r.artifact_url,
     r.artifact_sha256,
     r.sdk_specifier,
-    r.minimum_app_version
+    r.minimum_app_version,
+    r.notes
 FROM plugin p
 JOIN "release" r ON r.plugin_id = p.id AND r.state = 'approved'
 WHERE p.delisted_at IS NULL
@@ -222,6 +232,7 @@ type ListListingsRow struct {
 	ArtifactSha256    *string
 	SdkSpecifier      string
 	MinimumAppVersion *string
+	Notes             *string
 }
 
 func (q *Queries) ListListings(ctx context.Context) ([]ListListingsRow, error) {
@@ -244,6 +255,7 @@ func (q *Queries) ListListings(ctx context.Context) ([]ListListingsRow, error) {
 			&i.ArtifactSha256,
 			&i.SdkSpecifier,
 			&i.MinimumAppVersion,
+			&i.Notes,
 		); err != nil {
 			return nil, err
 		}

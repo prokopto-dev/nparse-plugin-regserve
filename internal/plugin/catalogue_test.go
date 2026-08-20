@@ -429,3 +429,42 @@ func TestImportSeed_MarkerAlone_StopsASecondImport(t *testing.T) {
 	require.NoError(t, raw.QueryRowContext(t.Context(), `SELECT count(*) FROM plugin`).Scan(&plugins))
 	require.Zero(t, plugins)
 }
+
+// TestCatalogue_ReleaseNotes_ReachTheWireAndNULLStaysAbsent — the column, the mapping, the bytes.
+//
+// The interesting half is the second listing. `notes` is nullable, and NULL has to arrive at the
+// renderer as the empty string so that the key is omitted: every plugin in production is in that
+// state on the day this ships, and each of them must be served exactly as it was before the field
+// existed. Rendering to bytes here rather than comparing struct fields is what makes that a
+// statement about the document rather than about a Go value.
+func TestCatalogue_ReleaseNotes_ReachTheWireAndNULLStaysAbsent(t *testing.T) {
+	t.Parallel()
+
+	const notes = "Fixed the price graph on servers with no recent sales.\nTook the mule list out " +
+		"of the tooltip."
+
+	annotated := listing("annotated")
+	annotated.Latest.ReleaseNotes = notes
+	plain := listing("plain")
+
+	cat := importInto(t, storetest.New(t), annotated, plain)
+
+	served, err := cat.Listings(t.Context())
+	require.NoError(t, err)
+	require.Empty(t, cmp.Diff([]registry.Plugin{annotated, plain}, served),
+		"an imported seed must come back as the document it was imported from, notes included")
+
+	idx, err := registry.NewIndex(served)
+	require.NoError(t, err)
+	raw, err := idx.Marshal()
+	require.NoError(t, err)
+
+	require.Contains(t, string(raw), "Fixed the price graph")
+	require.Equal(t, 1, strings.Count(string(raw), "release_notes"),
+		"exactly one listing has notes; the other must carry no such key at all")
+
+	one, err := cat.Listing(t.Context(), core.PluginID("plain"))
+	require.NoError(t, err)
+	require.Empty(t, one.Latest.ReleaseNotes,
+		"a NULL notes column is the absence of notes, not an empty string somebody wrote")
+}

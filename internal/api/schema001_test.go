@@ -131,6 +131,42 @@ func TestSchema001_MinimalListing_ValidatesAgainstUpstreamSchema(t *testing.T) {
 			"different things to the humans who read this document")
 }
 
+// TestSchema001_ReleaseNotes_AreAdditiveOnTheWire — the additive field, checked from both ends.
+//
+// The vendored schema does not describe `release_notes`: it is generated from the pydantic models
+// a RELEASED client parses with, and those releases predate the field. That is exactly why this
+// gate has to see it. The schema leaves `additionalProperties` unset, mirroring a parser that
+// ignores unknown keys, so an added member validates — which means validation alone cannot tell an
+// intended additive field from an accidental one. The second half of the test is the half that
+// matters: a listing with NO notes must carry no such key, so the document every existing listing
+// produces is unchanged.
+func TestSchema001_ReleaseNotes_AreAdditiveOnTheWire(t *testing.T) {
+	t.Parallel()
+
+	s := schemaV1(t)
+
+	withNotes := testPlugin("annotated")
+	withNotes.Latest.ReleaseNotes = "Fixed the price graph on servers with no recent sales."
+
+	srv := serve(t, fakeCatalogue{plugins: []registry.Plugin{withNotes, testPlugin("plain")}})
+
+	resp := fetch(t, srv, api.PathIndex, "")
+	require.Equal(t, http.StatusOK, resp.status)
+	require.NoError(t, schematest.ValidateBytes(t, s, resp.body),
+		"a document carrying the additive field must still satisfy the schema a released client "+
+			"parses with; if it does not, the field is not additive")
+
+	// Off the wire, not out of the renderer: the point of this gate is the bytes.
+	require.Contains(t, string(resp.body), `"release_notes":"Fixed the price graph`)
+
+	plain := fetch(t, srv, "/plugins/plain/index.json", "")
+	require.Equal(t, http.StatusOK, plain.status)
+	require.NoError(t, schematest.ValidateBytes(t, s, plain.body))
+	require.NotContains(t, string(plain.body), "release_notes",
+		"a listing with no notes must be served exactly as it was before the field existed; an "+
+			"empty key on every listing is a change to every document already in the field")
+}
+
 // TestSchema001_EmptyCatalogue_ServesAValidEmptyDocument — a fresh instance has no plugins, and
 // that is a legitimate document rather than an error. `null` for the list would make the client's
 // pydantic model reject the whole index, so every user would see "registry is malformed" instead

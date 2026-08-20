@@ -306,7 +306,12 @@ func TestSCHEMA002_WireFormat_OnlyInInternalRegistry(t *testing.T) {
 	files := parseTree(t)
 	requireNotVacant(t, files, "SCHEMA002")
 
-	wireFields := []string{"schema_version", "requires_sdk", "min_app_version"}
+	// Every name the index document uses that is not also an ordinary English word. `release_notes`
+	// joined the list when the field was surfaced on `latest`: it is the reason the COLUMN is
+	// called `notes` and not this (canonical §7), and without it here that rule would be a
+	// convention rather than a gate — the first `json:"release_notes"` in a handler somewhere else
+	// would be a second definition of a shape we do not own.
+	wireFields := []string{"schema_version", "requires_sdk", "min_app_version", "release_notes"}
 
 	var bad []string
 	for _, g := range files {

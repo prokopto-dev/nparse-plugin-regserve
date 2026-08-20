@@ -22,7 +22,8 @@ SELECT
     r.artifact_url,
     r.artifact_sha256,
     r.sdk_specifier,
-    r.minimum_app_version
+    r.minimum_app_version,
+    r.notes
 FROM plugin p
 JOIN "release" r ON r.plugin_id = p.id AND r.state = 'approved'
 WHERE p.delisted_at IS NULL
@@ -39,7 +40,8 @@ SELECT
     r.artifact_url,
     r.artifact_sha256,
     r.sdk_specifier,
-    r.minimum_app_version
+    r.minimum_app_version,
+    r.notes
 FROM plugin p
 JOIN "release" r ON r.plugin_id = p.id AND r.state = 'approved'
 WHERE p.delisted_at IS NULL AND p.id = ?;
@@ -61,13 +63,17 @@ INSERT INTO plugin (id, name, description, author, homepage, claimed_at, updated
 VALUES (?, ?, ?, ?, ?, ?, ?);
 
 -- name: InsertRelease :exec
+-- The seed importer's insert. It carries notes because the seed document is the index document:
+-- a catalogue captured with curl and replayed into an empty database must come back the same, and
+-- an import that silently dropped an author's patch notes would make the two disagree with nothing
+-- anywhere saying so.
 INSERT INTO "release" (
     id, plugin_id, version, state, source,
     artifact_url, artifact_sha256, artifact_bytes,
-    sdk_specifier, minimum_app_version,
+    sdk_specifier, minimum_app_version, notes,
     submitted_by, submitted_at, verified_at,
     reviewed_by, reviewed_at, review_note
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: CountCatalogueImports :one
 -- Whether a seed has ever been imported into this database. The audit row written by the import is

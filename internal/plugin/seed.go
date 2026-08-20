@@ -191,8 +191,16 @@ func insertImported(
 		ArtifactSha256:    &sha,
 		SdkSpecifier:      p.Latest.RequiresSDK,
 		MinimumAppVersion: p.Latest.MinAppVersion,
-		SubmittedAt:       now.Int64(),
-		ReviewNote:        &note,
+		// Carried rather than dropped. The seed document IS the index document — the live
+		// catalogue reaches a fresh database by being captured with curl and replayed — so notes
+		// that survive the capture must survive the import, or the replayed catalogue is quietly
+		// not the one that was captured.
+		//
+		// NULL for a listing with none, never "": the column is nullable and the CHECK reads it
+		// that way, and an empty string would be a written-down statement that there are no notes.
+		Notes:       optional(p.Latest.ReleaseNotes),
+		SubmittedAt: now.Int64(),
+		ReviewNote:  &note,
 	}); err != nil {
 		return fmt.Errorf("record the imported release of %s: %w", p.ID, err)
 	}
@@ -214,4 +222,13 @@ func recordImport(
 		SubjectKind: "catalogue",
 		Detail:      map[string]any{"plugins": plugins, "path": path},
 	})
+}
+
+// optional renders a string as a nullable column value, keeping "there are none" distinct from
+// "there is an empty one".
+func optional(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }

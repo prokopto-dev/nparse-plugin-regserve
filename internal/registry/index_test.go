@@ -142,6 +142,15 @@ func TestValidate_RejectsInvalidAndDuplicateIDs(t *testing.T) {
 // MaxIndexBytes is the client's limit, not ours: past it the client aborts the read and every user
 // sees "could not reach the registry" at once. This fails at 80% so the alarm arrives while there
 // is still room to do something about it, rather than at the moment it breaks.
+//
+// EVERY LISTING CARRIES NOTES AT THE 2048-BYTE CAP, which is the arithmetic ADR-0013 rests on
+// rather than a pessimistic flourish: notes are the first field whose length an author controls,
+// so the catalogue this gate has to survive is the one where every author used all of it. Before
+// the field shipped this test measured a document that could not happen any more, which is the
+// quiet way a size gate stops being one. The cap's own constant lives in internal/release next to
+// the validator and the column's CHECK; the number is written out here rather than imported
+// because internal/registry must not gain a second copy of it (SCHEMA002's neighbouring rule: one
+// package owns one fact).
 func TestSize001_RenderedIndex_StaysUnderTheClientCap(t *testing.T) {
 	t.Parallel()
 
@@ -152,6 +161,7 @@ func TestSize001_RenderedIndex_StaysUnderTheClientCap(t *testing.T) {
 		p := samplePlugin()
 		p.ID = fmt.Sprintf("plugin-%04d", i)
 		p.Description = strings.Repeat("a plausibly long plugin description. ", 10)
+		p.Latest.ReleaseNotes = strings.Repeat("n", 2048)
 		plugins = append(plugins, p)
 	}
 
@@ -162,6 +172,14 @@ func TestSize001_RenderedIndex_StaysUnderTheClientCap(t *testing.T) {
 	// are the ones the HTTP layer writes verbatim.
 	raw, err := idx.Marshal()
 	require.NoError(t, err)
+
+	// Logged rather than only asserted. The number this gate is really about is the HEADROOM, and
+	// a gate that reports nothing until the day it fails gives whoever added the field that used
+	// it up no warning at all.
+	t.Logf("500 listings with notes at the cap render to %d bytes: %d%% of the %d-byte gate "+
+		"threshold, %d%% of the client's %d-byte limit",
+		len(raw), len(raw)*100/budget, budget,
+		len(raw)*100/registry.MaxIndexBytes, registry.MaxIndexBytes)
 
 	require.Less(t, len(raw), budget,
 		"500 listings must fit well inside the client's %d-byte cap; at %d bytes the catalogue is "+

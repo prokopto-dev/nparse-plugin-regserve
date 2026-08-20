@@ -51,7 +51,7 @@ These protect the one contract this project does not own. See
 |---|---|---|
 | `SCHEMA001` | The index document a client **receives** validates against the vendored `index-v1.schema.json` | Test in `internal/api` that runs a real `httptest` server, makes a real request, and validates the response bytes — plus the exact-bytes, content-negotiation and pinned-path assertions below |
 | `SCHEMA002` | Only `internal/registry` knows the wire format | AST analyser: those field names in a string literal or struct tag outside that package |
-| `SIZE001` | The rendered index stays under the client's 5 MiB cap | Test that renders a synthetic catalogue and fails as the size approaches the limit |
+| `SIZE001` | The rendered index stays under the client's 5 MiB cap | Test that renders a synthetic catalogue of 500 listings — every one carrying release notes at the 2048-byte cap, which is the largest document authors can produce — and fails as the size approaches the limit |
 
 
 The vendored schema is generated upstream by `tools/gen_registry_schema.py` in `nparse-plus`, from
