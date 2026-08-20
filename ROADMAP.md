@@ -70,8 +70,9 @@ personal access token outright.
 
 ## Phase 3 — publishing
 
-- `internal/artifact`: fetch, re-hash, size cap during read, https per redirect hop, SSRF-denying
-  dialer — through the client already built in `internal/identity/guard`
+- ✅ `internal/artifact`: fetch, re-hash, size cap during read, https per redirect hop, SSRF-denying
+  dialer — through the client already built in `internal/identity/guard`. Two digest types, so a
+  submitted sha256 cannot be assigned where a computed one belongs
 - `POST /api/v1/plugins/{id}/releases` with `Idempotency-Key`
 - Id claims, ownership checks, transfers
 - Quarantine rules and the review queue; trust levels

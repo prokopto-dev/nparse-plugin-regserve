@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/api"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/artifact"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/clock"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/plugin"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/registry"
@@ -459,4 +460,25 @@ func TestServe_NoCatalogue_ReadyzExplainsRatherThanVanishing(t *testing.T) {
 		"a nil catalogue must answer 503 and say why; 404 here would mean the route is gone")
 	require.Equal(t, http.StatusNotFound, statusOf(t.Context(), t, addr, "/index.json"),
 		"a route that exists but cannot work is worse than an honest 404")
+}
+
+// TestWriteTimeout_LeavesRoomForAnArtifactFetch — the two numbers are one decision.
+//
+// A publish holds its response open for as long as it takes to download the artifact and hash it
+// (ADR-0008), so the server's WriteTimeout is the real ceiling on artifact.DefaultTimeout. Get
+// this wrong and the release row is written while the response is cut off in flight: the
+// publishing workflow sees a failure for a publish that succeeded, and re-runs. Idempotency makes
+// that recoverable rather than duplicated; it does not make it right.
+//
+// This asserts the relationship from the side that owns WriteTimeout.
+// TestDefaultTimeout_FitsInsideTheServersWriteTimeout asserts it from the other side, so raising
+// either number alone is a red test rather than a discovery on a slow morning.
+func TestWriteTimeout_LeavesRoomForAnArtifactFetch(t *testing.T) {
+	t.Parallel()
+
+	require.Greater(t, writeTimeout, artifact.DefaultTimeout,
+		"an artifact fetch can outlast the response it is part of")
+	require.GreaterOrEqual(t, writeTimeout-artifact.DefaultTimeout, 10*time.Second,
+		"the publish has less than ten seconds for everything that is not the download: the "+
+			"hash comparison, the transaction, and writing the response")
 }
