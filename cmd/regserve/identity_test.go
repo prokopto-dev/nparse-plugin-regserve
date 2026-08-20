@@ -111,6 +111,12 @@ func TestConfigureIdentity_AnHTTPPublicURL_IsFatal(t *testing.T) {
 		{name: "http", url: "http://registry.example"},
 		{name: "empty", url: ""},
 		{name: "a bare host", url: "registry.example"},
+		// These name no host. They pass a prefix check, and what follows is worse than a rejection:
+		// sign-in comes up with a callback URL of `https:///auth/github/callback`, which GitHub
+		// cannot redirect to — a configuration accepted at boot that fails in a browser.
+		{name: "a scheme and nothing else", url: "https://"},
+		{name: "a scheme and a query", url: "https://?x"},
+		{name: "a scheme and a path", url: "https:///auth/github/callback"},
 	}
 
 	for _, tt := range tests {
@@ -121,6 +127,27 @@ func TestConfigureIdentity_AnHTTPPublicURL_IsFatal(t *testing.T) {
 			})
 			require.ErrorContains(t, err, envPublicURL)
 			require.ErrorContains(t, err, "https")
+		})
+	}
+}
+
+// TestConfigureIdentity_APublicURLWithAHost_IsAccepted — the other side of the boundary.
+//
+// A gate that refused every https URL would be caught by nothing in the table above, which only
+// ever asserts refusals. A base URL with no path is the normal case and must keep working.
+func TestConfigureIdentity_APublicURLWithAHost_IsAccepted(t *testing.T) {
+	for _, u := range []string{
+		"https://nparseplugins.prokopto.dev",
+		"https://nparseplugins.prokopto.dev/",
+		"https://localhost:8443",
+	} {
+		t.Run(u, func(t *testing.T) {
+			cfg, err := configure(t, map[string]string{
+				envPublicURL: u, envTokenPepper: "a-pepper",
+				envGitHubClientID: "id", envGitHubClientSecret: "secret",
+			})
+			require.NoError(t, err)
+			require.NotNil(t, cfg.Login)
 		})
 	}
 }

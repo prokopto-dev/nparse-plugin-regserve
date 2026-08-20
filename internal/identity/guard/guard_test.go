@@ -101,6 +101,17 @@ func TestRequireHTTPS_RejectsAnythingElse(t *testing.T) {
 		{name: "empty", in: ""},
 		// The one that looks like it passes a prefix check and is not https at all.
 		{name: "a host named https", in: "http://https.example.com/x.zip"},
+		// These four begin with the right eight characters and name no host. A prefix check passes
+		// them; what follows is a callback URL of `https:///auth/github/callback` that GitHub
+		// cannot redirect to, accepted at boot and failing in a browser.
+		{name: "a scheme and nothing else", in: "https://"},
+		{name: "a scheme and a query", in: "https://?x"},
+		{name: "a scheme and a path", in: "https:///auth/github/callback"},
+		{name: "a scheme and a fragment", in: "https://#x"},
+		{name: "not a url at all", in: "https://exa mple.com/x.zip"},
+		// A bare host with no path is a perfectly good base URL and must keep working.
+		{name: "no path", in: "https://example.com", ok: true},
+		{name: "a port", in: "https://example.com:8443/x.zip", ok: true},
 	}
 
 	for _, tt := range tests {
