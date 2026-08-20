@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/clock"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/core"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/identity/guard"
 )
 
@@ -347,42 +348,22 @@ var ErrBadArtifactURL = errors.New("artifact url is not one this registry will p
 
 // ValidateURL checks a submitted artifact URL before anything is fetched or stored.
 //
-// It is https-and-fetchable, per guard.RequireHTTPS, PLUS a rule that is about PUBLICATION rather
-// than about safety, and that is the part worth reading twice.
+// TWO DIFFERENT JUDGEMENTS, and keeping them apart is the point:
 //
-// # This value is published, and cannot be recalled
+//   - CAN THESE BYTES BE FETCHED SAFELY — guard.RequireHTTPS, which parses rather than matching a
+//     prefix so `https://` naming no host is refused here rather than becoming a dial error.
+//   - MAY THIS STRING BE PUBLISHED — core.CheckPublishedURL, which is the rule shared with
+//     plugin.homepage, the other column the index renders verbatim.
 //
-// release.artifact_url is rendered verbatim into the index document and served to every nParse+
-// client on the internet. It is cached by clients and by anything in front of them. Whatever goes
-// in that column is public the moment a client polls, and this registry cannot take it back.
+// The second is STRICTER, and deliberately so. A signed CDN URL is perfectly fetchable — the
+// redirect at the end of every GitHub release asset lands on one, and Fetch must stay happy with
+// it — and it is unfit to be stored, because its signature is a bearer credential for those bytes
+// and release.artifact_url is served to every client, cached, and unrecallable.
+// TestValidateURL_IsStricterThanFetch pins that asymmetry so the two are not later "unified" on
+// the grounds that they look similar.
 //
-// So a URL that carries a credential is refused, in both of the two shapes that carry one:
-//
-//   - USERINFO. `https://token@host/plugin.whl` fetches perfectly well and would publish the token.
-//   - QUERY AND FRAGMENT. `https://host/plugin.whl?X-Amz-Signature=...` is a BEARER CREDENTIAL for
-//     those bytes for as long as the signature is valid — that is the entire purpose of a signed
-//     URL. Publishing one hands it to everybody, and the same reasoning already keeps signed
-//     queries out of this service's error messages and out of audit_log. The field that is
-//     ACTUALLY PUBLISHED is the one where it matters most.
-//
-// # Why the whole query, and not the parameters that look dangerous
-//
-// A denylist of `X-Amz-Signature`, `token`, `sig`, `Signature`, `AWSAccessKeyId`... is a list
-// somebody has to remember to extend, and the one that gets forgotten is the one that leaks. The
-// guarded dialer refuses addresses by CATEGORY for the same reason. A submitted artifact URL has
-// no legitimate need for a query string: ADR-0002 keeps artifacts on GitHub, whose release assets
-// are `https://github.com/owner/repo/releases/download/vX/asset.whl` — path only. The redirect TO
-// a signed CDN URL happens during the fetch and is not what gets stored.
-//
-// THE COST, STATED: an upstream that genuinely needs a query parameter to serve an artifact cannot
-// be published here without a change to this function. That is a loud, fixable refusal at publish
-// time, argued in a pull request — which is the right way round compared to discovering that a
-// signature has been sitting in the public index for a week.
-//
-// # Refused, not stripped
-//
-// A URL that needed a credential to fetch will not fetch without it, so silently removing the
-// credential would produce a listing whose artifact 401s for every user. A refused publish tells
+// Refused, not stripped: a URL that needed a credential to fetch will not fetch without it, so
+// removing it would produce a listing whose artifact 401s for every user. A refused publish tells
 // the submitter something they can act on; a broken listing tells their users nothing.
 func ValidateURL(rawURL string) error {
 	if err := guard.RequireHTTPS(rawURL); err != nil {
@@ -390,31 +371,8 @@ func ValidateURL(rawURL string) error {
 		// this one came out of a publish request.
 		return fmt.Errorf("%w: %w: %s", ErrBadArtifactURL, guard.ErrNotHTTPS, safeRawURL(rawURL))
 	}
-
-	// Parsed again rather than threaded out of RequireHTTPS: that function's contract is a
-	// boolean-shaped one, and widening it to return a *url.URL would make every other caller hold
-	// a parsed value it does not want. The parse has already succeeded once, so this cannot fail.
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return fmt.Errorf("%w: %s", ErrBadArtifactURL, safeRawURL(rawURL))
-	}
-
-	// NONE of these messages echo the URL. Each one is refusing a value BECAUSE it may contain a
-	// credential, and putting it in an error would send it to the log and the review note — the
-	// two places this service has already had to take it out of.
-	switch {
-	case u.User != nil:
-		return fmt.Errorf("%w: it carries credentials in its userinfo, and this url is published "+
-			"in the index to every client", ErrBadArtifactURL)
-	case u.RawQuery != "" || u.ForceQuery:
-		return fmt.Errorf("%w: it carries a query string, and this url is published in the index "+
-			"to every client — a signed url's signature is a credential for those bytes. Submit "+
-			"the stable download url; redirects to a signed one are followed when the artifact is "+
-			"fetched", ErrBadArtifactURL)
-	case u.Fragment != "" || u.RawFragment != "":
-		return fmt.Errorf("%w: it carries a fragment, which is never sent to the server and so "+
-			"cannot be part of fetching the artifact, but would be published in the index",
-			ErrBadArtifactURL)
+	if err := core.CheckPublishedURL(rawURL); err != nil {
+		return fmt.Errorf("%w: %w", ErrBadArtifactURL, err)
 	}
 	return nil
 }

@@ -87,6 +87,12 @@ func Catalogue() []Entry {
 			Floor:      true,
 		},
 		{
+			Permission: "plugin.claim",
+			Summary: "Register a new plugin id. Ids are first-come, permanent and never " +
+				"recycled, and the first release of a new id always goes to human review.",
+			Floor: true,
+		},
+		{
 			Permission: "owner.manage",
 			Summary:    "Add, remove or transfer a plugin's owners.",
 			Floor:      true,

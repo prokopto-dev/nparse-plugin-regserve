@@ -405,7 +405,12 @@ func configureIdentity(ctx context.Context, cfg *api.Config, db *store.DB, clk c
 
 	cfg.Authn = auth.NewAuthenticator(sessions, tokens)
 	cfg.Tokens = tokens
-	cfg.Ownership = ownership.New(db, clk)
+	// Both surfaces of the same service. Claiming an id is session-only, so it is wired here with
+	// the rest of the sign-in machinery rather than beside the publish endpoint: without a session
+	// there is no way to reach it.
+	owners := ownership.New(db, clk)
+	cfg.Ownership = owners
+	cfg.Claimer = owners
 	cfg.Login = login
 	cfg.Sessions = sessions
 	cfg.Providers = providers

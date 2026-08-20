@@ -74,7 +74,9 @@ personal access token outright.
   dialer — through the client already built in `internal/identity/guard`. Two digest types, so a
   submitted sha256 cannot be assigned where a computed one belongs
 - ✅ `POST /api/v1/plugins/{id}/releases` with `Idempotency-Key`
-- Id claims, ownership checks, transfers
+- ✅ Id claims: a session-only act that registers an id and makes the claimant its owner. Ownership
+  checks were built with the publish path; transfers are add-then-remove per ADR-0005, with the
+  sequence, its reverse and a maintainer's inability to perform one all covered by tests
 - ✅ The review queue: approve, reject, and re-verify an artifact a transient outage stopped the
   server hashing. Reviewers are named in the deployment's environment, not in a row
 - ✅ Quarantine rules and trust levels: a trusted owner's version bump publishes without a human,
