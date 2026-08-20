@@ -77,8 +77,10 @@ func TestCapabilityFloor_ARealTokenWithEveryScope_IsStillRefused(t *testing.T) {
 		require.NoError(t, rerr)
 		req.Header.Set(header, value)
 
-		client := &http.Client{
-			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		// This server's own client, never a bare &http.Client{}: see harness.client.
+		client := srv.Client()
+		client.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
 		}
 		resp, rerr := client.Do(req)
 		require.NoError(t, rerr)

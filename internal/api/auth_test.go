@@ -163,10 +163,7 @@ func (h *harness) do(t *testing.T, method, path string, cookies ...*http.Cookie)
 		req.AddCookie(c)
 	}
 
-	client := &http.Client{
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
-	resp, err := client.Do(req)
+	resp, err := h.client().Do(req)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, resp.Body.Close()) }()
 
@@ -189,10 +186,7 @@ func (h *harness) doWithToken(t *testing.T, token string) response {
 	require.NoError(t, err)
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	client := &http.Client{
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
-	resp, err := client.Do(req)
+	resp, err := h.client().Do(req)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, resp.Body.Close()) }()
 
@@ -200,6 +194,20 @@ func (h *harness) doWithToken(t *testing.T, token string) response {
 	require.NoError(t, err)
 
 	return response{status: resp.StatusCode, header: resp.Header.Clone(), body: body}
+}
+
+// client is THIS server's client, and never a bare &http.Client{}.
+//
+// A client with no Transport uses http.DefaultTransport, which every test in the process shares —
+// and httptest.Server.Close calls CloseIdleConnections on it. With tests running in parallel, one
+// test's cleanup then breaks another's in-flight keep-alive connection, which surfaces as
+// "transport connection broken: http: CloseIdleConnections called" on a request that had nothing
+// to do with it. srv.Client() has its own Transport, scoped to this server.
+func (h *harness) client() *http.Client {
+	c := h.srv.Client()
+	// The redirect IS the response under test on almost every route here.
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return c
 }
 
 // cookie returns the Set-Cookie with the given name, or nil.
