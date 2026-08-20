@@ -1,4 +1,4 @@
-package plugin_test
+package release_test
 
 import (
 	"strings"
@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/prokopto-dev/nparse-plugin-regserve/internal/plugin"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/release"
 )
 
 // Release notes are author-supplied text rendered in a desktop client (ADR-0013). What is asserted
@@ -54,7 +54,7 @@ func TestValidateReleaseNotes_AcceptsWhatAChangelogLooksLike(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := plugin.ValidateReleaseNotes(tt.in)
+			got, err := release.ValidateReleaseNotes(tt.in)
 			require.NoError(t, err)
 			require.Equal(t, tt.want, got)
 		})
@@ -71,32 +71,32 @@ func TestValidateReleaseNotes_RefusesWhatIsNotPlainText(t *testing.T) {
 	}{
 		{
 			name: "one byte over the cap",
-			in:   strings.Repeat("a", plugin.MaxReleaseNotesBytes+1),
-			want: plugin.ErrNotesTooLong,
+			in:   strings.Repeat("a", release.MaxReleaseNotesBytes+1),
+			want: release.ErrNotesTooLong,
 		},
 		{
 			// The cap is BYTES. Three-byte characters reach it in a third of the characters, which
 			// is what a character cap would get wrong in the direction that matters.
 			name: "over the cap in multi-byte characters",
-			in:   strings.Repeat("\u3042", plugin.MaxReleaseNotesBytes/3+1),
-			want: plugin.ErrNotesTooLong,
+			in:   strings.Repeat("\u3042", release.MaxReleaseNotesBytes/3+1),
+			want: release.ErrNotesTooLong,
 		},
-		{name: "invalid utf-8", in: "fine\xff\xfe", want: plugin.ErrNotesNotUTF8},
+		{name: "invalid utf-8", in: "fine\xff\xfe", want: release.ErrNotesNotUTF8},
 
 		// A terminal-style renderer can be driven by an escape sequence, which is exactly what
 		// "the field is not markup" is meant to rule out.
-		{name: "an ansi escape", in: "clear\x1b[2Jthis", want: plugin.ErrNotesControlCharacter},
-		{name: "a null byte", in: "a\x00b", want: plugin.ErrNotesControlCharacter},
-		{name: "a bell", in: "a\x07b", want: plugin.ErrNotesControlCharacter},
-		{name: "a c1 control", in: "a\u0085b", want: plugin.ErrNotesControlCharacter},
-		{name: "a delete", in: "a\x7fb", want: plugin.ErrNotesControlCharacter},
+		{name: "an ansi escape", in: "clear\x1b[2Jthis", want: release.ErrNotesControlCharacter},
+		{name: "a null byte", in: "a\x00b", want: release.ErrNotesControlCharacter},
+		{name: "a bell", in: "a\x07b", want: release.ErrNotesControlCharacter},
+		{name: "a c1 control", in: "a\u0085b", want: release.ErrNotesControlCharacter},
+		{name: "a delete", in: "a\x7fb", want: release.ErrNotesControlCharacter},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := plugin.ValidateReleaseNotes(tt.in)
+			got, err := release.ValidateReleaseNotes(tt.in)
 			require.ErrorIs(t, err, tt.want)
 			require.Empty(t, got, "a refused value must not come back partially cleaned")
 		})
@@ -117,8 +117,8 @@ func TestValidateReleaseNotes_TheCapMatchesTheIndexBudget(t *testing.T) {
 		plausible     = 1000
 	)
 
-	require.Less(t, plugin.MaxReleaseNotesBytes*plausible, gateThreshold,
+	require.Less(t, release.MaxReleaseNotesBytes*plausible, gateThreshold,
 		"at %d bytes, %d listings spend %d bytes on notes alone, which is past the %d-byte point "+
 			"SIZE001 fails at — the cap and the index budget have to be decided together",
-		plugin.MaxReleaseNotesBytes, plausible, plugin.MaxReleaseNotesBytes*plausible, gateThreshold)
+		release.MaxReleaseNotesBytes, plausible, release.MaxReleaseNotesBytes*plausible, gateThreshold)
 }

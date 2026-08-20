@@ -337,3 +337,46 @@ func Reason(err error) string {
 		return prefix + "the artifact could not be downloaded"
 	}
 }
+
+// ErrBadArtifactURL is a URL that must not be STORED, whatever fetching it would have done.
+//
+// It is separate from the fetch errors because it is a different judgement. Those say "we could
+// not get the bytes"; this says "this value has no business in release.artifact_url", which is a
+// column served verbatim in the public index to every installed client.
+var ErrBadArtifactURL = errors.New("artifact url is not one this registry will publish")
+
+// ValidateURL checks a submitted artifact URL before anything is fetched or stored.
+//
+// It is https-and-fetchable, per guard.RequireHTTPS, PLUS one rule that is about publication
+// rather than about safety:
+//
+// A URL CARRYING USERINFO IS REFUSED. `https://token@host/plugin.whl` fetches perfectly well, and
+// storing it would put that credential in release.artifact_url — which is rendered into the index
+// document and served to every client on the internet, and which this service cannot take back
+// once a client has cached it. The submitter has almost certainly made a mistake; publishing it
+// for them is not the way to find out.
+//
+// It refuses the value rather than stripping it, because a URL that needed credentials to fetch is
+// a URL that will not fetch without them. Silently removing the userinfo would produce a listing
+// whose artifact 401s for every user, which is a worse answer than a refused publish.
+func ValidateURL(rawURL string) error {
+	if err := guard.RequireHTTPS(rawURL); err != nil {
+		// The message is dropped for the reason Fetch drops it: RequireHTTPS quotes the URL, and
+		// this one came out of a publish request.
+		return fmt.Errorf("%w: %w: %s", ErrBadArtifactURL, guard.ErrNotHTTPS, safeRawURL(rawURL))
+	}
+
+	// Parsed again rather than threaded out of RequireHTTPS: that function's contract is a
+	// boolean-shaped one, and widening it to return a *url.URL would make every other caller hold
+	// a parsed value it does not want. The parse has already succeeded once, so this cannot fail.
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("%w: %s", ErrBadArtifactURL, safeRawURL(rawURL))
+	}
+	if u.User != nil {
+		// The URL is NOT echoed. It contains the credential that is the reason for the refusal.
+		return fmt.Errorf("%w: it carries credentials in the url, which would be published in the "+
+			"index to every client", ErrBadArtifactURL)
+	}
+	return nil
+}

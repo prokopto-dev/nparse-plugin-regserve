@@ -62,3 +62,19 @@ WHERE plugin_id = ? AND state = 'approved';
 -- names the version and says which state the existing row is in.
 SELECT id, version, state, submitted_at FROM "release"
 WHERE plugin_id = ? AND version = ?;
+
+-- name: InsertPublishRelease :exec
+-- The publish path's insert. Narrower than InsertRelease, which the seed importer uses: a
+-- published release always has a submitter, never has a reviewer yet, and always carries
+-- source = 'publish'. Columns a publish cannot set are absent rather than passed as NULL, so a
+-- caller cannot set them by accident.
+--
+-- artifact_sha256 and verified_at are written TOGETHER or not at all. That pairing is what the
+-- release_a_stored_hash_was_verified_or_imported CHECK reads: a hash with no record of when this
+-- server computed it is a hash that came from somewhere else.
+INSERT INTO "release" (
+    id, plugin_id, version, state, source,
+    artifact_url, artifact_sha256, artifact_bytes,
+    sdk_specifier, minimum_app_version, notes,
+    submitted_by, submitted_at, verified_at, review_note
+) VALUES (?, ?, ?, ?, 'publish', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);

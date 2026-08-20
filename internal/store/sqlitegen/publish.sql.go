@@ -201,3 +201,57 @@ func (q *Queries) InsertIdempotencyKey(ctx context.Context, arg InsertIdempotenc
 	)
 	return err
 }
+
+const insertPublishRelease = `-- name: InsertPublishRelease :exec
+INSERT INTO "release" (
+    id, plugin_id, version, state, source,
+    artifact_url, artifact_sha256, artifact_bytes,
+    sdk_specifier, minimum_app_version, notes,
+    submitted_by, submitted_at, verified_at, review_note
+) VALUES (?, ?, ?, ?, 'publish', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`
+
+type InsertPublishReleaseParams struct {
+	ID                string
+	PluginID          string
+	Version           string
+	State             string
+	ArtifactUrl       string
+	ArtifactSha256    *string
+	ArtifactBytes     *int64
+	SdkSpecifier      string
+	MinimumAppVersion *string
+	Notes             *string
+	SubmittedBy       *string
+	SubmittedAt       int64
+	VerifiedAt        *int64
+	ReviewNote        *string
+}
+
+// The publish path's insert. Narrower than InsertRelease, which the seed importer uses: a
+// published release always has a submitter, never has a reviewer yet, and always carries
+// source = 'publish'. Columns a publish cannot set are absent rather than passed as NULL, so a
+// caller cannot set them by accident.
+//
+// artifact_sha256 and verified_at are written TOGETHER or not at all. That pairing is what the
+// release_a_stored_hash_was_verified_or_imported CHECK reads: a hash with no record of when this
+// server computed it is a hash that came from somewhere else.
+func (q *Queries) InsertPublishRelease(ctx context.Context, arg InsertPublishReleaseParams) error {
+	_, err := q.db.ExecContext(ctx, insertPublishRelease,
+		arg.ID,
+		arg.PluginID,
+		arg.Version,
+		arg.State,
+		arg.ArtifactUrl,
+		arg.ArtifactSha256,
+		arg.ArtifactBytes,
+		arg.SdkSpecifier,
+		arg.MinimumAppVersion,
+		arg.Notes,
+		arg.SubmittedBy,
+		arg.SubmittedAt,
+		arg.VerifiedAt,
+		arg.ReviewNote,
+	)
+	return err
+}
