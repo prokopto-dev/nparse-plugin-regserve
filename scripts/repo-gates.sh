@@ -52,6 +52,57 @@ else
   vacant MIG002 "migrations are forward-only"
 fi
 
+# --- MIG005 — a rebuild recreates the triggers it destroyed ------------------------------------
+# SQLite cannot add a CHECK constraint in place, so Atlas rebuilds the table: create new, copy
+# rows, DROP TABLE old, rename. SQLite drops a table's triggers WITH the table, and Atlas does not
+# model triggers at all (db/schema.hcl says why), so the generated migration silently removes them.
+#
+# This happened. Adding release.notes with its size CHECK dropped `release_no_delete`, and release
+# history — which ADR-0010 says the database keeps even though only `latest` ships — became
+# deletable with nothing anywhere saying so. TestSchema_RefusedStatements caught it after the fact;
+# this catches it before the push.
+#
+# The check: for every migration that DROPs a table, every trigger this repository has ever created
+# on that table must be created again in the SAME migration.
+if compgen -G "db/migrations-sqlite/*.sql" >/dev/null; then
+  # Which triggers belong to which table, over the whole history.
+  triggers=$(grep -hoE 'CREATE TRIGGER "[a-z_]+" (BEFORE|AFTER) [A-Z ]+ ON "[a-z_]+"' \
+             db/migrations-sqlite/*.sql \
+             | sed -E 's/CREATE TRIGGER "([a-z_]+)" .* ON "([a-z_]+)"/\2 \1/' | sort -u)
+
+  if [ -z "$triggers" ]; then
+    vacant MIG005 "a table rebuild recreates its triggers"
+  else
+    missing=""
+    for f in db/migrations-sqlite/*.sql; do
+      up=$(awk '/-- \+goose Down/{exit} {print}' "$f")
+      dropped=$(printf '%s' "$up" | grep -oE 'DROP TABLE "[a-z_]+"' \
+                | sed -E 's/DROP TABLE "([a-z_]+)"/\1/' | sort -u)
+      [ -n "$dropped" ] || continue
+
+      for table in $dropped; do
+        # Only triggers that existed BEFORE this migration matter; one created in this same file is
+        # the recreation itself.
+        for name in $(printf '%s\n' "$triggers" | awk -v t="$table" '$1 == t {print $2}'); do
+          printf '%s' "$up" | grep -q "CREATE TRIGGER \"$name\"" \
+            || missing="$missing  $(basename "$f"): drops \"$table\" without recreating trigger \"$name\"\n"
+        done
+      done
+    done
+
+    if [ -n "$missing" ]; then
+      report MIG005 "a table rebuild silently dropped a trigger:"
+      printf "%b" "$missing"
+      printf '  Recreate it by hand below the marked boundary in the migration. Atlas does not\n'
+      printf '  model triggers, so it will never write this for you.\n'
+    else
+      pass MIG005 "every table rebuild recreates the triggers it dropped"
+    fi
+  fi
+else
+  vacant MIG005 "a table rebuild recreates its triggers"
+fi
+
 # --- MIG003 — a shipped migration is never edited ---------------------------------------------
 # A migration that has shipped in a tagged release has already run on the only copy of the
 # ownership records. Editing it changes what a FRESH database gets and nothing about the one in

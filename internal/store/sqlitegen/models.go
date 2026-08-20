@@ -112,6 +112,7 @@ type Release struct {
 	ReviewedBy        *string
 	ReviewedAt        *int64
 	ReviewNote        *string
+	Notes             *string
 }
 
 type Session struct {

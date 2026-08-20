@@ -27,10 +27,10 @@ differently on purpose — an absence cannot be told from a refusal.
 | `plugin.read` | `plugin:read` | *nothing yet* | Read a plugin's registry state, including releases that are pending review and therefore absent from the public index. |
 | `plugin.publish` | `plugin:publish` | *nothing yet* | Submit a release of a plugin. A new plugin id always goes to human review; a version bump of an approved plugin may publish automatically. |
 | `plugin.manage` | `plugin:manage` | *nothing yet* | Change a listing's name, description, author or homepage, and delist it. Delisting keeps the id claimed — ids are never recycled. |
-| `token.mint` | **none — capability floor** | *nothing yet* | Mint a personal access token. |
-| `token.read` | **none — capability floor** | *nothing yet* | List the account's personal access tokens. Secrets are shown once at mint time and never again — this lists prefixes, scopes and dates. |
-| `token.revoke` | **none — capability floor** | *nothing yet* | Revoke a personal access token. |
-| `owner.manage` | **none — capability floor** | *nothing yet* | Add, remove or transfer a plugin's owners. |
+| `token.mint` | **none — capability floor** | `POST /account/tokens` | Mint a personal access token. |
+| `token.read` | **none — capability floor** | `GET /account` | List the account's personal access tokens. Secrets are shown once at mint time and never again — this lists prefixes, scopes and dates. |
+| `token.revoke` | **none — capability floor** | `POST /account/tokens/{id}/revoke` | Revoke a personal access token. |
+| `owner.manage` | **none — capability floor** | `GET /plugins/{id}/settings`<br>`POST /plugins/{id}/owners` | Add, remove or transfer a plugin's owners. |
 | `trust.set` | **none — capability floor** | *nothing yet* | Set an account's trust level. |
 | `release.review` | **none — capability floor** | *nothing yet* | Approve or reject a release that is waiting for review. |
 | `session.end` | **none — capability floor** | `POST /auth/logout` | End the browser session it is called with. |
@@ -52,6 +52,7 @@ page and be exactly as powerless in practice.
 Public ones. They declare `x-regserve-public: true` and an explicitly empty `security` list, so
 "anyone may call this" is a decision somebody wrote down rather than the absence of one.
 
+- `GET /`
 - `GET /auth/{provider}/callback`
 - `GET /auth/{provider}/login`
 - `GET /healthz`
