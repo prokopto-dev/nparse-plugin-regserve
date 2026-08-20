@@ -69,10 +69,6 @@ INSERT INTO "release" (
     reviewed_by, reviewed_at, review_note
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
--- name: InsertAuditLog :exec
-INSERT INTO audit_log (id, recorded_at, actor_kind, actor_account_id, action, subject_kind, subject_id, detail)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?);
-
 -- name: CountCatalogueImports :one
 -- Whether a seed has ever been imported into this database. The audit row written by the import is
 -- the marker: it is durable, it is append-only, and it does not depend on inferring "we have never

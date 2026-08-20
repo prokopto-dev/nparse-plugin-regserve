@@ -45,10 +45,11 @@ from it is vendored here at `internal/registry/testdata/index-v1.schema.json`.
 | Path | Holds |
 |---|---|
 | `cmd/regserve/` | The only binary. Cobra wiring, no logic |
-| `internal/api/` | Every HTTP route, registered with Huma v2 ([ADR-0012](docs/adr/0012-huma-v2-everywhere-with-the-index-bytes-pinned.md)). `routes.go` holds the only registration helper, and its signature demands an access declaration. ETag and idempotency (canonical §6) are not built yet |
-| `internal/authz/` | **The** catalogue — permissions and PAT scopes. Generates the DDL seed, the OpenAPI extensions, the scope enum and the docs page. Today it holds only the two types the route registry declares against; the catalogue itself lands in Phase 2 |
-| `internal/auth/` | PAT mint and verify, sessions, OAuth state and PKCE |
-| `internal/identity/{,github}/` | Provider registry, credential dispatch, identity resolution. GitHub is the only provider ([ADR-0011](docs/adr/0011-github-is-the-only-identity-provider.md)) |
+| `internal/api/` | Every HTTP route, registered with Huma v2 ([ADR-0012](docs/adr/0012-huma-v2-everywhere-with-the-index-bytes-pinned.md)). `routes.go` holds the only registration helper, and its signature demands an access declaration; `security.go` is the middleware that ENFORCES that same declaration. ETag and idempotency (canonical §6) are not built yet |
+| `internal/authz/` | **The** catalogue — permissions and PAT scopes, in `catalogue.go`, every key a whole quoted literal (`AUTHZ001`). It generates the scope list, the `x-regserve-permission` metadata and [`docs/reference/permissions.md`](docs/reference/permissions.md). Nothing else may hold a permission list |
+| `internal/auth/` | PAT mint and verify, sessions, OAuth state and PKCE. A credential's secret is never stored: what is, is `HMAC-SHA256(pepper, secret)` |
+| `internal/audit/` | The ONE writer of `audit_log` rows. Append-only, and `detail` never carries a secret |
+| `internal/identity/{,github,guard}/` | Provider registry, credential dispatch, identity resolution. GitHub is the only provider ([ADR-0011](docs/adr/0011-github-is-the-only-identity-provider.md)). `guard` builds the client every outbound request goes through, and `internal/artifact` will use the same one |
 | `internal/artifact/` | Artifact download and re-hash. Never extracts, never executes |
 | `internal/registry/` | schema-v1 index rendering. The wire format lives here and nowhere else |
 | `internal/plugin/`, `ownership/`, `moderation/` | Domain services |
@@ -85,6 +86,18 @@ Each has a mechanism. The mechanism is authoritative; this list is a description
    operation cannot be in one and not the other; `OAPI001` pins the `OperationID`s, which are SDK
    method names and therefore public API. Register through `register()` in `internal/api/routes.go`
    and pass an `Access` — `Public()`, `Requires()` or `Floor()`. There is no overload that omits it.
+   The declaration is stored twice from one value: as extensions, which the document renders, and
+   as operation metadata, which `security.go`'s middleware enforces. The spec and the server cannot
+   disagree, because there is one value and two readers.
+
+7. **A permission or a scope is a whole quoted literal in `internal/authz/catalogue.go`.**
+   `AUTHZ001` reads that file as text. A composed key produces the right runtime value and answers
+   no question anybody asks while grepping for it at 2am.
+
+8. **Nothing in `db/queries/*.sql` is non-ASCII.** `QRY001`. This is not style: sqlc slices each
+   query out of the file using character positions as byte offsets, so one em dash silently
+   scrambles the SQL in the generated bindings, and the result fails at runtime rather than at
+   generation.
 
 ## Non-negotiable invariants
 
@@ -215,7 +228,8 @@ as gates that no longer exist. If you want one back, add the gate and register i
 make help      # every target, documented
 make status    # what is still stubbed — derived from notyet call sites, never hand-maintained
 make check     # what CI runs
-make gen       # regenerate the OpenAPI document and the sqlc bindings
+make gen       # regenerate the OpenAPI document, the permissions page and the sqlc bindings
+make gen-authz # the permissions page alone; needs no generator toolchain
 make gen-openapi  # the OpenAPI document alone; needs no generator toolchain
 ```
 

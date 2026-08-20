@@ -189,6 +189,160 @@ table "identity" {
   }
 }
 
+# --- browser sessions and the OAuth handshake -----------------------------------------------------
+
+# A browser session. It is the ONLY credential that satisfies a capability-floor operation
+# (canonical §5): minting a token, changing owners and setting trust are session-only, because a
+# token that could perform one would be equivalent to the account.
+#
+# The cookie carries a random secret; this table stores HMAC-SHA256(pepper, secret) and never the
+# secret itself. A stolen database therefore does not hand over live sessions, which is the same
+# argument the PAT storage makes and for the same reason: the pepper is in the environment, the
+# rows are on the disk, and the two are not compromised together.
+table "session" {
+  schema = schema.main
+  strict = true
+
+  column "id" {
+    null = false
+    type = text
+  }
+  column "account_id" {
+    null = false
+    type = text
+  }
+  # HMAC-SHA256 of the cookie secret, lowercase hex. NEVER the secret, and never the session id
+  # either -- the id is what a log line would carry, and canonical §10 forbids logging it.
+  column "token_hash" {
+    null = false
+    type = text
+  }
+  column "created_at" {
+    null = false
+    type = integer
+  }
+  # Refreshed lazily rather than on every request: this database has one writer, and a write per
+  # authenticated request would put session bookkeeping in front of every publish.
+  column "last_seen_at" {
+    null = false
+    type = integer
+  }
+  # Absolute, not sliding. A session that renews itself forever is a credential with no expiry.
+  column "expires_at" {
+    null = false
+    type = integer
+  }
+  # Set by logout and by a future "sign out everywhere". Rows are kept rather than deleted so that
+  # "when did this session end, and was it ended or did it lapse" stays answerable.
+  column "revoked_at" {
+    null = true
+    type = integer
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+  foreign_key "session_account_fk" {
+    columns     = [column.account_id]
+    ref_columns = [table.account.column.id]
+    on_update   = NO_ACTION
+    on_delete   = RESTRICT
+  }
+  # The lookup on every authenticated request, and a uniqueness guarantee: two live sessions
+  # cannot share a secret, so a collision is a constraint violation rather than a shared account.
+  index "session_token_hash_key" {
+    unique  = true
+    columns = [column.token_hash]
+  }
+  index "session_account_idx" {
+    columns = [column.account_id]
+  }
+  # 64 lowercase hex characters. The GLOB is negated because SQLite has no regex: "contains no
+  # character outside 0-9a-f". A row that is not a hex digest is one nothing could have written.
+  check "session_token_hash_shape" {
+    expr = "length(token_hash) = 64 AND NOT token_hash GLOB '*[^0-9a-f]*'"
+  }
+  check "session_expires_after_it_starts" {
+    expr = "expires_at > created_at"
+  }
+}
+
+# One in-flight OAuth handshake: the `state` nonce and the PKCE verifier that go with it.
+#
+# The row is short-lived and single-use. It is a TABLE rather than a signed cookie because
+# single-use is the property that matters: a cookie can be replayed, and a row that is deleted when
+# it is redeemed cannot be. Deleting from this table is allowed -- it holds no history, and that is
+# why it has no no-delete trigger.
+table "oauth_flow" {
+  schema = schema.main
+  strict = true
+
+  # HMAC-SHA256(pepper, state), lowercase hex. The browser holds the state itself, in a cookie and
+  # in the URL GitHub redirects to; this side holds only a keyed hash, so a database dump cannot
+  # complete somebody else's login.
+  column "state_hash" {
+    null = false
+    type = text
+  }
+  column "provider_kind" {
+    null = false
+    type = text
+  }
+  # The PKCE verifier, which has to be sent to the provider verbatim and therefore cannot be
+  # hashed. It is single-use and expires in minutes, and the row is deleted when it is redeemed.
+  column "code_verifier" {
+    null = false
+    type = text
+  }
+  # Where to send the browser after a successful login. Validated as a same-site absolute PATH
+  # before it is stored -- an open redirect on a login callback is a phishing primitive.
+  column "redirect_to" {
+    null    = false
+    type    = text
+    default = ""
+  }
+  column "created_at" {
+    null = false
+    type = integer
+  }
+  column "expires_at" {
+    null = false
+    type = integer
+  }
+
+  primary_key {
+    columns = [column.state_hash]
+  }
+  foreign_key "oauth_flow_provider_fk" {
+    columns     = [column.provider_kind]
+    ref_columns = [table.identity_provider.column.kind]
+    on_update   = NO_ACTION
+    on_delete   = RESTRICT
+  }
+  # Swept whenever a flow starts, so an abandoned login does not accumulate.
+  index "oauth_flow_expires_at_idx" {
+    columns = [column.expires_at]
+  }
+  check "oauth_flow_state_hash_shape" {
+    expr = "length(state_hash) = 64 AND NOT state_hash GLOB '*[^0-9a-f]*'"
+  }
+  # A verifier shorter than this is not PKCE, it is a guessable string. RFC 7636 puts the floor at
+  # 43 characters and the ceiling at 128.
+  check "oauth_flow_code_verifier_length" {
+    expr = "length(code_verifier) BETWEEN 43 AND 128"
+  }
+  # Same-site paths only: one leading slash, and the second character is neither another slash nor
+  # a backslash (char(92)). `//evil.example` is protocol-relative and `/\evil.example` is
+  # normalised to it by several browsers, so both are absolute URLs wearing a path's clothes — and
+  # an open redirect on a login callback is a phishing primitive, not a cosmetic bug.
+  check "oauth_flow_redirect_is_a_local_path" {
+    expr = "redirect_to = '' OR (substr(redirect_to, 1, 1) = '/' AND substr(redirect_to, 2, 1) NOT IN ('/', char(92)))"
+  }
+  check "oauth_flow_expires_after_it_starts" {
+    expr = "expires_at > created_at"
+  }
+}
+
 # --- the catalogue -------------------------------------------------------------------------------
 
 # A plugin id is permanent, first-come, and NEVER recycled: it is the plugin's identity in every

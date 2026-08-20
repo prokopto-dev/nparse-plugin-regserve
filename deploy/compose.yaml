@@ -29,11 +29,10 @@ services:
     command: ["serve", "--addr", ":8080", "--seed", "/etc/regserve/seed.json"]
 
     environment:
-      # CONSUMED TODAY: REGSERVE_DB_PATH and REGSERVE_LOG_LEVEL. The rest are declared for the
-      # phases that read them — PUBLIC_URL, the pepper and the OAuth pairs in Phase 2 — and setting
-      # one now changes nothing. They are listed rather than added later so the .env on the droplet
-      # is complete before the release that needs it, and marked rather than left looking active
-      # because a variable that reads as configuration and is ignored is its own defect.
+      # All of these are read. REGSERVE_PUBLIC_URL, the pepper and the OAuth pair are read TOGETHER
+      # and only when the OAuth pair is set: with it empty the server serves the catalogue and does
+      # not register the sign-in routes at all, which is where this deployment stands today. With
+      # ONE of the pair set it refuses to start rather than serving half an OAuth application.
       #
       # REGSERVE_DB_PATH points into the named volume below. SQLite writes its WAL and shared-memory
       # files beside it, so the DIRECTORY has to be writable, not just the file — which is why this
@@ -42,11 +41,13 @@ services:
       REGSERVE_PUBLIC_URL: https://${REGSERVE_HOST:?set REGSERVE_HOST in .env}
       REGSERVE_LOG_LEVEL: ${REGSERVE_LOG_LEVEL:-info}
 
-      # Secrets, all Phase 2. These live in .env on the droplet and are deliberately NOT passed
-      # through CI: a secret that travels through a pipeline is a secret in that pipeline's logs,
-      # cache and every fork's pull-request context. CI ships an image; the host holds the
-      # credentials. The pepper is required by `${VAR:?}` even though nothing reads it yet, so that
-      # it is generated once, early, rather than under pressure on the day publishing turns on.
+      # These live in .env on the droplet and are deliberately NOT passed through CI: a secret that
+      # travels through a pipeline is a secret in that pipeline's logs, cache and every fork's
+      # pull-request context. CI ships an image; the host holds the credentials.
+      #
+      # The pepper stays required by `${VAR:?}` — it keys every session and token hash, rotating it
+      # signs everybody out, and generating it once and early beats generating it under pressure on
+      # the day sign-in turns on. Having one set does NOT turn sign-in on; the OAuth pair does.
       REGSERVE_TOKEN_PEPPER: ${REGSERVE_TOKEN_PEPPER:?set REGSERVE_TOKEN_PEPPER in .env}
       REGSERVE_GITHUB_CLIENT_ID: ${REGSERVE_GITHUB_CLIENT_ID:-}
       REGSERVE_GITHUB_CLIENT_SECRET: ${REGSERVE_GITHUB_CLIENT_SECRET:-}

@@ -94,36 +94,6 @@ func (q *Queries) GetListing(ctx context.Context, id string) (GetListingRow, err
 	return i, err
 }
 
-const insertAuditLog = `-- name: InsertAuditLog :exec
-INSERT INTO audit_log (id, recorded_at, actor_kind, actor_account_id, action, subject_kind, subject_id, detail)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-`
-
-type InsertAuditLogParams struct {
-	ID             string
-	RecordedAt     int64
-	ActorKind      string
-	ActorAccountID *string
-	Action         string
-	SubjectKind    string
-	SubjectID      *string
-	Detail         *string
-}
-
-func (q *Queries) InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error {
-	_, err := q.db.ExecContext(ctx, insertAuditLog,
-		arg.ID,
-		arg.RecordedAt,
-		arg.ActorKind,
-		arg.ActorAccountID,
-		arg.Action,
-		arg.SubjectKind,
-		arg.SubjectID,
-		arg.Detail,
-	)
-	return err
-}
-
 const insertPlugin = `-- name: InsertPlugin :exec
 INSERT INTO plugin (id, name, description, author, homepage, claimed_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?)

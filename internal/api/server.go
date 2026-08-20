@@ -18,8 +18,10 @@ import (
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/api/middleware"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/auth"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/clock"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/core"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/identity"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/registry"
 )
 
@@ -27,9 +29,11 @@ import (
 // pinned by a parser we do not own, so they must not move when the product API versions. See
 // ADR-0009 and canonical §6.
 //
-// No route is mounted under it yet; the product API lands in Phase 2. It is declared here now so
-// the first handler that needs a prefix reaches for this constant rather than typing the string,
-// which is how a service ends up with two spellings of its own base path.
+// No route is mounted under it yet: the sign-in journey and the account surface sit outside it for
+// the same reason the index endpoints do — they are browser paths, and an OAuth App's registered
+// callback URL must not move when the product API versions. It is declared here so the first
+// handler that needs the prefix reaches for this constant rather than typing the string, which is
+// how a service ends up with two spellings of its own base path.
 const BasePath = "/api/v1"
 
 // contentTypeJSON is the only media type this service marshals into. One spelling, because the
@@ -93,6 +97,22 @@ type Config struct {
 	// readiness check that reports "not ready, and here is why" is working, and answering 404
 	// instead reads to an operator like an older build is deployed.
 	Readiness ReadyChecker
+
+	// Authn resolves the credential on a request. Nil means this build cannot authenticate: the
+	// middleware still runs and every non-public operation answers 503, which is the honest
+	// statement. It must NOT mean "let everything through" — a nil dependency that opens a door is
+	// the failure mode this whole layer exists to prevent.
+	Authn Authenticator
+
+	// Login and Sessions back the sign-in journey, and Providers is what a login URL is resolved
+	// against. All three are needed together; any of them nil means the auth routes are not
+	// registered at all, exactly as a nil Catalogue leaves the index endpoints unregistered.
+	//
+	// A deployment with no OAuth client configured therefore serves the catalogue and answers 404
+	// on /auth/github/login, rather than serving a sign-in button that leads to a 500.
+	Login     Login
+	Sessions  SessionIssuer
+	Providers *identity.Registry
 }
 
 // New builds the HTTP handler.
@@ -104,15 +124,26 @@ func New(cfg Config) http.Handler {
 	mux := http.NewServeMux()
 	api := newHumaAPI(mux)
 
+	// Installed before any route is registered, and unconditionally. It enforces the Access every
+	// operation declares — including "public", which it passes straight through — so that the
+	// document's description of who may call an operation and the server's behaviour come from one
+	// value rather than two. A middleware added only when authentication is configured would be a
+	// middleware that is absent on exactly the instance where a route was left undeclared.
+	api.UseMiddleware(authMiddleware(api, cfg.Authn))
+
 	registerHealth(api, cfg.Readiness)
 	if cfg.Catalogue != nil {
 		registerIndex(api, cfg.Catalogue)
 	}
+	if cfg.Login != nil && cfg.Sessions != nil && cfg.Providers != nil {
+		registerAuth(api, cfg.Login, cfg.Sessions, cfg.Providers)
+	}
 
 	// Plain http.Handler wrappers rather than Huma middleware, because they must also cover the
 	// responses Huma never sees: the 404 and 405 the mux answers by itself. A request id that
-	// covers only the routes that matched is a request id nobody can quote in a bug report.
-	return middleware.RequestID(middleware.SecureHeaders(mux))
+	// covers only the routes that matched is a request id nobody can quote in a bug report — and a
+	// token refused only on the routes that matched is a token accepted on the ones that did not.
+	return middleware.RequestID(middleware.SecureHeaders(RefuseTokenInQuery(mux)))
 }
 
 // newHumaAPI builds the Huma API, and every line of the config is load-bearing.
@@ -208,7 +239,9 @@ func securitySchemes() map[string]*huma.SecurityScheme {
 		SchemeSession: {
 			Type: "apiKey",
 			In:   "cookie",
-			Name: "__Host-regserve_session",
+			// The one spelling of the cookie name, from the package that sets it. Two spellings
+			// would be a document describing a cookie the server does not read.
+			Name: auth.SessionCookieName,
 			Description: "A browser session. It is the only credential that satisfies a " +
 				"capability-floor operation — minting tokens, changing owners, setting trust — " +
 				"because a token that could perform one would be equivalent to the account.",

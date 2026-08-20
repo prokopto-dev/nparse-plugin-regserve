@@ -1,16 +1,14 @@
 // Package authz holds the permission and scope vocabulary.
 //
-// Canonical §5 makes this package the ONE source for those values: the catalogue in
-// `catalogue.go` generates the permission-table seed, the `x-regserve-permission` metadata in the
-// OpenAPI document, the PAT scope enum and docs/reference/permissions.md. That catalogue lands
-// with identity in Phase 2, and it is deliberately not stubbed here — an empty list that claims to
-// be the catalogue is worse than an absent one, because a reader would believe it.
+// Canonical §5 makes this package the ONE source for those values. The catalogue in
+// `catalogue.go` is that source: docs/reference/permissions.md is generated from it, the
+// `x-regserve-permission` metadata in the OpenAPI document names its keys, and the PAT scope enum
+// the database CHECKs is derived from it rather than written a second time.
 //
-// What exists now is the pair of TYPES, because the route registry in internal/api declares the
-// access every operation requires and it has to name a type to do it. Declaring that type in
-// internal/api instead would mean two types for one concept the moment the catalogue arrives,
-// which the house rules ban and which nobody would notice until a permission compared unequal to
-// itself across a package boundary.
+// This file holds the two TYPES. They are separate types on purpose — a permission narrows a
+// role, a scope narrows a token, and the whole value of the distinction is that one cannot be
+// passed where the other is meant. `Valid` pins the spellings so a permission written with a colon
+// is caught where it is declared rather than at the comparison that silently never matches.
 package authz
 
 import "regexp"

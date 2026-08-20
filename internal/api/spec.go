@@ -9,7 +9,9 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/auth"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/core"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/identity"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/registry"
 )
 
@@ -29,6 +31,7 @@ func Spec() *huma.OpenAPI {
 	// exposes, not what one deployment is currently able to answer.
 	registerHealth(api, unavailable{})
 	registerIndex(api, unavailable{})
+	registerAuth(api, unavailable{}, unavailable{}, identity.NewRegistry())
 
 	return api.OpenAPI()
 }
@@ -61,3 +64,19 @@ func (unavailable) Listing(context.Context, core.PluginID) (registry.Plugin, err
 }
 
 func (unavailable) Ready(context.Context) error { return errSpecOnly }
+
+func (unavailable) Begin(context.Context, identity.Kind, string) (auth.Begun, error) {
+	return auth.Begun{}, errSpecOnly
+}
+
+func (unavailable) Complete(context.Context, identity.Kind, string, string, string) (
+	auth.Completed, error,
+) {
+	return auth.Completed{}, errSpecOnly
+}
+
+func (unavailable) Create(context.Context, string) (auth.NewSession, error) {
+	return auth.NewSession{}, errSpecOnly
+}
+
+func (unavailable) Revoke(context.Context, auth.Principal) error { return errSpecOnly }

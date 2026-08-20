@@ -123,12 +123,11 @@ verify-commands:
 test:
 	$(GO) test -race -shuffle=on -count=1 $(PKG)
 
-## gen: regenerate the scope catalogue, OpenAPI document and sqlc bindings
+## gen: regenerate the permission catalogue, OpenAPI document and sqlc bindings
 .PHONY: gen
-gen: gen-openapi
+gen: gen-openapi gen-authz
 	@$(call require,sqlc,db/queries is typed into internal/store/sqlitegen by it — install it with: make tools)
 	sqlc generate
-	@$(call notyet,Phase 2,the authz scope catalogue)
 
 ## gen-openapi: regenerate openapi/openapi.json from the route registry
 #
@@ -139,6 +138,17 @@ gen: gen-openapi
 gen-openapi:
 	@mkdir -p openapi
 	$(GO) run ./cmd/$(BIN) openapi --out openapi/openapi.json
+
+## gen-authz: regenerate docs/reference/permissions.md from the authz catalogue
+#
+# Needs only the Go toolchain, like gen-openapi and for the same reason: the page is rendered by
+# the binary from the catalogue in internal/authz, with the "declared by" column taken from the
+# route registry. Canonical §5 forbids a hand-written permission list anywhere, and gate GEN001
+# regenerates this to fail on one.
+.PHONY: gen-authz
+gen-authz:
+	@mkdir -p docs/reference
+	$(GO) run ./cmd/$(BIN) authz --docs docs/reference/permissions.md
 
 ## migration: author a migration from db/schema.hcl with Atlas (NAME=<snake_case>)
 .PHONY: migration
