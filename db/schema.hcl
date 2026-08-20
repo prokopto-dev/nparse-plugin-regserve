@@ -501,6 +501,18 @@ table "release" {
     type = text
   }
 
+  # The author's patch notes for this release: what changed, for a human to read in the client.
+  #
+  # PLAIN TEXT. Not Markdown, not HTML -- see ADR-0013. It is author-supplied and rendered in a
+  # desktop application, and plain text is the only shape that needs no sanitiser on the other
+  # side. The column is NOT named after the wire field it feeds (`release_notes`), per canonical
+  # §7: sqlc writes column names into Go string literals, and a column named after a wire field
+  # would put that field name in a second package and fail SCHEMA002.
+  column "notes" {
+    null = true
+    type = text
+  }
+
   primary_key {
     columns = [column.id]
   }
@@ -559,6 +571,17 @@ table "release" {
   }
   check "release_artifact_bytes_non_negative" {
     expr = "artifact_bytes IS NULL OR artifact_bytes >= 0"
+  }
+  # The size cap, enforced by the DATABASE and not only by the publish path.
+  #
+  # ADR-0013: the index has a 5 MiB budget the client aborts past, and notes are the first field
+  # whose length an author controls. A cap that lives only in Go is a cap the next writer -- a
+  # migration, a later phase, a hand-run UPDATE during an incident -- does not go through.
+  #
+  # length(CAST(x AS BLOB)) is BYTES. SQLite's length() on TEXT counts characters, and the budget
+  # this protects is measured in bytes on a wire.
+  check "release_notes_within_the_index_budget" {
+    expr = "notes IS NULL OR length(CAST(notes AS BLOB)) <= 2048"
   }
   # An approved release without a hash is a release nobody can verify. The trust model is that the
   # hash is the security boundary; a NULL here would make it optional.

@@ -50,9 +50,11 @@ catalogue it served before, out of SQLite.
 - ✅ PAT mint and verify, with the scope `CHECK` generated from the catalogue
 - ✅ A server-rendered account surface, because the capability floor is session-only and therefore
   browser-required: without pages, nothing can reach it
-- Release notes as an additive wire-format field, with its own ADR
-- Seeding ownership from the existing `owners.json`, resolving handles to numeric ids (`make seed`;
-  the catalogue itself is already imported at boot)
+- ✅ Release notes as an additive wire-format field, with its own ADR
+  ([ADR-0013](docs/adr/0013-release-notes-are-plain-text-with-a-hard-cap.md)). The column and the
+  cap land now; populating them is Phase 3 and rendering them is Phase 4
+- ✅ Seeding ownership from the existing `owners.json`, resolving handles to numeric ids
+  (`make seed OWNERS=...`; the catalogue itself is already imported at boot)
 
 **What works now:** a GitHub account can sign in and hold a session, and personal access tokens
 mint, authenticate and revoke — with a real token carrying every scope in the catalogue still
@@ -69,10 +71,11 @@ personal access token outright.
 ## Phase 3 — publishing
 
 - `internal/artifact`: fetch, re-hash, size cap during read, https per redirect hop, SSRF-denying
-  dialer
+  dialer — through the client already built in `internal/identity/guard`
 - `POST /api/v1/plugins/{id}/releases` with `Idempotency-Key`
 - Id claims, ownership checks, transfers
 - Quarantine rules and the review queue; trust levels
+- Populating `release.notes`, and surfacing it as `release_notes` on `latest`
 - The gate for **"a stored sha256 was computed by the server"** — currently a review rule, and the
   only row in the invariants register without a mechanism
 

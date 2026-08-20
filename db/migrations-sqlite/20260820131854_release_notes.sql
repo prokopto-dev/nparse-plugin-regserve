@@ -1,0 +1,52 @@
+-- +goose Up
+-- disable the enforcement of foreign-keys constraints
+PRAGMA foreign_keys = off;
+-- create "new_release" table
+CREATE TABLE "new_release" ("id" text NOT NULL, "plugin_id" text NOT NULL, "version" text NOT NULL, "state" text NOT NULL, "source" text NOT NULL, "artifact_url" text NOT NULL, "artifact_sha256" text, "artifact_bytes" integer, "sdk_specifier" text NOT NULL, "minimum_app_version" text, "submitted_by" text, "submitted_at" integer NOT NULL, "verified_at" integer, "reviewed_by" text, "reviewed_at" integer, "review_note" text, "notes" text, PRIMARY KEY ("id"), CONSTRAINT "release_plugin_fk" FOREIGN KEY ("plugin_id") REFERENCES "plugin" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT, CONSTRAINT "release_submitted_by_fk" FOREIGN KEY ("submitted_by") REFERENCES "account" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT, CONSTRAINT "release_reviewed_by_fk" FOREIGN KEY ("reviewed_by") REFERENCES "account" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT, CONSTRAINT "release_state_enum" CHECK (state IN ('pending', 'approved', 'rejected', 'superseded')), CONSTRAINT "release_source_enum" CHECK (source IN ('publish', 'import')), CONSTRAINT "release_version_not_empty" CHECK (length(version) > 0), CONSTRAINT "release_artifact_url_https" CHECK (artifact_url LIKE 'https://%'), CONSTRAINT "release_artifact_sha256_shape" CHECK (artifact_sha256 IS NULL OR (length(artifact_sha256) = 64 AND NOT artifact_sha256 GLOB '*[^0-9a-f]*')), CONSTRAINT "release_artifact_bytes_non_negative" CHECK (artifact_bytes IS NULL OR artifact_bytes >= 0), CONSTRAINT "release_notes_within_the_index_budget" CHECK (notes IS NULL OR length(CAST(notes AS BLOB)) <= 2048), CONSTRAINT "release_approved_has_a_hash" CHECK (state <> 'approved' OR artifact_sha256 IS NOT NULL)) STRICT;
+-- copy rows from old table "release" to new temporary table "new_release"
+INSERT INTO "new_release" ("id", "plugin_id", "version", "state", "source", "artifact_url", "artifact_sha256", "artifact_bytes", "sdk_specifier", "minimum_app_version", "submitted_by", "submitted_at", "verified_at", "reviewed_by", "reviewed_at", "review_note") SELECT "id", "plugin_id", "version", "state", "source", "artifact_url", "artifact_sha256", "artifact_bytes", "sdk_specifier", "minimum_app_version", "submitted_by", "submitted_at", "verified_at", "reviewed_by", "reviewed_at", "review_note" FROM "release";
+-- drop "release" table after copying rows
+DROP TABLE "release";
+-- rename temporary table "new_release" to "release"
+ALTER TABLE "new_release" RENAME TO "release";
+-- create index "release_plugin_version_key" to table: "release"
+CREATE UNIQUE INDEX "release_plugin_version_key" ON "release" ("plugin_id", "version");
+-- create index "release_one_approved_per_plugin" to table: "release"
+CREATE UNIQUE INDEX "release_one_approved_per_plugin" ON "release" ("plugin_id") WHERE state = 'approved';
+-- enable back the enforcement of foreign-keys constraints
+PRAGMA foreign_keys = on;
+
+
+-- --- HAND-AUTHORED BELOW THIS LINE ---------------------------------------------------------------
+--
+-- RECREATING A TRIGGER THE REBUILD ABOVE DESTROYED.
+--
+-- Adding a CHECK constraint to a table makes Atlas rebuild it: create new, copy rows, DROP TABLE
+-- old, rename. SQLite drops a table's triggers with the table, and Atlas does not model triggers
+-- (see the header of db/schema.hcl), so the generated migration silently leaves "release" without
+-- its no-delete trigger -- and release history, which ADR-0010 says the database keeps even though
+-- only "latest" ships, becomes deletable with nothing anywhere saying so.
+--
+-- TestSchema_RefusedStatements in internal/store caught this, and gate MIG005 now fails any
+-- migration that drops a table without recreating the triggers that were on it. Both were needed:
+-- the test proves the trigger is gone, the gate proves the next author is told before they push.
+-- +goose StatementBegin
+CREATE TRIGGER "release_no_delete" BEFORE DELETE ON "release"
+BEGIN
+  SELECT RAISE(ABORT, 'release history is kept: supersede the row instead of deleting it');
+END;
+-- +goose StatementEnd
+
+-- +goose Down
+-- FORWARD-ONLY (ADR-0006). There is no down migration.
+--
+-- Recovery from a bad migration is restoring the snapshot the deploy takes immediately before it
+-- runs: /opt/regserve/backups/pre-<timestamp>.db on the droplet. See docs/operations/deployment.md.
+-- Rolling the image back is not enough on its own, because an older binary refuses a newer schema.
+--
+-- RAISE() is only legal inside a trigger body, so this statement cannot succeed by any route: it
+-- fails to parse, goose rolls the transaction back, and the schema is untouched. The message is
+-- here for the person reading the file, which is where they will be looking.
+-- +goose StatementBegin
+SELECT RAISE(ABORT, 'migrations are forward-only: restore the pre-migration snapshot from /opt/regserve/backups');
+-- +goose StatementEnd
