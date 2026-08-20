@@ -76,6 +76,7 @@ type WebDeps struct {
 type OwnershipService interface {
 	Mine(ctx context.Context, accountID string) ([]ownership.Plugin, error)
 	Owners(ctx context.Context, pluginID, callerID string) ([]ownership.Owner, error)
+	RoleOf(ctx context.Context, pluginID, accountID string) (ownership.Role, bool, error)
 	Add(ctx context.Context, pluginID, callerID, handle string, role ownership.Role) error
 	Remove(ctx context.Context, pluginID, callerID, targetID string) error
 }
@@ -101,6 +102,11 @@ type pageData struct {
 	NewToken  string
 	Plugin    *ownership.Plugin
 	Owners    []ownership.Owner
+
+	// CanManageOwners gates the owner forms. A maintainer holds the plugin and may publish to it,
+	// and may not change who holds it — so the page does not offer controls the service will
+	// refuse. Both this and the refusal read the same fact through Role.CanManageOwners.
+	CanManageOwners bool
 }
 
 // scopeOption is one checkbox on the mint form, from the catalogue rather than from a list here.
@@ -511,13 +517,21 @@ func pluginData(ctx context.Context, deps WebDeps, p auth.Principal, rawID strin
 		return pageData{}, NewProblem(http.StatusNotFound, CodeNotFound, "no such plugin")
 	}
 
+	role, held, err := deps.Ownership.RoleOf(ctx, id.String(), p.AccountID)
+	if err != nil {
+		slog.ErrorContext(ctx, "read the role", "plugin_id", id.String(), "error", err)
+		return pageData{}, NewProblem(http.StatusInternalServerError, CodeInternalError,
+			"the plugin could not be loaded")
+	}
+
 	return pageData{
-		Title:     current.ID,
-		Account:   &p,
-		CSRFField: auth.CSRFFieldName,
-		CSRFToken: deps.Sessions.CSRFToken(p),
-		Plugin:    current,
-		Owners:    owners,
+		Title:           current.ID,
+		Account:         &p,
+		CSRFField:       auth.CSRFFieldName,
+		CSRFToken:       deps.Sessions.CSRFToken(p),
+		Plugin:          current,
+		Owners:          owners,
+		CanManageOwners: held && role.CanManageOwners(),
 	}, nil
 }
 
@@ -550,6 +564,10 @@ const (
 	msgOwnerLast       = "owner_last"
 	msgOwnerDisabled   = "owner_disabled"
 	msgOwnerFailed     = "owner_failed"
+
+	// A maintainer holds the plugin and may publish to it. Changing who holds it is an owner's
+	// business, and saying so plainly is better than a generic refusal that reads as a bug.
+	msgOwnerRoleTooNarrow = "owner_role_too_narrow"
 )
 
 // messages maps each code onto the sentence a page shows, and whether it is good news.
@@ -571,6 +589,10 @@ var messages = map[string]struct {
 	},
 	msgOwnerDisabled: {text: "That account is disabled.", problem: true},
 	msgOwnerFailed:   {text: "That change could not be made.", problem: true},
+	msgOwnerRoleTooNarrow: {
+		text:    "You hold this plugin as a maintainer. Only an owner can change who holds it.",
+		problem: true,
+	},
 }
 
 // messageFor returns (notice, problem) for a code. An unknown code renders nothing.
@@ -599,6 +621,8 @@ func ownerMessage(ctx context.Context, err error) string {
 		return msgOwnerLast
 	case errors.Is(err, ownership.ErrAccountDisabled):
 		return msgOwnerDisabled
+	case errors.Is(err, ownership.ErrRoleCannotManageOwners):
+		return msgOwnerRoleTooNarrow
 	default:
 		slog.ErrorContext(ctx, "change plugin owners", "error", err)
 		return msgOwnerFailed

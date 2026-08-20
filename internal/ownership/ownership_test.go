@@ -376,3 +376,115 @@ func TestRole_Valid(t *testing.T) {
 	require.False(t, ownership.Role("admin").Valid())
 	require.False(t, ownership.Role("Owner").Valid(), "the database CHECK is case-sensitive")
 }
+
+// TestAMaintainer_CannotChangeWhoHoldsThePlugin — the escalation this check exists to stop.
+//
+// `maintainer` is documented as "may publish, and may not change who the owners are", and that is
+// only true if the difference is enforced. A check that asked whether a plugin_owner row existed
+// admitted a maintainer to both mutations — so a co-maintainer could add an account they
+// controlled as an owner, then remove the real owner, and take over somebody else's plugin through
+// the door marked "may publish". Plugin ids are permanent, so that takeover is not reversible by
+// the person who lost it.
+func TestAMaintainer_CannotChangeWhoHoldsThePlugin(t *testing.T) {
+	t.Parallel()
+
+	// The full attack, in order, so a regression fails at the step that would have been the breach.
+	w := newWorld(t)
+	require.NoError(t, w.svc.Add(t.Context(), w.plugin, w.owner, "octocat", ownership.RoleMaintainer))
+
+	third := w.account(t, "accomplice")
+
+	t.Run("cannot add an accomplice", func(t *testing.T) {
+		err := w.svc.Add(t.Context(), w.plugin, w.other, "accomplice", ownership.RoleOwner)
+		require.ErrorIs(t, err, ownership.ErrRoleCannotManageOwners)
+
+		held, err := w.svc.IsOwner(t.Context(), w.plugin, third)
+		require.NoError(t, err)
+		require.False(t, held)
+	})
+
+	t.Run("cannot remove the owner", func(t *testing.T) {
+		err := w.svc.Remove(t.Context(), w.plugin, w.other, w.owner)
+		require.ErrorIs(t, err, ownership.ErrRoleCannotManageOwners)
+
+		held, err := w.svc.IsOwner(t.Context(), w.plugin, w.owner)
+		require.NoError(t, err)
+		require.True(t, held)
+	})
+
+	t.Run("cannot remove itself either", func(t *testing.T) {
+		// Leaving a plugin is a reasonable thing to want and is not this endpoint's job: the check
+		// is about who may change the list, not about which row is being changed. Issue filed.
+		err := w.svc.Remove(t.Context(), w.plugin, w.other, w.other)
+		require.ErrorIs(t, err, ownership.ErrRoleCannotManageOwners)
+	})
+
+	t.Run("and writes nothing while failing", func(t *testing.T) {
+		require.Equal(t, []string{"owner.add"}, storetest.Column(t, w.db,
+			`SELECT action FROM audit_log WHERE subject_kind = 'plugin'`),
+			"only the owner's original grant is recorded")
+	})
+}
+
+// TestAMaintainer_CanStillSeeWhoElseHoldsThePlugin — the refusal is narrow.
+//
+// A co-maintainer publishes to this plugin and needs to know who else holds it. Refusing the READ
+// as well would be a check that overshot, and nothing in the table above would notice.
+func TestAMaintainer_CanStillSeeWhoElseHoldsThePlugin(t *testing.T) {
+	t.Parallel()
+
+	w := newWorld(t)
+	require.NoError(t, w.svc.Add(t.Context(), w.plugin, w.owner, "octocat", ownership.RoleMaintainer))
+
+	owners, err := w.svc.Owners(t.Context(), w.plugin, w.other)
+	require.NoError(t, err)
+	require.Len(t, owners, 2)
+
+	// And they still hold the plugin, which is what lets them publish.
+	held, err := w.svc.IsOwner(t.Context(), w.plugin, w.other)
+	require.NoError(t, err)
+	require.True(t, held)
+}
+
+// TestRoleOf_IsWhatThePageAsks — the render and the refusal read one fact.
+//
+// A surface that offers a control the service refuses teaches people the service is broken; one
+// that hides a control they may use teaches them it is missing. Both go through CanManageOwners.
+func TestRoleOf_IsWhatThePageAsks(t *testing.T) {
+	t.Parallel()
+
+	w := newWorld(t)
+	require.NoError(t, w.svc.Add(t.Context(), w.plugin, w.owner, "octocat", ownership.RoleMaintainer))
+
+	tests := []struct {
+		name       string
+		account    string
+		wantRole   ownership.Role
+		wantHeld   bool
+		wantManage bool
+	}{
+		{name: "the owner", account: w.owner, wantRole: ownership.RoleOwner, wantHeld: true, wantManage: true},
+		{name: "a maintainer", account: w.other, wantRole: ownership.RoleMaintainer, wantHeld: true},
+		{name: "a stranger", account: w.account(t, "stranger")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			role, held, err := w.svc.RoleOf(t.Context(), w.plugin, tt.account)
+			require.NoError(t, err)
+			require.Equal(t, tt.wantHeld, held)
+			require.Equal(t, tt.wantRole, role)
+			require.Equal(t, tt.wantManage, held && role.CanManageOwners())
+		})
+	}
+}
+
+func TestRole_CanManageOwners(t *testing.T) {
+	t.Parallel()
+
+	require.True(t, ownership.RoleOwner.CanManageOwners())
+	require.False(t, ownership.RoleMaintainer.CanManageOwners(),
+		"this is the whole difference between the two roles")
+	require.False(t, ownership.Role("").CanManageOwners(),
+		"an unset role must not manage anything")
+}

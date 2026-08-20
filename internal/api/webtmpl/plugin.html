@@ -18,20 +18,29 @@
       <td>{{.Role}}</td>
       <td>{{.GrantedAt.Format "2006-01-02"}}</td>
       <td>
-        {{if gt (len $.Owners) 1}}
-        <form method="post" action="/plugins/{{$.Plugin.ID}}/owners" style="margin:0">
-          <input type="hidden" name="{{$.CSRFField}}" value="{{$.CSRFToken}}">
-          <input type="hidden" name="action" value="remove">
-          <input type="hidden" name="account_id" value="{{.AccountID}}">
-          <button type="submit" class="link">remove</button>
-        </form>
-        {{else}}<span class="muted">last owner</span>{{end}}
+        {{if $.CanManageOwners}}
+          {{if gt (len $.Owners) 1}}
+          <form method="post" action="/plugins/{{$.Plugin.ID}}/owners" style="margin:0">
+            <input type="hidden" name="{{$.CSRFField}}" value="{{$.CSRFToken}}">
+            <input type="hidden" name="action" value="remove">
+            <input type="hidden" name="account_id" value="{{.AccountID}}">
+            <button type="submit" class="link">remove</button>
+          </form>
+          {{else}}<span class="muted">last owner</span>{{end}}
+        {{end}}
       </td>
     </tr>
   {{end}}
   </tbody>
 </table>
 
+{{if not .CanManageOwners}}
+<p class="muted">
+  You hold this plugin as a <strong>maintainer</strong>: you can publish to it, and only an owner
+  can change who holds it. That separation is the point — it is what lets a co-maintainer be added
+  without handing the plugin over.
+</p>
+{{else}}
 <form method="post" action="/plugins/{{.Plugin.ID}}/owners">
   <fieldset>
     <legend>Add an owner</legend>
@@ -59,4 +68,5 @@
     </p>
   </fieldset>
 </form>
+{{end}}
 {{end}}

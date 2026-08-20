@@ -59,6 +59,7 @@ func (f *fakeTokens) Revoke(_ context.Context, _, tokenID string) error {
 type fakeOwnership struct {
 	mine   []ownership.Plugin
 	owners []ownership.Owner
+	role   ownership.Role
 	addErr error
 	rmErr  error
 
@@ -77,6 +78,15 @@ func (f *fakeOwnership) Owners(_ context.Context, pluginID, _ string) ([]ownersh
 		}
 	}
 	return nil, ownership.ErrNotAnOwner
+}
+
+func (f *fakeOwnership) RoleOf(_ context.Context, pluginID, _ string) (ownership.Role, bool, error) {
+	for _, p := range f.mine {
+		if p.ID == pluginID {
+			return f.role, true, nil
+		}
+	}
+	return "", false, nil
 }
 
 func (f *fakeOwnership) Add(_ context.Context, _, _, handle string, _ ownership.Role) error {
@@ -112,6 +122,7 @@ func newWebHarness(t *testing.T, mutate ...func(h *webHarness)) *webHarness {
 			},
 		},
 		ownership: &fakeOwnership{
+			role: ownership.RoleOwner,
 			mine: []ownership.Plugin{{
 				ID: "merchant-mode", Name: "Merchant Mode", Role: ownership.RoleOwner,
 				Listed: true, HasApprovedRelease: true, GrantedAt: time.Unix(1, 0).UTC(),
@@ -541,4 +552,64 @@ func TestAccountSurface_IsNotRegisteredWithoutItsDependencies(t *testing.T) {
 		require.NoError(t, resp.Body.Close())
 		require.Equal(t, http.StatusNotFound, resp.StatusCode, "%s must not be served", path)
 	}
+}
+
+// TestPluginSettings_AMaintainer_IsNotOfferedControlsTheServiceWillRefuse.
+//
+// A maintainer holds the plugin and may publish to it; only an owner may change who holds it.
+// Rendering the forms anyway would teach people the service is broken, and the page and the
+// refusal read the same fact through Role.CanManageOwners.
+func TestPluginSettings_AMaintainer_IsNotOfferedControlsTheServiceWillRefuse(t *testing.T) {
+	t.Parallel()
+
+	h := newWebHarness(t, func(h *webHarness) { h.ownership.role = ownership.RoleMaintainer })
+	body := string(h.get(t, "/plugins/merchant-mode/settings").body)
+
+	require.NotContains(t, body, `name="handle"`, "the add-an-owner form must not be rendered")
+	require.NotContains(t, body, `value="remove"`, "the remove buttons must not be rendered")
+	require.Contains(t, body, "as a <strong>maintainer</strong>",
+		"and the page says why, rather than looking like it is missing something")
+
+	// They still see who else holds it: a co-maintainer publishing to this plugin needs to know.
+	require.Contains(t, body, "Owners")
+}
+
+func TestPluginSettings_AnOwner_IsOfferedTheForms(t *testing.T) {
+	t.Parallel()
+
+	// The other side of the boundary. A page that rendered the forms for nobody would pass the
+	// assertions above.
+	h := newWebHarness(t)
+	body := string(h.get(t, "/plugins/merchant-mode/settings").body)
+
+	require.Contains(t, body, `name="handle"`)
+	require.Contains(t, body, "Add an owner")
+}
+
+// TestManageOwners_AMaintainersPost_IsRefusedByTheService — hiding the form is not the control.
+//
+// The form is not rendered for a maintainer, and a form that is not rendered is a form somebody can
+// still post. The refusal lives in internal/ownership, inside the transaction; this is the page
+// reporting it as something a person can read.
+func TestManageOwners_AMaintainersPost_IsRefusedByTheService(t *testing.T) {
+	t.Parallel()
+
+	h := newWebHarness(t, func(h *webHarness) {
+		h.ownership.role = ownership.RoleMaintainer
+		h.ownership.addErr = ownership.ErrRoleCannotManageOwners
+	})
+
+	resp := h.post(t, "/plugins/merchant-mode/owners", url.Values{
+		auth.CSRFFieldName: {h.csrf()},
+		"action":           {"add"},
+		"handle":           {"accomplice"},
+		"role":             {"owner"},
+	})
+
+	require.Equal(t, http.StatusSeeOther, resp.status)
+	require.Equal(t, "/plugins/merchant-mode/settings?msg=owner_role_too_narrow",
+		resp.header.Get("Location"))
+
+	body := string(h.get(t, "/plugins/merchant-mode/settings?msg=owner_role_too_narrow").body)
+	require.Contains(t, body, "Only an owner can change who holds it.")
 }

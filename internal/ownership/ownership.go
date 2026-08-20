@@ -34,10 +34,18 @@ const (
 	// RoleOwner may change the listing and manage the owners.
 	RoleOwner Role = "owner"
 
-	// RoleMaintainer may publish, and may not change who the owners are. It exists so that a
-	// co-maintainer can be added without handing over the plugin.
+	// RoleMaintainer may publish, and may NOT change who the owners are. It exists so that a
+	// co-maintainer can be added without handing over the plugin — which is only true if the
+	// difference is enforced, so Add and Remove require RoleOwner and say so with their own error.
 	RoleMaintainer Role = "maintainer"
 )
+
+// CanManageOwners reports whether a role may change who holds a plugin.
+//
+// One function, so the check and the page that decides whether to render the forms cannot disagree
+// — a surface that offers a control the service will refuse is a surface that teaches people the
+// service is broken.
+func (r Role) CanManageOwners() bool { return r == RoleOwner }
 
 func (r Role) String() string { return string(r) }
 
@@ -46,10 +54,20 @@ func (r Role) Valid() bool { return r == RoleOwner || r == RoleMaintainer }
 
 // Errors this package returns.
 var (
-	// ErrNotAnOwner is the caller not holding the plugin. It is what the settings page turns into
-	// a 404 rather than a 403: telling somebody "that plugin exists and is not yours" enumerates
-	// plugins for anybody with a list of ids.
+	// ErrNotAnOwner is the caller holding no grant on the plugin at all. It is what the settings
+	// page turns into a 404 rather than a 403: telling somebody "that plugin exists and is not
+	// yours" enumerates plugins for anybody with a list of ids.
 	ErrNotAnOwner = errors.New("not an owner of this plugin")
+
+	// ErrRoleCannotManageOwners is the caller holding the plugin as a MAINTAINER and trying to
+	// change who holds it.
+	//
+	// It is a separate error from ErrNotAnOwner because the answers differ, and because conflating
+	// them is what let this be wrong in the first place: a check that asked "is there a
+	// plugin_owner row" admitted a maintainer to Add and Remove, so a co-maintainer could add an
+	// account they controlled and then remove the owner — a full takeover of somebody else's
+	// plugin, through the door marked "may publish".
+	ErrRoleCannotManageOwners = errors.New("only an owner may change a plugin's owners")
 
 	// ErrNoSuchAccount is a handle nobody has signed in with. Granting ownership to a handle that
 	// has never authenticated here would be granting it to whoever registers that name next.
@@ -133,9 +151,13 @@ type Owner struct {
 
 // Owners returns everybody who holds a plugin, oldest grant first.
 //
-// It requires the caller to be an owner. Ownership of a plugin is not secret — the index says who
-// authored it — but the list of ACCOUNTS holding it is a list of people to target, and there is no
-// reason for it to be readable by anybody who is not on it.
+// ANY grant may read it, maintainer included: a co-maintainer needs to know who else holds the
+// plugin they publish to. What a maintainer may not do is CHANGE the list, which Add and Remove
+// enforce separately.
+//
+// It is not readable by somebody with no grant at all. Ownership is not secret — the index says
+// who authored a plugin — but the list of ACCOUNTS holding it is a list of people to target, and
+// there is no reason for it to be readable by anybody who is not on it.
 func (s *Service) Owners(ctx context.Context, pluginID, callerID string) ([]Owner, error) {
 	if err := s.requireOwner(ctx, pluginID, callerID); err != nil {
 		return nil, err
@@ -177,7 +199,7 @@ func (s *Service) Add(ctx context.Context, pluginID, callerID, handle string, ro
 	now := s.clk.Now()
 
 	return s.db.Tx(ctx, func(q *store.Queries) error {
-		if err := requireOwnerTx(ctx, q, pluginID, callerID); err != nil {
+		if err := requireOwnerRoleTx(ctx, q, pluginID, callerID); err != nil {
 			return err
 		}
 
@@ -235,7 +257,7 @@ func (s *Service) Add(ctx context.Context, pluginID, callerID, handle string, ro
 // is a maintainer writing SQL against production.
 func (s *Service) Remove(ctx context.Context, pluginID, callerID, targetID string) error {
 	return s.db.Tx(ctx, func(q *store.Queries) error {
-		if err := requireOwnerTx(ctx, q, pluginID, callerID); err != nil {
+		if err := requireOwnerRoleTx(ctx, q, pluginID, callerID); err != nil {
 			return err
 		}
 
@@ -271,7 +293,28 @@ func (s *Service) Remove(ctx context.Context, pluginID, callerID, targetID strin
 	})
 }
 
-// IsOwner reports whether an account holds a plugin. It is the per-request check ADR-0005 wants.
+// RoleOf returns the role an account holds a plugin at, and whether it holds one at all.
+//
+// The page uses it to decide whether to render the owner-management forms. A surface that offers a
+// control the service will refuse teaches people the service is broken, and one that hides a
+// control somebody may use teaches them it is missing — so the render and the enforcement read the
+// same fact through the same function, Role.CanManageOwners.
+func (s *Service) RoleOf(ctx context.Context, pluginID, accountID string) (Role, bool, error) {
+	row, err := s.db.Read().GetPluginOwner(ctx, sqlitegen.GetPluginOwnerParams{
+		PluginID:  pluginID,
+		AccountID: accountID,
+	})
+	switch {
+	case errors.Is(err, store.ErrNoRows):
+		return "", false, nil
+	case err != nil:
+		return "", false, fmt.Errorf("read the role on %s: %w", pluginID, err)
+	}
+	return Role(row.Role), true, nil
+}
+
+// IsOwner reports whether an account holds a plugin AT ALL, at any role. It is the per-request
+// check ADR-0005 wants for publishing; changing owners needs RoleOf and CanManageOwners.
 func (s *Service) IsOwner(ctx context.Context, pluginID, accountID string) (bool, error) {
 	_, err := s.db.Read().GetPluginOwner(ctx, sqlitegen.GetPluginOwnerParams{
 		PluginID:  pluginID,
@@ -297,11 +340,18 @@ func (s *Service) requireOwner(ctx context.Context, pluginID, accountID string) 
 	return nil
 }
 
-// requireOwnerTx is the same check inside a transaction, so the caller's ownership and the change
-// it authorises are decided against the same snapshot. Checking outside would leave a window in
-// which an owner removed a moment ago still gets one more write.
-func requireOwnerTx(ctx context.Context, q *store.Queries, pluginID, accountID string) error {
-	_, err := q.GetPluginOwner(ctx, sqlitegen.GetPluginOwnerParams{
+// requireOwnerRoleTx demands a grant AT OWNER LEVEL, inside the caller's transaction.
+//
+// Two things it does that the obvious version does not, and both matter:
+//
+//   - IT CHECKS THE ROLE. A check that only asked whether a plugin_owner row existed admitted a
+//     maintainer, who could then add an account they controlled and remove the owner. "May publish"
+//     would have been a path to taking somebody else's plugin.
+//   - IT RUNS IN THE TRANSACTION. The caller's authority and the change it authorises are decided
+//     against one snapshot; checking outside leaves a window in which somebody removed a moment ago
+//     still gets one more write.
+func requireOwnerRoleTx(ctx context.Context, q *store.Queries, pluginID, accountID string) error {
+	row, err := q.GetPluginOwner(ctx, sqlitegen.GetPluginOwnerParams{
 		PluginID:  pluginID,
 		AccountID: accountID,
 	})
@@ -310,6 +360,8 @@ func requireOwnerTx(ctx context.Context, q *store.Queries, pluginID, accountID s
 		return ErrNotAnOwner
 	case err != nil:
 		return fmt.Errorf("check ownership of %s: %w", pluginID, err)
+	case !Role(row.Role).CanManageOwners():
+		return ErrRoleCannotManageOwners
 	}
 	return nil
 }
