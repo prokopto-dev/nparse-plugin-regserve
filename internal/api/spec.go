@@ -118,6 +118,10 @@ func (unavailableOwnership) Owners(context.Context, string, string) ([]ownership
 	return nil, errSpecOnly
 }
 
+func (unavailableOwnership) RoleOf(context.Context, string, string) (ownership.Role, bool, error) {
+	return "", false, errSpecOnly
+}
+
 func (unavailableOwnership) Add(context.Context, string, string, string, ownership.Role) error {
 	return errSpecOnly
 }
