@@ -48,7 +48,7 @@ catalogue it served before, out of SQLite.
 - ✅ `internal/authz` catalogue, generating `docs/reference/permissions.md`; the capability floor
   declared and enforced from the same value the OpenAPI document renders
 - ✅ PAT mint and verify, with the scope `CHECK` generated from the catalogue
-- A server-rendered account surface, because the capability floor is session-only and therefore
+- ✅ A server-rendered account surface, because the capability floor is session-only and therefore
   browser-required: without pages, nothing can reach it
 - Release notes as an additive wire-format field, with its own ADR
 - Seeding ownership from the existing `owners.json`, resolving handles to numeric ids (`make seed`;
@@ -59,8 +59,12 @@ mint, authenticate and revoke — with a real token carrying every scope in the 
 refused at the capability floor, proven over HTTP rather than argued. Every operation's access
 declaration is enforced by middleware reading the same value the document renders. Sign-in is off
 in the live deployment until an OAuth application is configured — the routes are not registered at
-all rather than registered and failing. Nothing mints a token yet: that is browser-only by
-construction, and the pages arrive with the account surface.
+all rather than registered and failing.
+
+An account can now sign in, see its plugins, mint a token — shown once, in one response, never in a
+URL — revoke one, and add or remove a plugin's owners, all from pages served by the same binary.
+Every mutating form carries a session-bound CSRF token, and every authenticated page refuses a
+personal access token outright.
 
 ## Phase 3 — publishing
 

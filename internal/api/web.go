@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -192,23 +193,26 @@ type pluginPageInput struct {
 
 func registerTokenForms(api huma.API, deps WebDeps) {
 	register(api, Floor("token.mint"), huma.Operation{
-		OperationID: "mintToken",
-		Method:      http.MethodPost,
-		Path:        PathMintToken,
-		Summary:     "Mint a personal access token",
+		OperationID:  "mintToken",
+		MaxBodyBytes: maxFormBytes,
+		Method:       http.MethodPost,
+		Path:         PathMintToken,
+		Summary:      "Mint a personal access token",
 		Description: "An HTML form post. The secret is shown exactly once and is never " +
 			"recoverable afterwards: what is stored is a keyed hash of it.",
 		Tags:      []string{tagAccount},
 		Errors:    []int{http.StatusUnauthorized, http.StatusForbidden},
 		Responses: htmlResponses(),
 	}, func(ctx context.Context, in *mintTokenInput) (*htmlOutput, error) {
-		p, err := requireFormPrincipal(ctx, deps, in.CSRFToken)
+		form := parseForm(in.RawBody)
+		p, err := requireFormPrincipal(ctx, deps, form.Get(auth.CSRFFieldName))
 		if err != nil {
 			return nil, err
 		}
 
-		scopes := make([]authz.Scope, 0, len(in.Scopes))
-		for _, s := range in.Scopes {
+		requested := form["scope"]
+		scopes := make([]authz.Scope, 0, len(requested))
+		for _, s := range requested {
 			scopes = append(scopes, authz.Scope(s))
 		}
 
@@ -219,9 +223,9 @@ func registerTokenForms(api huma.API, deps WebDeps) {
 
 		minted, err := deps.Tokens.Mint(ctx, auth.MintRequest{
 			AccountID: p.AccountID,
-			Name:      in.Name,
+			Name:      form.Get("name"),
 			Scopes:    scopes,
-			PluginID:  in.PluginID,
+			PluginID:  form.Get("plugin_id"),
 		})
 		if err != nil {
 			data.Problem = mintProblem(ctx, err)
@@ -229,7 +233,7 @@ func registerTokenForms(api huma.API, deps WebDeps) {
 		}
 		// The prefix is logged and the secret is not. That is what the public half is for.
 		slog.InfoContext(ctx, "token minted",
-			"account_id", p.AccountID, "token_prefix", minted.Prefix, "scopes", in.Scopes)
+			"account_id", p.AccountID, "token_prefix", minted.Prefix, "scopes", requested)
 
 		// THE SECRET IS RENDERED INTO THIS RESPONSE AND GOES NOWHERE ELSE. Every other form here
 		// answers with post/redirect/get; this one deliberately does not, and the reason is that
@@ -248,22 +252,23 @@ func registerTokenForms(api huma.API, deps WebDeps) {
 		// from it, which is a cost, not a hole.
 		data.NewToken = minted.Secret
 		data.Tokens = append([]auth.Listing{{
-			ID: minted.ID, Prefix: minted.Prefix, Name: strings.TrimSpace(in.Name),
-			Scopes: scopes, PluginID: in.PluginID,
+			ID: minted.ID, Prefix: minted.Prefix, Name: strings.TrimSpace(form.Get("name")),
+			Scopes: scopes, PluginID: form.Get("plugin_id"),
 		}}, data.Tokens...)
 		return renderPage(ctx, "account.html", data)
 	})
 
 	register(api, Floor("token.revoke"), huma.Operation{
-		OperationID: "revokeToken",
-		Method:      http.MethodPost,
-		Path:        PathRevokeToken,
-		Summary:     "Revoke a personal access token",
-		Tags:        []string{tagAccount},
-		Errors:      []int{http.StatusUnauthorized, http.StatusForbidden},
-		Responses:   redirectResponses("Your account page."),
+		OperationID:  "revokeToken",
+		MaxBodyBytes: maxFormBytes,
+		Method:       http.MethodPost,
+		Path:         PathRevokeToken,
+		Summary:      "Revoke a personal access token",
+		Tags:         []string{tagAccount},
+		Errors:       []int{http.StatusUnauthorized, http.StatusForbidden},
+		Responses:    redirectResponses("Your account page."),
 	}, func(ctx context.Context, in *revokeTokenInput) (*redirectOutput, error) {
-		p, err := requireFormPrincipal(ctx, deps, in.CSRFToken)
+		p, err := requireFormPrincipal(ctx, deps, parseForm(in.RawBody).Get(auth.CSRFFieldName))
 		if err != nil {
 			return nil, err
 		}
@@ -283,18 +288,22 @@ func registerTokenForms(api huma.API, deps WebDeps) {
 	})
 }
 
+// The form inputs.
+//
+// Huma binds JSON bodies and multipart forms; it does NOT bind
+// `application/x-www-form-urlencoded` fields onto struct tags, so the body arrives as bytes and is
+// parsed here. That is explicit rather than clever, which suits a surface where the interesting
+// question is what happens to a field somebody forged.
+//
+// MaxBodyBytes is set on every one of these operations. A form here is a few hundred bytes; the
+// cap is what stops a POST to a browser route from being an allocation chosen by the caller.
 type mintTokenInput struct {
-	RawBody   struct{} `contentType:"application/x-www-form-urlencoded"`
-	CSRFToken string   `formData:"csrf_token"`
-	Name      string   `formData:"name"`
-	PluginID  string   `formData:"plugin_id"`
-	Scopes    []string `formData:"scope"`
+	RawBody []byte `contentType:"application/x-www-form-urlencoded"`
 }
 
 type revokeTokenInput struct {
-	ID        string   `path:"id"`
-	RawBody   struct{} `contentType:"application/x-www-form-urlencoded"`
-	CSRFToken string   `formData:"csrf_token"`
+	ID      string `path:"id"`
+	RawBody []byte `contentType:"application/x-www-form-urlencoded"`
 }
 
 func registerPluginPages(api huma.API, deps WebDeps) {
@@ -323,10 +332,11 @@ func registerPluginPages(api huma.API, deps WebDeps) {
 	})
 
 	register(api, Floor("owner.manage"), huma.Operation{
-		OperationID: "managePluginOwners",
-		Method:      http.MethodPost,
-		Path:        PathPluginOwners,
-		Summary:     "Add or remove a plugin's owners",
+		OperationID:  "managePluginOwners",
+		MaxBodyBytes: maxFormBytes,
+		Method:       http.MethodPost,
+		Path:         PathPluginOwners,
+		Summary:      "Add or remove a plugin's owners",
 		Description: "An HTML form post. A transfer is two steps — add the new owner, let them " +
 			"mint their own token, then remove the old one — because a token stops working the " +
 			"moment its holder stops being an owner.",
@@ -334,7 +344,8 @@ func registerPluginPages(api huma.API, deps WebDeps) {
 		Errors:    []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound},
 		Responses: redirectResponses("The plugin's settings page."),
 	}, func(ctx context.Context, in *ownersInput) (*redirectOutput, error) {
-		p, err := requireFormPrincipal(ctx, deps, in.CSRFToken)
+		form := parseForm(in.RawBody)
+		p, err := requireFormPrincipal(ctx, deps, form.Get(auth.CSRFFieldName))
 		if err != nil {
 			return nil, err
 		}
@@ -345,15 +356,18 @@ func registerPluginPages(api huma.API, deps WebDeps) {
 		}
 
 		var opErr error
-		switch in.Action {
+		switch form.Get("action") {
 		case "add":
-			role := ownership.Role(in.Role)
+			// An unrecognised role becomes the NARROWER one. A form field is caller-controlled,
+			// and the failure mode of guessing generously is a co-maintainer who can hand the
+			// plugin to somebody else.
+			role := ownership.Role(form.Get("role"))
 			if !role.Valid() {
 				role = ownership.RoleMaintainer
 			}
-			opErr = deps.Ownership.Add(ctx, id.String(), p.AccountID, in.Handle, role)
+			opErr = deps.Ownership.Add(ctx, id.String(), p.AccountID, form.Get("handle"), role)
 		case "remove":
-			opErr = deps.Ownership.Remove(ctx, id.String(), p.AccountID, in.AccountID)
+			opErr = deps.Ownership.Remove(ctx, id.String(), p.AccountID, form.Get("account_id"))
 		default:
 			return nil, NewProblem(http.StatusBadRequest, CodeInvalidRequest,
 				"that is not something this form does")
@@ -369,13 +383,25 @@ func registerPluginPages(api huma.API, deps WebDeps) {
 }
 
 type ownersInput struct {
-	ID        string   `path:"id"`
-	RawBody   struct{} `contentType:"application/x-www-form-urlencoded"`
-	CSRFToken string   `formData:"csrf_token"`
-	Action    string   `formData:"action"`
-	Handle    string   `formData:"handle"`
-	Role      string   `formData:"role"`
-	AccountID string   `formData:"account_id"`
+	ID      string `path:"id"`
+	RawBody []byte `contentType:"application/x-www-form-urlencoded"`
+}
+
+// maxFormBytes caps a form post. Every field on these pages is a handle, a name, a plugin id or a
+// scope; 16 KiB is far above any of them and far below anything that could hurt.
+const maxFormBytes int64 = 16 * 1024
+
+// parseForm decodes an urlencoded body.
+//
+// A body that does not parse is treated as an empty form rather than an error, and the CSRF check
+// then refuses it — one refusal path instead of two, and the one that does not tell a prober
+// whether their body was well-formed.
+func parseForm(raw []byte) url.Values {
+	values, err := url.ParseQuery(string(raw))
+	if err != nil {
+		return url.Values{}
+	}
+	return values
 }
 
 // requirePrincipal reads the principal the middleware resolved.

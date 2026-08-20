@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -166,22 +167,19 @@ func (h *webHarness) request(t *testing.T, method, path string, form url.Values)
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
 
-	client := &http.Client{
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	// This server's own client, never a bare &http.Client{}: a shared http.DefaultTransport plus
+	// httptest.Server.Close is how one parallel test severs another's connection.
+	client := h.srv.Client()
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
 	}
+
 	resp, err := client.Do(req)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, resp.Body.Close()) }()
 
-	raw := make([]byte, 0)
-	buf := make([]byte, 8192)
-	for {
-		n, rerr := resp.Body.Read(buf)
-		raw = append(raw, buf[:n]...)
-		if rerr != nil {
-			break
-		}
-	}
+	raw, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
 	return response{status: resp.StatusCode, header: resp.Header.Clone(), body: raw}
 }
 
@@ -300,7 +298,10 @@ func TestMutatingForms_WithoutAValidCSRFToken_AreRefused(t *testing.T) {
 		body url.Values
 	}{
 		{name: "mint a token", path: "/account/tokens", body: url.Values{"name": {"x"}, "scope": {"plugin:publish"}}},
-		{name: "revoke a token", path: "/account/tokens/tok-1/revoke", body: url.Values{}},
+		// A field the form does not use, so the body is not empty. A forged cross-site form
+		// carries whatever its author put in it; an entirely empty POST is a different, degenerate
+		// case, covered separately below.
+		{name: "revoke a token", path: "/account/tokens/tok-1/revoke", body: url.Values{"submit": {"revoke"}}},
 		{name: "add an owner", path: "/plugins/merchant-mode/owners", body: url.Values{"action": {"add"}, "handle": {"octocat"}}},
 		{name: "remove an owner", path: "/plugins/merchant-mode/owners", body: url.Values{"action": {"remove"}, "account_id": {"acct"}}},
 	}
@@ -339,6 +340,34 @@ func TestMutatingForms_WithoutAValidCSRFToken_AreRefused(t *testing.T) {
 				require.Empty(t, h.ownership.sawRemove)
 			})
 		}
+	}
+}
+
+// TestMutatingForms_WithNoBodyAtAll_AreRefused — the degenerate case, refused for its own reason.
+//
+// A form post with no body is malformed rather than unauthorised, and Huma answers 400 before a
+// handler runs. What matters is that it is refused and that nothing happened; which of the two
+// reasons it gives is not something a caller can act on differently.
+func TestMutatingForms_WithNoBodyAtAll_AreRefused(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{
+		"/account/tokens",
+		"/account/tokens/tok-1/revoke",
+		"/plugins/merchant-mode/owners",
+	} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+
+			h := newWebHarness(t)
+			resp := h.post(t, path, url.Values{})
+
+			require.GreaterOrEqual(t, resp.status, http.StatusBadRequest, "%s must refuse", path)
+			require.Empty(t, h.tokens.sawMint)
+			require.Empty(t, h.tokens.sawRevoke)
+			require.Empty(t, h.ownership.sawAdd)
+			require.Empty(t, h.ownership.sawRemove)
+		})
 	}
 }
 
@@ -400,8 +429,17 @@ func TestPages_EscapeValuesThatCameFromAProvider(t *testing.T) {
 
 	for _, path := range []string{"/account", "/plugins/merchant-mode/settings"} {
 		body := string(h.get(t, path).body)
-		require.NotContains(t, body, "<script>alert(1)</script>", "%s rendered raw markup", path)
-		require.NotContains(t, body, "onerror=alert(1)", "%s rendered a raw attribute", path)
+
+		// The assertion is about MARKUP, not about the characters. `onerror=alert(1)` appearing as
+		// text inside an escaped element is inert; an unescaped `<img` or `<script` is not. A test
+		// that matched the payload's text would fail on correct output and pass on a page that
+		// stripped the value entirely.
+		require.NotContains(t, body, "<script", "%s rendered a raw element", path)
+		require.NotContains(t, body, "<img", "%s rendered a raw element", path)
+
+		// And the value IS rendered, escaped. Dropping it would also pass the assertions above.
+		require.Contains(t, body, "&lt;script&gt;alert(1)&lt;/script&gt;",
+			"%s must render the display name, escaped", path)
 	}
 }
 
