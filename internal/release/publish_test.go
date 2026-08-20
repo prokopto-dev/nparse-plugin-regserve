@@ -124,8 +124,13 @@ func TestPublish_AnArtifactThatCouldNotBeFetched_IsNotPublishedAndSaysSo(t *test
 	require.False(t, out.Verified)
 	require.Equal(t, release.StatePending, out.State)
 	require.Empty(t, out.SHA256, "a hash was reported for bytes this server never read")
-	require.True(t, strings.HasPrefix(out.Review, "not verified: "),
-		"the review note does not say the artifact was not verified: %q", out.Review)
+	// The note now enumerates every rule that fired — a first release AND an unfetchable
+	// artifact are two reasons — so the specific fetch failure is CONTAINED rather than leading.
+	// It must still be there: "the artifact could not be fetched" is not a reason a reviewer can
+	// act on, and "not verified: the artifact url did not answer with success" is.
+	require.Contains(t, out.Review, "not verified: ",
+		"the review note does not say why the artifact was not verified: %q", out.Review)
+	require.Contains(t, out.Reasons, release.ReasonNotVerified.String())
 
 	row, err := w.db.Read().GetReleaseByID(t.Context(), out.ReleaseID)
 	require.NoError(t, err)
@@ -147,7 +152,8 @@ func TestPublish_AnUnreachableFetcher_IsStillNotASuccess(t *testing.T) {
 
 	require.False(t, out.Verified)
 	require.Empty(t, out.SHA256)
-	require.Equal(t, artifact.Reason(context.DeadlineExceeded), out.Review)
+	require.Contains(t, out.Review, artifact.Reason(context.DeadlineExceeded),
+		"the specific fetch failure must survive into the note a reviewer reads")
 	require.Nil(t, w.storedHash(t, out.ReleaseID))
 }
 

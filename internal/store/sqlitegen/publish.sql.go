@@ -36,6 +36,44 @@ func (q *Queries) CanAccountPublish(ctx context.Context, accountID string) (int6
 	return count, err
 }
 
+const getAccountHandle = `-- name: GetAccountHandle :one
+SELECT CAST(coalesce((
+    SELECT i.handle FROM identity i
+    WHERE i.account_id = a.id AND i.provider_kind = 'github'
+    ORDER BY i.linked_at, i.id LIMIT 1
+), '') AS TEXT) AS handle
+FROM account a WHERE a.id = ?
+`
+
+// The GitHub handle behind an account id, for a reviewer who is looking at a queue full of ULIDs.
+// Decoration, refreshed at each login, and never what anything matches on.
+func (q *Queries) GetAccountHandle(ctx context.Context, id string) (string, error) {
+	row := q.db.QueryRowContext(ctx, getAccountHandle, id)
+	var handle string
+	err := row.Scan(&handle)
+	return handle, err
+}
+
+const getAccountTrust = `-- name: GetAccountTrust :one
+SELECT account_id, level, set_at, set_by, note FROM account_trust WHERE account_id = ?
+`
+
+// An account's trust tier. NO ROW MEANS 'new', which is the floor and the default: an account that
+// has never been assessed is one nothing should be automated for, and inventing a row at first
+// sign-in would make "never assessed" and "assessed and found ordinary" the same state.
+func (q *Queries) GetAccountTrust(ctx context.Context, accountID string) (AccountTrust, error) {
+	row := q.db.QueryRowContext(ctx, getAccountTrust, accountID)
+	var i AccountTrust
+	err := row.Scan(
+		&i.AccountID,
+		&i.Level,
+		&i.SetAt,
+		&i.SetBy,
+		&i.Note,
+	)
+	return i, err
+}
+
 const getIdempotencyKey = `-- name: GetIdempotencyKey :one
 SELECT account_id, operation, idempotency_key, request_hash, release_id, created_at
 FROM idempotency_key
@@ -252,6 +290,38 @@ func (q *Queries) InsertPublishRelease(ctx context.Context, arg InsertPublishRel
 		arg.SubmittedAt,
 		arg.VerifiedAt,
 		arg.ReviewNote,
+	)
+	return err
+}
+
+const setAccountTrust = `-- name: SetAccountTrust :exec
+INSERT INTO account_trust (account_id, level, set_at, set_by, note)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (account_id) DO UPDATE SET
+    level = excluded.level,
+    set_at = excluded.set_at,
+    set_by = excluded.set_by,
+    note = excluded.note
+`
+
+type SetAccountTrustParams struct {
+	AccountID string
+	Level     string
+	SetAt     int64
+	SetBy     *string
+	Note      *string
+}
+
+// Raise or lower an account's tier. An upsert, because a tier is a property of the account rather
+// than a history: the history is in audit_log, which is append-only and cannot be edited, and that
+// is the copy an incident review reads.
+func (q *Queries) SetAccountTrust(ctx context.Context, arg SetAccountTrustParams) error {
+	_, err := q.db.ExecContext(ctx, setAccountTrust,
+		arg.AccountID,
+		arg.Level,
+		arg.SetAt,
+		arg.SetBy,
+		arg.Note,
 	)
 	return err
 }

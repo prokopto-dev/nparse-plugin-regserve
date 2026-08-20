@@ -113,6 +113,16 @@
             "description": "The sha256 THIS SERVER computed from the bytes it downloaded. This is the value that is published, and it is not necessarily the one you submitted. Absent when the artifact could not be fetched.",
             "type": "string"
           },
+          "quarantine": {
+            "description": "Every rule that sent this release to review. Absent when it went live. A new plugin id is always one of these: the first appearance of an id always gets a human, whatever the submitter's trust level.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "release_id": {
             "description": "This release's permanent id.",
             "type": "string"
@@ -127,6 +137,10 @@
           },
           "state": {
             "description": "Where the release is: pending while it waits for a human, approved once it is the plugin's live release. A new plugin id always gets human review, and trust never bypasses that.",
+            "type": "string"
+          },
+          "superseded_release_id": {
+            "description": "The release this one retired, when it published automatically.",
             "type": "string"
           },
           "verified": {
@@ -209,6 +223,46 @@
           "plugin_id",
           "version",
           "state"
+        ],
+        "type": "object"
+      },
+      "SetTrustInputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "level": {
+            "description": "The tier. trusted lets this account's version bumps of an already-approved plugin publish without a human; blocked refuses its publishes outright; new is the default and sends everything to review.",
+            "enum": [
+              "blocked",
+              "new",
+              "trusted"
+            ],
+            "type": "string"
+          },
+          "note": {
+            "description": "Why. REQUIRED: a tier with no stated reason is one nobody can review later, and raising somebody to trusted is the decision that most needs to be explainable a year afterwards.",
+            "maxLength": 2048,
+            "type": "string"
+          }
+        },
+        "required": [
+          "level",
+          "note"
+        ],
+        "type": "object"
+      },
+      "SetTrustResult": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "level": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "level"
         ],
         "type": "object"
       },
@@ -637,6 +691,118 @@
         ],
         "x-regserve-pat-forbidden": true,
         "x-regserve-permission": "token.revoke"
+      }
+    },
+    "/api/v1/accounts/{id}/trust": {
+      "put": {
+        "description": "Trust governs ONE thing: whether a version bump of an already-approved plugin can publish without a human.\n\nIt never governs the first appearance of a plugin id — that always gets a human, whatever the tier — and it never governs who may review, which is configured in the deployment. A tier that did both would let a trusted publisher approve their own submissions.\n\n**It is never raised automatically.** A counter of successful publishes is a counter an attacker can run up: publish four harmless releases, earn the tier, publish the fifth.\n\nPUT rather than POST because a tier is a property of the account, not an event. The history is in the audit log, which nothing can edit.",
+        "operationId": "setAccountTrust",
+        "parameters": [
+          {
+            "description": "The account's id, as shown against a submission in the review queue.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The account's id, as shown against a submission in the review queue.",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetTrustInputBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetTrustResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "summary": "Set an account's trust tier",
+        "tags": [
+          "review"
+        ],
+        "x-regserve-pat-forbidden": true,
+        "x-regserve-permission": "trust.set",
+        "x-regserve-reviewer": true
       }
     },
     "/api/v1/plugins/{id}/releases": {

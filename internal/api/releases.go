@@ -95,6 +95,12 @@ type publishReleaseResult struct {
 	Review string `json:"review,omitempty" doc:"Why this release is waiting, in a sentence written for a human."`
 
 	Replayed bool `json:"replayed" doc:"True when this idempotency key had been seen before and this is the original result rather than a new submission."`
+
+	Superseded string `json:"superseded_release_id,omitempty" doc:"The release this one retired, when it published automatically."`
+
+	// Reasons is what a publishing workflow prints so the author learns why their release is
+	// waiting without opening a browser to find out.
+	Reasons []string `json:"quarantine,omitempty" doc:"Every rule that sent this release to review. Absent when it went live. A new plugin id is always one of these: the first appearance of an id always gets a human, whatever the submitter's trust level."`
 }
 
 // registerReleases wires the publish endpoint.
@@ -172,13 +178,15 @@ func registerReleases(api huma.API, publisher Publisher) {
 				// land, which is a compatibility break dressed as a feature.
 				Status: http.StatusCreated,
 				Body: publishReleaseResult{
-					ReleaseID: outcome.ReleaseID,
-					State:     outcome.State.String(),
-					Verified:  outcome.Verified,
-					SHA256:    outcome.SHA256,
-					Bytes:     outcome.Bytes,
-					Review:    outcome.Review,
-					Replayed:  outcome.Replayed,
+					ReleaseID:  outcome.ReleaseID,
+					State:      outcome.State.String(),
+					Verified:   outcome.Verified,
+					SHA256:     outcome.SHA256,
+					Bytes:      outcome.Bytes,
+					Review:     outcome.Review,
+					Replayed:   outcome.Replayed,
+					Superseded: outcome.Superseded,
+					Reasons:    outcome.Reasons,
 				},
 			}, nil
 		})
@@ -217,6 +225,17 @@ func publishProblem(ctx context.Context, pluginID string, err error) error {
 		return NewProblem(http.StatusConflict, CodeConflict,
 			"that "+idempotencyHeader+" was used for a different request; use a new key for a new "+
 				"release")
+
+	case errors.Is(err, release.ErrAccountBlocked):
+		// 403 and not 404. The account exists, it holds the plugin, and it has been refused by a
+		// person — telling them so is what lets them ask why, and hiding it would look like a bug.
+		return NewProblem(http.StatusForbidden, CodeForbidden,
+			"this account may not publish: a reviewer has blocked it")
+
+	case errors.Is(err, release.ErrLiveReleaseChanged):
+		return NewProblem(http.StatusConflict, CodeConflict,
+			"the plugin's live release changed while this artifact was being fetched, so the "+
+				"checks this publish was judged against are no longer current; submit it again")
 
 	case errors.Is(err, release.ErrNoIdempotencyKey):
 		return NewProblem(http.StatusBadRequest, CodeInvalidRequest,

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"strings"
 	"time"
 
@@ -92,6 +91,15 @@ var (
 
 	// ErrNoIdempotencyKey is a publish with no key at all. Canonical §6 requires one.
 	ErrNoIdempotencyKey = errors.New("an idempotency key is required")
+
+	// ErrLiveReleaseChanged is an automatic publish whose comparison stopped being true.
+	//
+	// The quarantine rules are evaluated against the plugin's live release BEFORE the artifact is
+	// downloaded, because the download takes up to forty-five seconds and SQLite has one writer.
+	// If something approves or retires a release in that window, the decision to publish
+	// automatically rested on a fact that is no longer true — and the safe answer is to stop and
+	// let the caller retry rather than to retire a release nothing was compared against.
+	ErrLiveReleaseChanged = errors.New("the plugin's live release changed while the artifact was being fetched")
 )
 
 // The audit and review vocabulary this file writes. One spelling each: an incident review queries
@@ -106,17 +114,14 @@ const (
 	operationPublishRelease = "publishRelease"
 )
 
-// Review notes. They are read by a human deciding whether to approve, and by the author, so each
-// says what happened rather than which branch produced it.
+// reviewAwaitingHuman is what a release says when nothing is WRONG with it and it still waits:
+// the submitter's account has not been trusted, so a human looks at it.
+//
+// The reasons a release waits for a specific reason are QuarantineReason values in quarantine.go —
+// including the hash mismatch, which used to be spelled here and now lives with the other rules,
+// because a reviewer reading a queue should meet one vocabulary rather than two.
 const (
-	// reviewAwaitingHuman is the ordinary case in this phase: nothing is wrong, and nothing
-	// publishes automatically yet.
 	reviewAwaitingHuman = "awaiting human review"
-
-	// reviewHashMismatch is the one worth waking up for. The bytes this server fetched are not the
-	// bytes the submitter hashed, which means something between their build and our fetch changed
-	// them: a re-uploaded release asset, a compromised token, a hijacked URL.
-	reviewHashMismatch = "the submitted sha256 does not match the artifact this server fetched"
 )
 
 // ArtifactFetcher is what the publisher needs from internal/artifact.
@@ -175,6 +180,15 @@ type Outcome struct {
 
 	// Replayed says the idempotency key had been seen before and this is the original outcome.
 	Replayed bool
+
+	// Superseded is the release this one retired, set only when it published automatically. It is
+	// reported because a listing changing with nothing saying so is indistinguishable from a bug.
+	Superseded string
+
+	// Reasons is every quarantine rule that fired, empty for a release that went live. It is
+	// returned so a publishing workflow can print WHY its release is waiting rather than making
+	// the author open a browser to find out.
+	Reasons []string
 }
 
 // Publish submits a release.
@@ -210,9 +224,27 @@ func (p *Publisher) Publish(ctx context.Context, req Request) (Outcome, error) {
 		return Outcome{}, err
 	}
 
+	// TRUST IS READ BEFORE THE ARTIFACT IS FETCHED, and a blocked account is refused here. An
+	// endpoint that downloads a stranger's URL on behalf of a stranger it has already refused is a
+	// bandwidth amplifier with an authentication step in front of it.
+	trust, err := p.TrustOf(ctx, req.AccountID)
+	if err != nil {
+		return Outcome{}, err
+	}
+	if trust == TrustBlocked {
+		return Outcome{}, ErrAccountBlocked
+	}
+
+	// What the plugin currently serves, for the quarantine comparison. Read before the fetch so
+	// that a slow download does not widen the window between the two.
+	prev, err := p.previousRelease(ctx, req.Submission.PluginID.String())
+	if err != nil {
+		return Outcome{}, err
+	}
+
 	// STEP 2 AND 3 OF ADR-0008. The bytes are fetched, hashed and discarded; the submitted digest
 	// is compared against what came back and plays no further part.
-	verdict := p.verify(ctx, req.Submission)
+	verdict := p.decide(prev, trust, req.Submission, p.verify(ctx, req.Submission))
 
 	return p.record(ctx, req, key, requestHash, verdict)
 }
@@ -226,8 +258,20 @@ type verdict struct {
 	// verified is true only when bytes were fetched AND they matched the submitted hash.
 	verified bool
 
-	// review is the sentence recorded on the row, never empty in this phase.
+	// review is the sentence recorded on the row, never empty.
 	review string
+
+	// reasons is every quarantine rule that fired. Empty on a release that is going live.
+	reasons []QuarantineReason
+
+	// state is where the release lands. It is decided in one place — decide() — rather than by
+	// each caller reading the fields above and drawing its own conclusion.
+	state ReleaseState
+
+	// comparedAgainst is the version of the live release the quarantine rules were evaluated
+	// against, empty when there was none. The write transaction re-reads and compares it, so an
+	// automatic publish cannot rest on a comparison that stopped being true during the download.
+	comparedAgainst string
 }
 
 // verify fetches the artifact, hashes it, and compares.
@@ -256,10 +300,10 @@ func (p *Publisher) verify(ctx context.Context, sub Submission) verdict {
 		slog.WarnContext(ctx, "submitted sha256 does not match the fetched artifact",
 			"plugin_id", sub.PluginID.String(), "version", sub.Version,
 			"submitted", sub.Submitted.String(), "computed", res.Digest.String())
-		return verdict{result: res, review: reviewHashMismatch}
+		return verdict{result: res}
 	}
 
-	return verdict{result: res, verified: true, review: reviewAwaitingHuman}
+	return verdict{result: res, verified: true}
 }
 
 // record writes the release, the idempotency row and the audit row in one transaction.
@@ -285,6 +329,7 @@ func (p *Publisher) record(
 		Verified:  v.verified,
 		Bytes:     params.ArtifactBytes,
 		Review:    v.review,
+		Reasons:   reasonStrings(v.reasons),
 	}
 	if params.ArtifactSha256 != nil {
 		out.SHA256 = *params.ArtifactSha256
@@ -299,6 +344,41 @@ func (p *Publisher) record(
 				return ErrNotPublishable
 			}
 			return err
+		}
+
+		// TRUST, AGAIN, IN THIS TRANSACTION.
+		//
+		// It was read before the fetch, deliberately, so a blocked account cannot make this server
+		// spend forty-five seconds on its behalf. But that reading is forty-five seconds old by
+		// the time anything is written, and a reviewer can block or demote an account inside that
+		// window — the whole reason such a reviewer exists is to be able to stop somebody, and an
+		// in-flight request that ignored them would be the one publish their decision did not
+		// reach.
+		//
+		// The rule: THE DECISION MAY BE NARROWED HERE, NEVER WIDENED. A tier that dropped stops an
+		// automatic publish; a tier that rose does not start one, because the quarantine
+		// comparison was made against a snapshot this transaction has only partly re-validated,
+		// and "it would have been fine" is not a reason to skip the human.
+		trustNow, err := p.trustTx(ctx, q, req.AccountID)
+		if err != nil {
+			return err
+		}
+		if trustNow == TrustBlocked {
+			// No row at all, the same answer as a publish that arrived already blocked. A release
+			// recorded from an account a person has just refused is a release somebody has to
+			// explain later.
+			return ErrAccountBlocked
+		}
+		if v.state == StateApproved && trustNow != TrustTrusted {
+			// Recorded rather than refused: the artifact was fetched and hashed, and throwing that
+			// away would burn the version number over a timing coincidence. It goes to review,
+			// which is where it would have gone had the tier been read a second later.
+			v.state = StatePending
+			v.review = trustLoweredNote
+			params.State = v.state.String()
+			params.ReviewNote = &v.review
+			out.State = v.state
+			out.Review = v.review
 		}
 
 		// And the key again, because two re-runs of the same workflow can be in flight together.
@@ -324,6 +404,36 @@ func (p *Publisher) record(
 			return ErrVersionExists
 		} else if !errors.Is(err, store.ErrNoRows) {
 			return fmt.Errorf("check the version: %w", err)
+		}
+
+		// AN AUTO-PUBLISHED RELEASE RETIRES THE ONE IT REPLACES, in this transaction and before the
+		// insert. The partial unique index permits exactly one approved release per plugin, so
+		// doing it after — or in a second transaction — is a constraint violation on a good day
+		// and two live releases on a bad one. Superseding is a state change and never a delete:
+		// ADR-0010 keeps every row, because they are the record of what was approved and by whom.
+		//
+		// The quarantine comparison read the live release OUTSIDE this transaction, before a
+		// forty-five-second download. Re-reading it here is what makes the row this supersedes the
+		// row the decision was actually made against — if they differ, somebody approved a
+		// different release while this artifact was downloading, and the answer is to stop rather
+		// than to retire a release nobody compared anything to.
+		if v.state == StateApproved {
+			live, err := q.GetLatestApprovedRelease(ctx, req.Submission.PluginID.String())
+			switch {
+			case errors.Is(err, store.ErrNoRows):
+				// It had one when the decision was made and does not now. Something retired it in
+				// the window, so the decision rested on a fact that is no longer true.
+				return ErrLiveReleaseChanged
+			case err != nil:
+				return fmt.Errorf("read the live release of %s: %w", req.Submission.PluginID, err)
+			case live.Version != v.comparedAgainst:
+				return ErrLiveReleaseChanged
+			}
+
+			out.Superseded = live.ID
+			if _, err := q.SupersedeApprovedRelease(ctx, req.Submission.PluginID.String()); err != nil {
+				return fmt.Errorf("supersede the live release of %s: %w", req.Submission.PluginID, err)
+			}
 		}
 
 		if err := q.InsertPublishRelease(ctx, params); err != nil {
@@ -394,7 +504,7 @@ func releaseParams(
 		PluginID: sub.PluginID.String(),
 		Version:  sub.Version,
 		// Everything goes to review in this phase; see the file comment.
-		State:             StatePending.String(),
+		State:             v.state.String(),
 		ArtifactUrl:       sub.ArtifactURL,
 		SdkSpecifier:      sub.SDKSpecifier,
 		MinimumAppVersion: sub.MinimumAppVersion,
@@ -444,6 +554,10 @@ func releaseParams(
 // audit_log is append-only by trigger and can never be redacted afterwards.
 func publishDetail(sub Submission, v verdict, out Outcome) map[string]any {
 	detail := map[string]any{
+		// The row's SUBJECT is the plugin, because that is what an incident review queries on.
+		// Which release it was about therefore has to be in the detail, or a plugin with forty
+		// publishes has forty rows that cannot be told apart.
+		"release":       out.ReleaseID,
 		"version":       sub.Version,
 		"state":         out.State.String(),
 		"verified":      v.verified,
@@ -461,16 +575,17 @@ func publishDetail(sub Submission, v verdict, out Outcome) map[string]any {
 		// stored one and writing it twice would say nothing.
 		detail["submitted_sha256"] = sub.Submitted.String()
 	}
-	return detail
-}
-
-// hostOf returns a URL's hostname, for a log line or an audit row. Never the URL.
-func hostOf(rawURL string) string {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return ""
+	if len(v.reasons) > 0 {
+		detail["quarantine"] = reasonStrings(v.reasons)
 	}
-	return u.Hostname()
+	if out.State == StateApproved {
+		// A release that went live WITHOUT A HUMAN says so in the one table nobody can edit. This
+		// is the row an incident review reads when the question is "who approved these bytes" and
+		// the answer is "nobody did" — which must be findable rather than inferred from a NULL.
+		detail["auto_published"] = true
+		detail["superseded"] = out.Superseded
+	}
+	return detail
 }
 
 // hashRequest digests the fields that make a publish request what it is.
@@ -610,4 +725,89 @@ func (p *Publisher) checkVersionUnused(ctx context.Context, sub Submission) erro
 		return fmt.Errorf("check the version %s of %s: %w", sub.Version, sub.PluginID, err)
 	}
 	return fmt.Errorf("%w: %s", ErrVersionExists, sub.Version)
+}
+
+// decide is where trust and the quarantine rules meet, and it is the only place a release becomes
+// anything other than `pending`.
+//
+// ONE FUNCTION, so that "why is this release live" has one answer. The alternative — each caller
+// reading the verdict's fields and drawing its own conclusion — is how a second code path ends up
+// approving something the first would have quarantined.
+//
+// The rule, from ADR-0007 and canonical §8:
+//
+//   - A NEW PLUGIN ID ALWAYS GETS HUMAN REVIEW. Nothing bypasses it. It is expressed as a
+//     quarantine reason rather than as a branch here, so it cannot be forgotten by a later change
+//     to the trust arithmetic.
+//   - A QUARANTINE RULE THAT FIRED SENDS THE RELEASE TO REVIEW REGARDLESS OF TRUST. Trust is a
+//     judgement about a person; these are facts about a change.
+//   - Otherwise a version bump by a TRUSTED owner publishes automatically, but only after the
+//     artifact was fetched and re-hashed clean.
+func (p *Publisher) decide(prev previous, trust Trust, sub Submission, v verdict) verdict {
+	// The fetch failure's own sentence, captured before it is replaced by the composed note, so
+	// the specific cause survives into the row a reviewer reads.
+	fetchFailure := v.review
+
+	v.reasons = evaluateQuarantine(prev, sub, v)
+	v.review = quarantineNote(v.reasons, fetchFailure)
+	v.state = StatePending
+	v.comparedAgainst = prev.version
+
+	if len(v.reasons) == 0 && trust == TrustTrusted {
+		// The only path to a listing without a human. Note what is already true by the time we get
+		// here: the artifact was fetched, hashed, and its hash matched the submitter's claim; the
+		// plugin already has an approved release; the version advances; the host has not moved;
+		// and the size did not jump. Trust is the LAST condition, not the first.
+		v.state = StateApproved
+		v.review = autoPublishedNote
+	}
+	return v
+}
+
+// autoPublishedNote is recorded on a release that went live without a human, so that a row nobody
+// reviewed says so plainly rather than being distinguishable only by a NULL reviewed_by.
+const autoPublishedNote = "published automatically: a trusted owner's version bump of an " +
+	"already-approved plugin, with the artifact fetched and re-hashed clean and no quarantine " +
+	"rule triggered"
+
+// trustLoweredNote is recorded on a release that WOULD have published automatically, and did not
+// because the submitter's tier changed while its artifact was downloading.
+//
+// It names the timing explicitly, because the alternative reads to an author as though their
+// release was quarantined for something about the release — and it is the row a reviewer sees when
+// they wonder why the account they just demoted still has a submission waiting.
+const trustLoweredNote = "the submitter's trust level changed while the artifact was being " +
+	"fetched, so this release goes to review rather than publishing automatically"
+
+// previousRelease reads what a plugin currently serves.
+func (p *Publisher) previousRelease(ctx context.Context, pluginID string) (previous, error) {
+	row, err := p.db.Read().GetLatestApprovedRelease(ctx, pluginID)
+	switch {
+	case errors.Is(err, store.ErrNoRows):
+		// No approved release. That is the first appearance of an id, and evaluateQuarantine turns
+		// it into ReasonFirstRelease rather than into a special case here.
+		return previous{}, nil
+	case err != nil:
+		return previous{}, fmt.Errorf("read the live release of %s: %w", pluginID, err)
+	}
+
+	return previous{
+		exists:      true,
+		version:     row.Version,
+		artifactURL: row.ArtifactUrl,
+		bytes:       row.ArtifactBytes,
+	}, nil
+}
+
+// reasonStrings renders the quarantine reasons for the outcome. Nil stays nil, so "no rules fired"
+// and "an empty list was built" are the same absence on the wire rather than two shapes.
+func reasonStrings(reasons []QuarantineReason) []string {
+	if len(reasons) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(reasons))
+	for _, r := range reasons {
+		out = append(out, r.String())
+	}
+	return out
 }

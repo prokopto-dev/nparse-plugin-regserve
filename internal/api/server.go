@@ -142,6 +142,10 @@ type Config struct {
 	// absent dependency, and internal/review says why an empty set must never mean "everybody".
 	Queue     ReviewQueue
 	Reviewers ReviewerCheck
+
+	// Trust backs setting an account's trust tier. Needs Reviewers for the same reason Queue does:
+	// the route is reviewer-only and a build that cannot say who reviews cannot serve it.
+	Trust TrustService
 }
 
 // TokenService is what the account surface needs in order to manage personal access tokens.
@@ -179,6 +183,9 @@ func New(cfg Config) http.Handler {
 	}
 	if cfg.Queue != nil && cfg.Reviewers != nil {
 		registerReview(api, cfg.Queue)
+	}
+	if cfg.Trust != nil && cfg.Reviewers != nil {
+		registerTrust(api, cfg.Trust)
 	}
 	if cfg.Login != nil && cfg.Sessions != nil && cfg.Providers != nil {
 		registerAuth(api, cfg.Login, cfg.Sessions, cfg.Providers)

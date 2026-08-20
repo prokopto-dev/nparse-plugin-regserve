@@ -78,3 +78,31 @@ INSERT INTO "release" (
     sdk_specifier, minimum_app_version, notes,
     submitted_by, submitted_at, verified_at, review_note
 ) VALUES (?, ?, ?, ?, 'publish', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+-- name: GetAccountTrust :one
+-- An account's trust tier. NO ROW MEANS 'new', which is the floor and the default: an account that
+-- has never been assessed is one nothing should be automated for, and inventing a row at first
+-- sign-in would make "never assessed" and "assessed and found ordinary" the same state.
+SELECT account_id, level, set_at, set_by, note FROM account_trust WHERE account_id = ?;
+
+-- name: SetAccountTrust :exec
+-- Raise or lower an account's tier. An upsert, because a tier is a property of the account rather
+-- than a history: the history is in audit_log, which is append-only and cannot be edited, and that
+-- is the copy an incident review reads.
+INSERT INTO account_trust (account_id, level, set_at, set_by, note)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (account_id) DO UPDATE SET
+    level = excluded.level,
+    set_at = excluded.set_at,
+    set_by = excluded.set_by,
+    note = excluded.note;
+
+-- name: GetAccountHandle :one
+-- The GitHub handle behind an account id, for a reviewer who is looking at a queue full of ULIDs.
+-- Decoration, refreshed at each login, and never what anything matches on.
+SELECT CAST(coalesce((
+    SELECT i.handle FROM identity i
+    WHERE i.account_id = a.id AND i.provider_kind = 'github'
+    ORDER BY i.linked_at, i.id LIMIT 1
+), '') AS TEXT) AS handle
+FROM account a WHERE a.id = ?;
