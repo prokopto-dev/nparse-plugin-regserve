@@ -304,15 +304,34 @@ func TestFetch_ARedirectToTheRealAsset_IsFollowedAndHashed(t *testing.T) {
 func srvURL(r *http.Request) string { return "https://" + r.Host }
 
 // TestFetch_ACancelledContext_StopsTheFetch — ctx is carried and honoured.
+//
+// A publish holds its response open for the length of the download, so the request context going
+// away — the client hung up, the server is shutting down — has to stop the fetch rather than leave
+// it pulling fifty megabytes for nobody.
+//
+// SYNCHRONISED ON CHANNELS AND NOT ON A CLOCK. The handler writes a first chunk, flushes it, and
+// only then says it has started; the cancel happens after that and while the body is still open.
+// A version of this paced by a sleep is a test that passes on a quiet laptop and reports a
+// mysterious nil on a loaded runner, which is what the first draft of it did — and `time.Sleep` in
+// a test is grep-banned here for exactly that reason.
 func TestFetch_ACancelledContext_StopsTheFetch(t *testing.T) {
 	t.Parallel()
 
+	started := make(chan struct{})
 	release := make(chan struct{})
+
 	srv, f := tlsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		if fl, ok := w.(http.Flusher); ok {
-			fl.Flush()
-		}
+		// Real bytes before the flush: a flush with nothing written commits the header and
+		// nothing else, and what this test needs is a body that is open and part-delivered.
+		_, _ = w.Write([]byte("the first chunk of an artifact"))
+		flusher, ok := w.(http.Flusher)
+		require.True(t, ok, "the test server cannot stream; this test cannot say what it means to")
+		flusher.Flush()
+
+		close(started)
+
+		// Held open until the test is done with it, or until the client goes away — which is what
+		// cancelling the context does, and is the thing being asserted.
 		select {
 		case <-release:
 		case <-r.Context().Done():
@@ -322,13 +341,15 @@ func TestFetch_ACancelledContext_StopsTheFetch(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	go func() {
-		time.Sleep(50 * time.Millisecond) //nolint:forbidigo // not a clock read: this paces the cancel
+		<-started
 		cancel()
 	}()
 
 	_, err := f.Fetch(ctx, srv.URL+"/slow.whl")
 	require.ErrorIs(t, err, artifact.ErrNotFetched)
 	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, "not verified: the artifact could not be downloaded within the time limit",
+		artifact.Reason(err))
 }
 
 // TestFetch_AFetchThatTimedOut_ReportsNotVerified — never success, in any branch.
