@@ -1,11 +1,13 @@
 package review_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/artifact"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/review"
 )
 
@@ -161,4 +163,80 @@ func TestReverify_AnUnknownOrDecidedRelease_IsRefused(t *testing.T) {
 
 	_, err = w.queue.Reverify(t.Context(), out.ReleaseID, w.reviewer)
 	require.ErrorIs(t, err, review.ErrNotPending)
+}
+
+// TestReverify_ARejectionLandingDuringTheFetch_DoesNotOverwriteIt.
+//
+// THE RACE THE OUT-OF-TRANSACTION FETCH CREATES, and the bug it caused before this test existed.
+//
+// The artifact fetch takes up to forty-five seconds and runs outside the write transaction,
+// because SQLite has exactly one writer and holding it across a download would block every other
+// publish and decision. So there is a real window in which another reviewer can decide the release
+// that is being re-verified.
+//
+// With only `verified_at IS NULL` in the statement's WHERE, that window was exploitable by
+// accident: the update still matched the now-rejected row, wrote a hash onto it, and replaced
+// `review_note` with the re-verification note — DESTROYING THE REJECTION REASON, which is the only
+// way the author ever learns why their release was refused. A rejected release would silently
+// acquire a verified hash and lose its explanation.
+func TestReverify_ARejectionLandingDuringTheFetch_DoesNotOverwriteIt(t *testing.T) {
+	t.Parallel()
+
+	const reason = "the homepage links to a phishing page"
+
+	w := newWorld(t)
+
+	// Publish with the artifact unavailable, so the release is pending and unverified — the only
+	// state re-verification acts on.
+	w.available = false
+	out := w.publish(t, "1.0.0")
+	require.False(t, out.Verified)
+
+	// The upstream recovers, so the fetch inside Reverify will now SUCCEED. That matters: a test
+	// where the fetch fails would never reach the write and would pass without the fix.
+	w.available = true
+
+	// A fetcher that rejects the release while it is "downloading" — which is exactly what a
+	// second reviewer acting during the window looks like from here.
+	w.queue = review.NewQueue(w.db, fixedClock(), rejectingFetcher{w: w, t: t, reason: reason})
+
+	_, err := w.queue.Reverify(t.Context(), out.ReleaseID, w.reviewer)
+	require.ErrorIs(t, err, review.ErrNotPending,
+		"a release rejected during the fetch was re-verified anyway")
+
+	row, err := w.db.Read().GetReleaseByID(t.Context(), out.ReleaseID)
+	require.NoError(t, err)
+
+	require.Equal(t, "rejected", row.State, "the rejection was undone")
+	require.NotNil(t, row.ReviewNote)
+	require.Equal(t, reason, *row.ReviewNote,
+		"the rejection reason was overwritten; the author has no other way to learn why")
+	require.Nil(t, row.ArtifactSha256, "a hash was written onto a rejected release")
+	require.Nil(t, row.VerifiedAt)
+
+	// And nothing was recorded as having happened, because nothing did: the transaction that would
+	// have written the audit row rolled back with it.
+	require.Empty(t, w.auditDetails(t, "release.reverify"))
+}
+
+// rejectingFetcher rejects the release, then fetches normally.
+type rejectingFetcher struct {
+	w      *world
+	t      *testing.T
+	reason string
+}
+
+func (f rejectingFetcher) Fetch(ctx context.Context, rawURL string) (artifact.Result, error) {
+	// A SEPARATE queue, so this is a genuinely independent decision rather than a re-entrant call
+	// on the one under test.
+	other := review.NewQueue(f.w.db, fixedClock(), f.w.fetcher)
+
+	waiting, err := other.List(ctx)
+	require.NoError(f.t, err)
+	require.Len(f.t, waiting, 1)
+
+	_, err = other.Reject(ctx, waiting[0].ReleaseID, f.w.reviewer, f.reason)
+	require.NoError(f.t, err)
+
+	return f.w.fetcher.Fetch(ctx, rawURL)
 }

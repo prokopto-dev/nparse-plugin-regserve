@@ -76,13 +76,22 @@ WHERE plugin_id = ? AND state = 'approved';
 -- name: RecordReleaseVerification :execrows
 -- Write the hash and size THIS SERVER computed onto a release it had not managed to verify.
 --
--- The WHERE requires verified_at IS NULL, so this can only ever fill in a blank. It cannot change
--- a hash that is already recorded: a stored hash is what clients verify against, and a statement
--- that could rewrite one would be a way to swap the bytes behind an approved listing without
--- anybody reviewing the swap -- which is the exact property this whole service exists to keep.
+-- TWO CONDITIONS, AND BOTH ARE LOAD-BEARING.
+--
+-- verified_at IS NULL means this can only ever fill in a blank. It cannot change a hash that is
+-- already recorded: a stored hash is what clients verify against, and a statement that could
+-- rewrite one would be a way to swap the bytes behind an approved listing without anybody
+-- reviewing the swap -- which is the exact property this whole service exists to keep.
+--
+-- state = 'pending' is the one that is easy to leave out, and leaving it out was a real bug. The
+-- artifact fetch runs OUTSIDE the transaction, because it takes up to forty-five seconds and
+-- SQLite has one writer. So another reviewer can reject the release while that fetch is in
+-- flight. With only the verified_at condition this statement still matched the now-rejected row:
+-- it wrote a hash onto it AND replaced review_note -- destroying the rejection reason, which is
+-- the only way the author ever learns why their release was refused.
 UPDATE "release"
 SET artifact_sha256 = ?, artifact_bytes = ?, verified_at = ?, review_note = ?
-WHERE id = ? AND verified_at IS NULL;
+WHERE id = ? AND state = 'pending' AND verified_at IS NULL;
 
 -- name: ListHandlesForAccount :many
 -- Every provider handle an account holds, for the reviewer check.

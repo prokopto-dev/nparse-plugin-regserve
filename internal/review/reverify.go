@@ -91,6 +91,13 @@ func (q *Queue) Reverify(ctx context.Context, releaseID, reviewerID string) (Ver
 	}
 
 	if err := q.db.Tx(ctx, func(tx *store.Queries) error {
+		// RE-READ INSIDE THE TRANSACTION. The fetch above ran outside it, for up to forty-five
+		// seconds, and another reviewer can decide a release in that window. Everything below --
+		// the hash, the note, the audit row -- must be written against the state as it is NOW, not
+		// as it was before the download started.
+		if _, err := q.pendingTx(ctx, tx, releaseID); err != nil {
+			return err
+		}
 		if out.Verified {
 			if err := recordVerification(ctx, tx, releaseID, res, out.Note); err != nil {
 				return err
@@ -154,9 +161,26 @@ func recordVerification(
 		return fmt.Errorf("record the verification of %s: %w", releaseID, err)
 	}
 	if changed == 0 {
-		// The row gained a hash between the read and this write. Refusing is the only safe reading:
-		// the alternative is overwriting a hash somebody else just recorded.
-		return ErrAlreadyVerified
+		// The statement's WHERE demands `state = 'pending' AND verified_at IS NULL`, and the
+		// caller has just checked both inside this transaction on the single writer -- so this is
+		// unreachable, and it is still checked. "The update affected nothing" must never be read
+		// as "the update happened", whatever the reasoning says about how it got here.
+		//
+		// It is re-read rather than guessed at, because the two ways to get here need different
+		// answers: a release somebody rejected mid-fetch is ErrNotPending, and one that gained a
+		// hash is ErrAlreadyVerified. Reporting either as the other sends a reviewer looking in
+		// the wrong place.
+		row, rerr := tx.GetReleaseByID(ctx, releaseID)
+		switch {
+		case errors.Is(rerr, store.ErrNoRows):
+			return ErrNoSuchRelease
+		case rerr != nil:
+			return fmt.Errorf("read release %s after it did not update: %w", releaseID, rerr)
+		case row.State != statePending:
+			return ErrNotPending
+		default:
+			return ErrAlreadyVerified
+		}
 	}
 	return nil
 }

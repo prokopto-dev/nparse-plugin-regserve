@@ -67,6 +67,11 @@ type world struct {
 	pub   *release.Publisher
 	queue *review.Queue
 
+	// fetcher is the real, guarded fetcher this fixture uses. A test double that needs to act
+	// BEFORE the fetch delegates to it rather than faking a result -- it could not fake one
+	// anyway, since artifact.Result carries a Digest nothing outside internal/artifact can build.
+	fetcher *artifact.Fetcher
+
 	// serving is what the artifact server hands back, and whether it answers at all. Tests flip
 	// these to produce an unfetchable artifact without tearing anything down.
 	serving   []byte
@@ -115,6 +120,7 @@ func buildWorld(t *testing.T, stepping bool) *world {
 	if stepping {
 		clk = newSteppingClock()
 	}
+	w.fetcher = fetcher
 	w.pub = release.NewPublisher(db, clk, fetcher)
 	w.queue = review.NewQueue(db, clk, fetcher)
 
@@ -244,3 +250,6 @@ func (w *world) auditDetails(t *testing.T, action string) []map[string]any {
 	}
 	return out
 }
+
+// fixedClock is the clock the fixture shares, so submitted_at and verified_at are exact.
+func fixedClock() clock.Clock { return clock.Fixed{T: now} }
