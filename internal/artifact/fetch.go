@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/clock"
@@ -189,9 +190,7 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (Result, error) {
 	// hop. Fetching a stranger's URL is this package's whole job.
 	resp, err := f.client.Do(req)
 	if err != nil {
-		// The URL is Redacted, which strips userinfo. It is logged by the caller, not here: this
-		// package does not decide what a publish failure looks like in a log.
-		return Result{}, fmt.Errorf("%w: %s: %w", ErrNotFetched, req.URL.Redacted(), err)
+		return Result{}, fmt.Errorf("%w: %s: %w", ErrNotFetched, safeURL(req.URL), transportCause(err))
 	}
 	defer func() {
 		// Closed on every path, including the one where the body is abandoned half-read because
@@ -209,7 +208,7 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (Result, error) {
 	sum := sha256.New()
 	n, err := guard.CopyCapped(sum, resp.Body, f.maxBytes)
 	if err != nil {
-		return Result{}, fmt.Errorf("%w: %s: %w", ErrNotFetched, req.URL.Redacted(), err)
+		return Result{}, fmt.Errorf("%w: %s: %w", ErrNotFetched, safeURL(req.URL), transportCause(err))
 	}
 
 	return Result{
@@ -218,6 +217,55 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (Result, error) {
 		FetchedAt: f.clk.Now(),
 		FinalHost: finalHost(resp),
 	}, nil
+}
+
+// safeURL renders a URL for an error message, keeping only the parts that cannot be a credential.
+//
+// url.URL.Redacted() IS NOT ENOUGH, and the difference matters because the errors this package
+// returns are deliberately propagated: the publish path logs them, and Reason turns them into a
+// review note a human reads. Redacted replaces the PASSWORD and nothing else. It keeps the
+// username, which is a credential on its own for plenty of services, and it keeps the entire query
+// string -- which for a release asset is exactly where the signature lives:
+//
+//	https://alice@cdn.example/plugin.whl?X-Amz-Signature=...
+//
+// Redacted returns that unchanged. So this keeps the scheme, the host and the path, and drops
+// userinfo, query and fragment outright.
+//
+// The path is kept because a 404 on /v1.2.0/plugin.whl is a different report from a 404 on the
+// repository root, and a path is not where credentials are conventionally carried. If that stops
+// being true for an upstream this service fetches from, this function is the one place to narrow.
+func safeURL(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	// Field by field rather than by clearing fields on a copy: a URL type that grows a member
+	// would otherwise start carrying it here, which is how this kind of function rots.
+	safe := url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path}
+	return safe.String()
+}
+
+// transportCause strips the *url.Error wrapper net/http puts around a transport failure.
+//
+// SAFEURL IS NOT ENOUGH ON ITS OWN, and this is the half that is easy to miss. http.Client.Do
+// returns a *url.Error whose Error() renders as:
+//
+//	Get "https://alice@host/plugin.whl?X-Amz-Signature=...": dial tcp ...
+//
+// -- the RAW url, verbatim, embedded by the standard library. Wrapping that with %w puts the
+// credential back into the message the line above just took it out of, which is exactly what
+// happened here: the first fix redacted our own half of the string and the test still found the
+// signature, because net/http had written it into the other half.
+//
+// Unwrapping to Err keeps everything a caller matches on -- guard.ErrBlockedAddress,
+// guard.ErrNotHTTPS, context.Canceled all live below this wrapper -- and drops only the rendered
+// URL. What is lost is the HTTP method, which is always GET here.
+func transportCause(err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) && urlErr.Err != nil {
+		return urlErr.Err
+	}
+	return err
 }
 
 // finalHost reports the host the last hop landed on.

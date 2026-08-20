@@ -346,20 +346,93 @@ func TestNewFetcher_ARefusableConfiguration_IsRefusedAtConstruction(t *testing.T
 	require.ErrorIs(t, err, artifact.ErrBadConfig)
 }
 
-// TestFetch_UserinfoInTheURL_IsNotEchoedIntoTheError — credentials in a URL stay out of the log.
+// TestFetch_AFailedFetch_NeverEchoesACredentialFromTheURL — what a failure is allowed to say.
 //
-// A publish request is free to submit https://user:password@host/..., and the error from a failed
-// fetch is logged and can reach a review note. url.Redacted is what keeps the password out of both.
-func TestFetch_UserinfoInTheURL_IsNotEchoedIntoTheError(t *testing.T) {
+// The errors this package returns are DELIBERATELY PROPAGATED: the publish path logs them, and
+// Reason turns them into a review note. So whatever they carry ends up somewhere durable, and
+// audit_log in particular is append-only by trigger and can never be redacted afterwards.
+//
+// url.URL.Redacted() is not sufficient and the first version of this test did not notice, because
+// it only checked a password. Redacted replaces the password and NOTHING ELSE — a username-only
+// userinfo survives it, and so does the entire query string, which for a release asset is exactly
+// where a signature lives. Every row below is a credential shape that Redacted would have leaked.
+func TestFetch_AFailedFetch_NeverEchoesACredentialFromTheURL(t *testing.T) {
 	t.Parallel()
 
-	f, err := artifact.NewFetcher(testClock, artifact.Config{Timeout: 5 * time.Second})
-	require.NoError(t, err)
+	tests := []struct {
+		name    string
+		url     string
+		secrets []string
+	}{
+		{
+			name:    "a password in userinfo",
+			url:     "https://someone:hunter2@10.0.0.1/plugin.zip",
+			secrets: []string{"hunter2"},
+		},
+		{
+			// Redacted keeps this. For plenty of services a bare username IS the credential --
+			// a token pasted where a username goes is the common shape.
+			name:    "username-only userinfo, which Redacted preserves",
+			url:     "https://ghp_averysecretlookingtoken@10.0.0.1/plugin.zip",
+			secrets: []string{"ghp_averysecretlookingtoken"},
+		},
+		{
+			// The realistic one. A GitHub release asset redirects to a signed CDN URL, and the
+			// signature is a bearer credential for those bytes for as long as it is valid.
+			name: "a signed query string, which Redacted preserves in full",
+			url: "https://10.0.0.1/plugin.whl?X-Amz-Signature=deadbeefcafe" +
+				"&X-Amz-Credential=AKIAEXAMPLE%2F20260820%2Fus-east-1",
+			secrets: []string{"deadbeefcafe", "AKIAEXAMPLE", "X-Amz-Signature"},
+		},
+		{
+			name:    "a token in a query parameter nobody would think to name",
+			url:     "https://10.0.0.1/plugin.whl?t=s3cr3tvalue",
+			secrets: []string{"s3cr3tvalue"},
+		},
+		{
+			name:    "both at once, plus a fragment",
+			url:     "https://alice:hunter2@10.0.0.1/plugin.whl?sig=abc123#frag-secret",
+			secrets: []string{"hunter2", "abc123", "frag-secret"},
+		},
+	}
 
-	_, err = f.Fetch(t.Context(), "https://someone:hunter2@10.0.0.1/plugin.zip")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	require.ErrorIs(t, err, guard.ErrBlockedAddress)
-	require.NotContains(t, err.Error(), "hunter2")
+			f, err := artifact.NewFetcher(testClock, artifact.Config{Timeout: 5 * time.Second})
+			require.NoError(t, err)
+
+			_, err = f.Fetch(t.Context(), tc.url)
+			require.ErrorIs(t, err, guard.ErrBlockedAddress)
+
+			for _, secret := range tc.secrets {
+				require.NotContains(t, err.Error(), secret,
+					"a failed fetch put %q into an error the publish path logs and records", secret)
+			}
+			// The host survives, because a diagnosis with no host in it is not a diagnosis.
+			require.Contains(t, err.Error(), "10.0.0.1")
+		})
+	}
+}
+
+// TestFetch_AnOversizedBody_DoesNotEchoACredentialEither — the second error path.
+//
+// The size-cap failure builds its own message, and a fix applied to one of the two call sites and
+// not the other is the shape this bug had in the first place.
+func TestFetch_AnOversizedBody_DoesNotEchoACredentialEither(t *testing.T) {
+	t.Parallel()
+
+	const cap1K = 1 << 10
+
+	srv, f := tlsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(make([]byte, 8<<10))
+	}), artifact.Config{MaxBytes: cap1K})
+
+	_, err := f.Fetch(t.Context(), srv.URL+"/plugin.whl?X-Amz-Signature=deadbeefcafe")
+	require.ErrorIs(t, err, guard.ErrTooLarge)
+	require.NotContains(t, err.Error(), "deadbeefcafe")
+	require.NotContains(t, err.Error(), "X-Amz-Signature")
 }
 
 // TestFetch_AURLIsNeverParsedTwiceIntoDifferentThings — the URL the guard checked is the URL
