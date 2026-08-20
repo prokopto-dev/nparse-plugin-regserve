@@ -169,7 +169,12 @@ func runServe(ctx context.Context, addr, dbPath, seedPath string) error {
 			// artifact, and a publish endpoint that cannot verify must not be answering.
 			return fmt.Errorf("build the artifact fetcher: %w", err)
 		}
-		cfg.Publisher = release.NewPublisher(db, clk, fetcher)
+		publisher := release.NewPublisher(db, clk, fetcher)
+		cfg.Publisher = publisher
+		// The same Publisher backs the trust endpoint: a tier is read by the publish path and
+		// written by a reviewer, and two objects holding the same table would be two places to
+		// change when the rule changes.
+		cfg.Trust = publisher
 
 		// The review queue, and who may work it.
 		//

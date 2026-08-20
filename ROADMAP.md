@@ -77,8 +77,8 @@ personal access token outright.
 - Id claims, ownership checks, transfers
 - ✅ The review queue: approve, reject, and re-verify an artifact a transient outage stopped the
   server hashing. Reviewers are named in the deployment's environment, not in a row
-- Quarantine rules and trust levels — the part that lets a trusted owner's version bump publish
-  without a human
+- ✅ Quarantine rules and trust levels: a trusted owner's version bump publishes without a human,
+  and every quarantine rule outranks trust
 - ✅ Populating `release.notes` (surfacing it on `latest` is Phase 4)
 - ✅ The gate for **"a stored sha256 was computed by the server"** — the last row in the invariants
   register without a mechanism, now carrying four: an unforgeable type, a single door, gate

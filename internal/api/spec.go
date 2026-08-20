@@ -37,6 +37,7 @@ func Spec() *huma.OpenAPI {
 	registerAuth(api, unavailable{}, unavailable{}, identity.NewRegistry())
 	registerReleases(api, unavailablePublisher{})
 	registerReview(api, unavailableQueue{})
+	registerTrust(api, unavailableTrust{})
 	registerWeb(api, WebDeps{
 		Sessions:  unavailable{},
 		Tokens:    unavailableTokens{},
@@ -135,6 +136,12 @@ func (unavailableQueue) Reject(context.Context, string, string, string) (review.
 
 func (unavailableQueue) Reverify(context.Context, string, string) (review.Verification, error) {
 	return review.Verification{}, errSpecOnly
+}
+
+type unavailableTrust struct{}
+
+func (unavailableTrust) SetTrust(context.Context, string, release.Trust, string, string) error {
+	return errSpecOnly
 }
 
 type unavailableOwnership struct{}
