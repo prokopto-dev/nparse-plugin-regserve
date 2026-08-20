@@ -77,6 +77,9 @@ func rewriteScopeCheck(path string) error {
 	if bytes.Equal(current, updated) {
 		return nil
 	}
+	// #nosec G703 -- the path comes from a Makefile flag, not from a request. This command is a
+	// build-time generator invoked by `make gen-authz` and by the GEN001 gate; it serves no
+	// traffic and nothing user-supplied reaches it.
 	if err := os.WriteFile(path, updated, 0o600); err != nil {
 		return fmt.Errorf("write the schema file %s: %w", path, err)
 	}

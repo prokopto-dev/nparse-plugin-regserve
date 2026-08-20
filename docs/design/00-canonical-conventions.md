@@ -62,10 +62,10 @@ hand-written permission list anywhere else is forbidden.
 
 There is no permission TABLE and therefore no permission-table seed: permissions are a property of
 the build, not rows an operator can edit, and a table would be a second source with a different
-lifecycle. The scope enum reaches the database as a `CHECK` on the PAT scope column, written from
-the catalogue between `GENERATED` markers — that column, and therefore that half of the generator,
-arrives with the PAT table. Until it does, `authz.Scopes()` is the only list and nothing else
-restates it.
+lifecycle. The scope enum reaches the database as a `CHECK` on `pat_scope.scope`, written from the
+catalogue between `GENERATED` markers by `make gen-authz`. Do not hand-edit inside them: a scope
+the database accepts but the catalogue does not know grants nothing while looking like it grants
+something.
 
 - Permissions are `<resource>.<action>`, dot-separated, lowercase: `plugin.publish`, `owner.manage`.
 - Scopes are `<family>:<verb>`, colon-separated: `plugin:publish`, `plugin:read`.

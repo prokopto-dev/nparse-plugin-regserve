@@ -47,7 +47,7 @@ from it is vendored here at `internal/registry/testdata/index-v1.schema.json`.
 | `cmd/regserve/` | The only binary. Cobra wiring, no logic |
 | `internal/api/` | Every HTTP route, registered with Huma v2 ([ADR-0012](docs/adr/0012-huma-v2-everywhere-with-the-index-bytes-pinned.md)). `routes.go` holds the only registration helper, and its signature demands an access declaration; `security.go` is the middleware that ENFORCES that same declaration. ETag and idempotency (canonical §6) are not built yet |
 | `internal/authz/` | **The** catalogue — permissions and PAT scopes, in `catalogue.go`, every key a whole quoted literal (`AUTHZ001`). It generates the scope list, the `x-regserve-permission` metadata and [`docs/reference/permissions.md`](docs/reference/permissions.md). Nothing else may hold a permission list |
-| `internal/auth/` | PAT mint and verify, sessions, OAuth state and PKCE. A credential's secret is never stored: what is, is `HMAC-SHA256(pepper, secret)` |
+| `internal/auth/` | PAT mint and verify, sessions, OAuth state and PKCE. A credential's secret is never stored: what is, is `HMAC-SHA256(pepper, secret)`. The 8-character token prefix is the public half and the only part that may be logged |
 | `internal/audit/` | The ONE writer of `audit_log` rows. Append-only, and `detail` never carries a secret |
 | `internal/identity/{,github,guard}/` | Provider registry, credential dispatch, identity resolution. GitHub is the only provider ([ADR-0011](docs/adr/0011-github-is-the-only-identity-provider.md)). `guard` builds the client every outbound request goes through, and `internal/artifact` will use the same one |
 | `internal/artifact/` | Artifact download and re-hash. Never extracts, never executes |

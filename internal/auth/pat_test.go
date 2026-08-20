@@ -78,12 +78,19 @@ func TestMint_StoresAKeyedHashAndNeverTheSecret(t *testing.T) {
 	require.NotContains(t, minted.Secret, stored[0])
 	require.NotContains(t, stored[0], minted.Secret)
 
-	// The whole token string must not appear anywhere in the database, in any column.
-	for _, table := range []string{"pat", "pat_scope", "audit_log"} {
-		dump := strings.Join(storetest.Column(t, f.db,
-			`SELECT group_concat(x) FROM (SELECT * FROM `+table+`)`), " ")
-		require.NotContains(t, dump, strings.TrimPrefix(minted.Secret, auth.TokenPrefix+minted.Prefix+"_"),
-			"the secret half must not be in %s", table)
+	// The secret half must not appear in any column that could plausibly have been written with
+	// it. The columns are named rather than discovered, so this says what it checked.
+	secret := strings.TrimPrefix(minted.Secret, auth.TokenPrefix+minted.Prefix+"_")
+	require.Len(t, secret, 43, "the test is asserting against the wrong half if this fails")
+
+	for _, query := range []string{
+		`SELECT id || '|' || prefix || '|' || token_hash || '|' || name FROM pat`,
+		`SELECT pat_id || '|' || scope FROM pat_scope`,
+		`SELECT action || '|' || coalesce(subject_id, '') || '|' || coalesce(detail, '') FROM audit_log`,
+	} {
+		for _, row := range storetest.Column(t, f.db, query) {
+			require.NotContains(t, row, secret, "the secret reached the database via %s", query)
+		}
 	}
 }
 
