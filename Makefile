@@ -176,6 +176,11 @@ migrate:
 #
 # It reaches GitHub once per handle, which is why it is a command an operator runs rather than
 # something boot depends on.
+#
+# It migrates the database itself rather than depending on `migrate`: store.Open creates a missing
+# file and applies nothing, so a fresh $(DB) would otherwise fail with "no such table: plugin" —
+# and telling somebody to run another command first is a step they will forget on the day it
+# matters. The server migrates at boot for the same reason.
 .PHONY: seed
 seed:
 	@[ -n "$(OWNERS)" ] || { printf 'OWNERS is required: make seed OWNERS=./owners.json\n'; exit 2; }

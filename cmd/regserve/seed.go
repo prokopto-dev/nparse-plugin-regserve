@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -80,6 +81,30 @@ func runSeedOwners(cmd *cobra.Command, ownersPath, dbPath string) error {
 		return err
 	}
 	defer func() { _ = db.Close() }() // a waiver: the command is exiting, and the import error is the one worth reporting
+
+	// MIGRATE FIRST. store.Open creates the file if it is absent and applies nothing, so a fresh
+	// `./regserve.db` — which is exactly what `make seed` names by default — has no `plugin` table
+	// and the first query fails with "no such table". That is a confusing message for a command
+	// whose job is to write rows, and the fix is not to tell people to run another command first:
+	// the server migrates at boot for the same reason, and migrating is idempotent.
+	migrated, err := db.Migrate(ctx)
+	if err != nil {
+		return err
+	}
+	if len(migrated.Applied) > 0 {
+		slog.InfoContext(ctx, "migrations applied before seeding",
+			"count", len(migrated.Applied), "schema_at", migrated.Version)
+	}
+
+	// An empty catalogue is not an error and is almost never what somebody meant. Every id in
+	// owners.json would be reported as unknown, which reads as "owners.json is wrong" when what
+	// happened is that the catalogue was never imported. Said out loud rather than inferred from a
+	// wall of warnings.
+	if plugins, err := db.Read().CountPlugins(ctx); err == nil && plugins == 0 {
+		slog.WarnContext(ctx, "the database holds no plugins; every id in owners.json will be "+
+			"reported as unknown. The catalogue is imported at boot from --seed",
+			"db", dbPath)
+	}
 
 	// The provider is built with placeholder OAuth settings on purpose. Looking up a public
 	// profile needs no token, and requiring a client secret for a read-only import would mean an
