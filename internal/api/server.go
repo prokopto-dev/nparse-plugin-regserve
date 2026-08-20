@@ -113,6 +113,23 @@ type Config struct {
 	Login     Login
 	Sessions  SessionIssuer
 	Providers *identity.Registry
+
+	// Tokens backs the account surface's token management. It is separate from Authn because the
+	// two are different jobs: Authn answers "who is this request", Tokens mints and revokes the
+	// credentials a pipeline uses. Nothing registers a route against it yet — token management is
+	// a capability-floor operation and therefore browser-only, and the pages arrive with the
+	// account surface.
+	Tokens TokenService
+}
+
+// TokenService is what the account surface needs in order to manage personal access tokens.
+//
+// Declared here, next to its consumer, for the same reason Catalogue is: internal/api says what it
+// needs and the wiring supplies it.
+type TokenService interface {
+	Mint(ctx context.Context, req auth.MintRequest) (auth.NewToken, error)
+	List(ctx context.Context, accountID string) ([]auth.Listing, error)
+	Revoke(ctx context.Context, accountID, tokenID string) error
 }
 
 // New builds the HTTP handler.

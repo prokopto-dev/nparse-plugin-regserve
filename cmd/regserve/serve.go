@@ -349,13 +349,18 @@ func configureIdentity(ctx context.Context, cfg *api.Config, db *store.DB, clk c
 	if err != nil {
 		return err
 	}
+	tokens, err := auth.NewTokens(db, clk, pepper)
+	if err != nil {
+		return err
+	}
 	providers := identity.NewRegistry(provider)
 	login, err := auth.NewOAuth(db, clk, pepper, providers)
 	if err != nil {
 		return err
 	}
 
-	cfg.Authn = auth.NewAuthenticator(sessions)
+	cfg.Authn = auth.NewAuthenticator(sessions, tokens)
+	cfg.Tokens = tokens
 	cfg.Login = login
 	cfg.Sessions = sessions
 	cfg.Providers = providers

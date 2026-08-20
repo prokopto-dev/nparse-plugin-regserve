@@ -28,9 +28,10 @@
 #      sees those triggers in the dev database and leaves them alone — verified, not assumed.
 #
 #   2. ENUM VALUES GENERATED FROM GO. Canonical §4 wants the CHECK lists written from the Go
-#      constants by `make gen`, between GENERATED markers. That generator is the authz catalogue
-#      and lands in Phase 2; until then the lists below are hand-written and are the source. When
-#      the generator arrives, these CHECKs move between markers rather than growing a second home.
+#      constants by `make gen`, between GENERATED markers. `pat_scope_scope_enum` is the first and
+#      so far only one: `make gen-authz` writes it from internal/authz, and gate GEN001 fails on a
+#      hand edit. The other CHECK lists here are still hand-written and are still the source; each
+#      moves between markers when the Go constants that would generate it exist.
 #
 # WHY SOME COLUMNS ARE NOT NAMED AFTER THE WIRE FIELD THEY CARRY
 #
@@ -563,6 +564,150 @@ table "release" {
   # hash is the security boundary; a NULL here would make it optional.
   check "release_approved_has_a_hash" {
     expr = "state <> 'approved' OR artifact_sha256 IS NOT NULL"
+  }
+}
+
+# --- personal access tokens ------------------------------------------------------------------------
+
+# A deployment credential for ONE plugin's pipeline (ADR-0005).
+#
+# The secret is never here. What is stored is HMAC-SHA256(pepper, secret), a keyed hash rather than
+# bcrypt because verification sits on the hot path of every publish (canonical §10). The 8-character
+# `prefix` is the PUBLIC half: it is loggable, and it is how a token found in somebody's CI log is
+# traced back to a row and revoked without the log ever having held the secret.
+#
+# The capability floor is not represented here and cannot be. Minting, listing and revoking these
+# rows are session-only operations, and there is no scope that reaches them -- so a leaked token
+# cannot mint a second one, which is the property that makes the containment real.
+table "pat" {
+  schema = schema.main
+  strict = true
+
+  column "id" {
+    null = false
+    type = text
+  }
+  column "account_id" {
+    null = false
+    type = text
+  }
+  # The public identifier, 8 lowercase hex characters. Hex rather than base64url because the token
+  # format separates its parts with underscores and base64url contains them -- a prefix that could
+  # hold a separator makes the format ambiguous to parse.
+  column "prefix" {
+    null = false
+    type = text
+  }
+  column "token_hash" {
+    null = false
+    type = text
+  }
+  # What the owner called it, so the account page can say which pipeline a token belongs to. A row
+  # nobody can identify is a row nobody dares revoke.
+  column "name" {
+    null    = false
+    type    = text
+    default = ""
+  }
+  # NULL means the token is not pinned to one plugin. A pin is the narrow choice ADR-0005 wants to
+  # be the easy one; effective authority is the intersection of the pin, the scopes and the
+  # account's ownership AT REQUEST TIME.
+  column "plugin_id" {
+    null = true
+    type = text
+  }
+  column "created_at" {
+    null = false
+    type = integer
+  }
+  # NULL means it does not expire on its own. Revocation is the primary mechanism; an expiry is a
+  # backstop for the token somebody forgot in a repository they no longer look at.
+  column "expires_at" {
+    null = true
+    type = integer
+  }
+  # Refreshed lazily, like a session's. It is what tells an owner which of five tokens is the dead
+  # one, which is the question asked just before somebody revokes the wrong one.
+  column "last_used_at" {
+    null = true
+    type = integer
+  }
+  column "revoked_at" {
+    null = true
+    type = integer
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+  foreign_key "pat_account_fk" {
+    columns     = [column.account_id]
+    ref_columns = [table.account.column.id]
+    on_update   = NO_ACTION
+    on_delete   = RESTRICT
+  }
+  foreign_key "pat_plugin_fk" {
+    columns     = [column.plugin_id]
+    ref_columns = [table.plugin.column.id]
+    on_update   = NO_ACTION
+    on_delete   = RESTRICT
+  }
+  # The lookup on every publish. Unique, so two live tokens cannot share a secret.
+  index "pat_token_hash_key" {
+    unique  = true
+    columns = [column.token_hash]
+  }
+  # Unique as well: the prefix is what a leaked token is traced by, and a prefix shared between two
+  # rows would make that trace ambiguous at exactly the wrong moment.
+  index "pat_prefix_key" {
+    unique  = true
+    columns = [column.prefix]
+  }
+  index "pat_account_idx" {
+    columns = [column.account_id]
+  }
+  check "pat_token_hash_shape" {
+    expr = "length(token_hash) = 64 AND NOT token_hash GLOB '*[^0-9a-f]*'"
+  }
+  check "pat_prefix_shape" {
+    expr = "length(prefix) = 8 AND NOT prefix GLOB '*[^0-9a-f]*'"
+  }
+  check "pat_expires_after_it_starts" {
+    expr = "expires_at IS NULL OR expires_at > created_at"
+  }
+}
+
+# The scopes one token carries. A row per scope rather than a delimited column, so the CHECK below
+# can be a list of values rather than a pattern over a string.
+table "pat_scope" {
+  schema = schema.main
+  strict = true
+
+  column "pat_id" {
+    null = false
+    type = text
+  }
+  column "scope" {
+    null = false
+    type = text
+  }
+
+  primary_key {
+    columns = [column.pat_id, column.scope]
+  }
+  foreign_key "pat_scope_pat_fk" {
+    columns     = [column.pat_id]
+    ref_columns = [table.pat.column.id]
+    on_update   = NO_ACTION
+    on_delete   = CASCADE
+  }
+  # GENERATED from internal/authz by `make gen-authz`. Do not hand-edit between the markers:
+  # canonical §4 and §5 make the Go catalogue the source, and a scope the database accepts but the
+  # catalogue does not know grants nothing while looking like it grants something.
+  check "pat_scope_enum" {
+    # GENERATED: authz scopes
+    expr = "scope IN ('plugin:read', 'plugin:publish', 'plugin:manage')"
+    # END GENERATED
   }
 }
 

@@ -175,24 +175,23 @@ func requirePepper(pepper core.Secret) error {
 // It is the one place that decides which credential wins when a request presents both, and the
 // answer is the bearer token: a caller that sent one MEANT to act as that token, and quietly
 // falling back to a browser session would authenticate them as the person whose cookie happened to
-// be attached — with the session's authority rather than the token's.
+// be attached — with the session's authority rather than the token's, which is an escalation
+// performed by a fallback.
 type Authenticator struct {
 	sessions *Sessions
+	tokens   *Tokens
 }
 
 // NewAuthenticator wires the credential kinds this build issues.
-func NewAuthenticator(sessions *Sessions) *Authenticator {
-	return &Authenticator{sessions: sessions}
+func NewAuthenticator(sessions *Sessions, tokens *Tokens) *Authenticator {
+	return &Authenticator{sessions: sessions, tokens: tokens}
 }
 
 // Resolve turns credentials into a principal, or explains why it will not.
 func (a *Authenticator) Resolve(ctx context.Context, creds Credentials) (Principal, error) {
 	switch {
 	case creds.BearerToken != "":
-		// This build issues no personal access tokens, so a bearer token is a credential that
-		// cannot exist. Rejecting is the honest answer and the safe one: see the type comment for
-		// why it does not fall through to the cookie.
-		return Principal{}, ErrCredentialRejected
+		return a.tokens.Resolve(ctx, creds.BearerToken)
 	case creds.SessionCookie != "":
 		return a.sessions.Resolve(ctx, creds.SessionCookie)
 	default:

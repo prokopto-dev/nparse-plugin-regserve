@@ -148,11 +148,11 @@ gen-openapi:
 .PHONY: gen-authz
 gen-authz:
 	@mkdir -p docs/reference
-	$(GO) run ./cmd/$(BIN) authz --docs docs/reference/permissions.md
+	$(GO) run ./cmd/$(BIN) authz --docs docs/reference/permissions.md --schema db/schema.hcl
 
 ## migration: author a migration from db/schema.hcl with Atlas (NAME=<snake_case>)
 .PHONY: migration
-migration:
+migration: gen-authz
 	@$(call require,atlas,db/schema.hcl is diffed into a migration by it — install it with: make tools)
 	@[ -n "$(NAME)" ] || { printf 'NAME is required: make migration NAME=add_something\n'; exit 2; }
 	atlas migrate diff $(NAME) --dir "file://db/migrations-sqlite" --dir-format goose \

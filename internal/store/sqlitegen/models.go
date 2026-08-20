@@ -57,6 +57,24 @@ type OauthFlow struct {
 	ExpiresAt    int64
 }
 
+type Pat struct {
+	ID         string
+	AccountID  string
+	Prefix     string
+	TokenHash  string
+	Name       string
+	PluginID   *string
+	CreatedAt  int64
+	ExpiresAt  *int64
+	LastUsedAt *int64
+	RevokedAt  *int64
+}
+
+type PatScope struct {
+	PatID string
+	Scope string
+}
+
 type Plugin struct {
 	ID             string
 	Name           string
