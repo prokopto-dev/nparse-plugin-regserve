@@ -1,10 +1,12 @@
 package release_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/artifact"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/release"
 )
 
@@ -301,4 +303,126 @@ func TestPublish_TheHostRuleReadsTheSubmittedURL_NotWhereTheRedirectLanded(t *te
 		"a redirect changed where the bytes came from and the host rule noticed; it must read the "+
 			"submitted url, which is the author's stable statement of where the artifact lives")
 	require.Equal(t, release.StateApproved, out.State)
+}
+
+// TestPublish_ATrustChangeDuringTheFetch_IsNotIgnored.
+//
+// THE WINDOW THE OUT-OF-TRANSACTION FETCH CREATES, for the second of the two inputs to the
+// automatic-publish decision.
+//
+// Trust is read BEFORE the artifact is fetched, deliberately, so a blocked account cannot make
+// this server spend forty-five seconds on its behalf. That reading is then forty-five seconds old
+// by the time anything is written — and the entire reason a reviewer can demote or block somebody
+// is to be able to STOP them. A publish that ignored a decision made during its own download would
+// be the one their revocation did not reach, which is exactly the request it most needed to.
+//
+// The rule the fix keeps: the decision may be NARROWED in the write transaction, never widened.
+func TestPublish_ATrustChangeDuringTheFetch_IsNotIgnored(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		to   release.Trust
+
+		// wantErr is set when the publish must be refused outright rather than recorded.
+		wantErr error
+	}{
+		{
+			// Demoted mid-fetch. The release is still RECORDED — the artifact was fetched and
+			// hashed, and discarding that would burn the version number over a timing
+			// coincidence — but it waits, which is where it would have gone had the tier been
+			// read a second later.
+			name: "demoted to new while the artifact downloads",
+			to:   release.TrustNew,
+		},
+		{
+			// Blocked mid-fetch. No row at all: a release recorded from an account a person has
+			// just refused is a release somebody has to explain later.
+			name:    "blocked while the artifact downloads",
+			to:      release.TrustBlocked,
+			wantErr: release.ErrAccountBlocked,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			w := newWorld(t, []byte("PK\x03\x04 version one"))
+			first := w.approvedFirstRelease(t, "1.0.0")
+			w.setTrust(t, w.owner, release.TrustTrusted)
+
+			// A clean version bump: same host, same size, the version advances. Without the
+			// interference below this publishes automatically, which is what makes the assertion
+			// about the tier and not about something else being wrong.
+			w.body = []byte("PK\x03\x04 version two")
+
+			// The tier changes while the artifact is "downloading" — which is what a reviewer
+			// acting during the window looks like from the publish path's point of view.
+			w.pub = release.NewPublisher(w.db, fixedClock(),
+				retrustingFetcher{w: w, t: t, to: tc.to})
+
+			out, err := w.publish(t, w.submit(t, func(r *release.RawSubmission) { r.Version = "1.1.0" }), "raced")
+
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
+				require.Equal(t, 1, w.releaseCount(t), "a blocked account's publish wrote a row")
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, release.StatePending, out.State,
+					"a demoted account published automatically anyway")
+				require.True(t, out.Verified, "the artifact was still fetched and hashed")
+				require.Contains(t, out.Review, "trust level changed")
+				require.Empty(t, out.Superseded, "a release that did not publish retired one")
+			}
+
+			// EITHER WAY, THE LIVE LISTING IS UNTOUCHED. This is the assertion that matters: the
+			// reviewer's decision reached the thing every installed client downloads.
+			require.Equal(t, []string{"merchant-mode@1.0.0"}, w.listed(t))
+			require.Equal(t, "approved", w.stateOf(t, first.ReleaseID),
+				"the live release was superseded by a publish that should not have happened")
+		})
+	}
+}
+
+// retrustingFetcher changes the submitter's tier, then fetches normally.
+type retrustingFetcher struct {
+	w  *world
+	t  *testing.T
+	to release.Trust
+}
+
+func (f retrustingFetcher) Fetch(ctx context.Context, rawURL string) (artifact.Result, error) {
+	// A SEPARATE Publisher, so this is a genuinely independent decision rather than a re-entrant
+	// call on the one under test.
+	other := release.NewPublisher(f.w.db, fixedClock(), f.w.fetcher)
+	require.NoError(f.t, other.SetTrust(ctx, f.w.owner, f.to, f.w.maintainer,
+		"a reviewer acting while this artifact was being fetched"))
+
+	return f.w.fetcher.Fetch(ctx, rawURL)
+}
+
+// TestPublish_ATrustRiseDuringTheFetch_DoesNotStartAnAutomaticPublish.
+//
+// The other direction, and the reason the rule is "narrow, never widen". A tier raised mid-fetch
+// does not turn a release that was going to review into one that publishes: the quarantine
+// comparison was made against a snapshot this transaction has only partly re-validated, and "it
+// would have been fine" is not a reason to skip the human.
+func TestPublish_ATrustRiseDuringTheFetch_DoesNotStartAnAutomaticPublish(t *testing.T) {
+	t.Parallel()
+
+	w := newWorld(t, []byte("PK\x03\x04 version one"))
+	w.approvedFirstRelease(t, "1.0.0")
+	// Starts untrusted, so the decision before the fetch is "this waits".
+
+	w.body = []byte("PK\x03\x04 version two")
+	w.pub = release.NewPublisher(w.db, fixedClock(),
+		retrustingFetcher{w: w, t: t, to: release.TrustTrusted})
+
+	out, err := w.publish(t, w.submit(t, func(r *release.RawSubmission) { r.Version = "1.1.0" }), "raised")
+	require.NoError(t, err)
+
+	require.Equal(t, release.StatePending, out.State,
+		"a tier raised during the fetch published a release the decision had sent to review")
+	require.Equal(t, []string{"merchant-mode@1.0.0"}, w.listed(t))
 }

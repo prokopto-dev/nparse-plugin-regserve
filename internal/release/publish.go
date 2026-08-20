@@ -346,6 +346,41 @@ func (p *Publisher) record(
 			return err
 		}
 
+		// TRUST, AGAIN, IN THIS TRANSACTION.
+		//
+		// It was read before the fetch, deliberately, so a blocked account cannot make this server
+		// spend forty-five seconds on its behalf. But that reading is forty-five seconds old by
+		// the time anything is written, and a reviewer can block or demote an account inside that
+		// window — the whole reason such a reviewer exists is to be able to stop somebody, and an
+		// in-flight request that ignored them would be the one publish their decision did not
+		// reach.
+		//
+		// The rule: THE DECISION MAY BE NARROWED HERE, NEVER WIDENED. A tier that dropped stops an
+		// automatic publish; a tier that rose does not start one, because the quarantine
+		// comparison was made against a snapshot this transaction has only partly re-validated,
+		// and "it would have been fine" is not a reason to skip the human.
+		trustNow, err := p.trustTx(ctx, q, req.AccountID)
+		if err != nil {
+			return err
+		}
+		if trustNow == TrustBlocked {
+			// No row at all, the same answer as a publish that arrived already blocked. A release
+			// recorded from an account a person has just refused is a release somebody has to
+			// explain later.
+			return ErrAccountBlocked
+		}
+		if v.state == StateApproved && trustNow != TrustTrusted {
+			// Recorded rather than refused: the artifact was fetched and hashed, and throwing that
+			// away would burn the version number over a timing coincidence. It goes to review,
+			// which is where it would have gone had the tier been read a second later.
+			v.state = StatePending
+			v.review = trustLoweredNote
+			params.State = v.state.String()
+			params.ReviewNote = &v.review
+			out.State = v.state
+			out.Review = v.review
+		}
+
 		// And the key again, because two re-runs of the same workflow can be in flight together.
 		// The primary key would refuse the second insert anyway; reading first turns that into the
 		// original outcome rather than an error for a caller who did nothing wrong.
@@ -734,6 +769,15 @@ func (p *Publisher) decide(prev previous, trust Trust, sub Submission, v verdict
 const autoPublishedNote = "published automatically: a trusted owner's version bump of an " +
 	"already-approved plugin, with the artifact fetched and re-hashed clean and no quarantine " +
 	"rule triggered"
+
+// trustLoweredNote is recorded on a release that WOULD have published automatically, and did not
+// because the submitter's tier changed while its artifact was downloading.
+//
+// It names the timing explicitly, because the alternative reads to an author as though their
+// release was quarantined for something about the release — and it is the row a reviewer sees when
+// they wonder why the account they just demoted still has a submission waiting.
+const trustLoweredNote = "the submitter's trust level changed while the artifact was being " +
+	"fetched, so this release goes to review rather than publishing automatically"
 
 // previousRelease reads what a plugin currently serves.
 func (p *Publisher) previousRelease(ctx context.Context, pluginID string) (previous, error) {
