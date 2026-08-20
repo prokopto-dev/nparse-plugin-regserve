@@ -190,30 +190,44 @@ func (o *OAuth) Complete(
 //
 // Read-then-delete in one transaction on the single writer connection is what makes a flow
 // single-use: two callbacks racing with the same state cannot both find the row.
+//
+// THE REJECTION IS CARRIED OUT OF THE CALLBACK RATHER THAN RETURNED FROM IT. store.Tx commits only
+// when the callback returns nil, so returning ErrFlowUnknown from inside would roll the DELETE
+// back — and an expired flow that survives its own rejection is one an attacker can keep trying
+// against until the clock or the pepper changes. The row is consumed either way; only the answer
+// differs.
 func (o *OAuth) takeFlow(ctx context.Context, kind identity.Kind, state string) (sqlitegen.OauthFlow, error) {
-	var flow sqlitegen.OauthFlow
+	var (
+		flow   sqlitegen.OauthFlow
+		reject error
+	)
 
 	err := o.db.Tx(ctx, func(q *store.Queries) error {
 		row, err := q.GetOAuthFlow(ctx, keyedHash(o.pepper, state))
 		switch {
 		case errors.Is(err, store.ErrNoRows):
-			return ErrFlowUnknown
+			reject = ErrFlowUnknown
+			return nil
 		case err != nil:
 			return fmt.Errorf("read the login flow: %w", err)
 		}
 		if err := q.DeleteOAuthFlow(ctx, row.StateHash); err != nil {
 			return fmt.Errorf("consume the login flow: %w", err)
 		}
-		// Checked after the delete so that an expired or mismatched flow is still consumed: a row
-		// that can be probed repeatedly is a row an attacker can wait out.
+		// Checked after the delete, and recorded rather than returned, so that an expired or
+		// mismatched flow is still consumed by the commit.
 		if core.Micros(row.ExpiresAt).Time().Before(o.clk.Now()) || row.ProviderKind != kind.String() {
-			return ErrFlowUnknown
+			reject = ErrFlowUnknown
+			return nil
 		}
 		flow = row
 		return nil
 	})
-	if err != nil {
+	switch {
+	case err != nil:
 		return sqlitegen.OauthFlow{}, err
+	case reject != nil:
+		return sqlitegen.OauthFlow{}, reject
 	}
 	return flow, nil
 }
