@@ -233,23 +233,44 @@ func blocked(addr netip.Addr, permitLoopback bool) bool {
 	return false
 }
 
-// Do runs req through client and returns the response body, capped at maxBytes.
+// Response is what Do gives back.
+//
+// It is deliberately NOT an *http.Response. Do reads the body to the cap and closes it, so the
+// Response it would otherwise hand back carries a drained, closed Body that every caller has to
+// remember not to touch — and `bodyclose` cannot tell that it was closed, so every call site grows
+// a waiver. A value with the three things a caller actually wants has neither problem.
+type Response struct {
+	StatusCode int
+	Header     http.Header
+
+	// Body is the whole response, never more than the cap Do was given.
+	Body []byte
+}
+
+// Do runs req through client and returns the response, with its body read to maxBytes and closed.
 //
 // It exists so that every caller gets the body cap and the closed body without writing them out
-// again — bodyclose lints the second half, nothing lints the first, and a 50 MiB artifact read
+// again — `bodyclose` lints the second half, nothing lints the first, and a 50 MiB artifact read
 // into memory because one call site forgot is an out-of-memory kill rather than an error.
-func Do(ctx context.Context, client *http.Client, req *http.Request, maxBytes int64) (
-	*http.Response, []byte, error,
-) {
+func Do(ctx context.Context, client *http.Client, req *http.Request, maxBytes int64) (Response, error) {
+	// #nosec G704 -- this IS the guarded client: its dialer refuses private, loopback, link-local,
+	// multicast and cloud-metadata addresses in the Control hook, after DNS, and its CheckRedirect
+	// re-asserts https on every hop. The URL being attacker-influenced is the normal case here, and
+	// the whole package is the mitigation.
 	resp, err := client.Do(req.WithContext(ctx))
 	if err != nil {
-		return nil, nil, fmt.Errorf("request %s: %w", req.URL.Redacted(), err)
+		return Response{}, fmt.Errorf("request %s: %w", req.URL.Redacted(), err)
 	}
-	defer func() { _ = resp.Body.Close() }() // the body is fully read or abandoned; either way it closes
+	defer func() { _ = resp.Body.Close() }() // read to the cap or abandoned; either way it closes
+
+	out := Response{StatusCode: resp.StatusCode, Header: resp.Header}
 
 	body, err := ReadCapped(resp.Body, maxBytes)
 	if err != nil {
-		return resp, nil, fmt.Errorf("read %s: %w", req.URL.Redacted(), err)
+		// The status is still returned: "it answered 500 and the body was oversized" and "it never
+		// answered" are different things to the caller deciding whether to retry.
+		return out, fmt.Errorf("read %s: %w", req.URL.Redacted(), err)
 	}
-	return resp, body, nil
+	out.Body = body
+	return out, nil
 }

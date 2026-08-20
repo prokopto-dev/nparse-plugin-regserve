@@ -97,7 +97,7 @@ func (s *Sessions) Create(ctx context.Context, accountID string) (NewSession, er
 			Actor:       audit.ActorAccount,
 			AccountID:   accountID,
 			Action:      "session.start",
-			SubjectKind: "account",
+			SubjectKind: subjectAccount,
 			SubjectID:   accountID,
 		})
 	})
@@ -193,7 +193,7 @@ func (s *Sessions) Revoke(ctx context.Context, p Principal) error {
 			Actor:       audit.ActorAccount,
 			AccountID:   p.AccountID,
 			Action:      "session.end",
-			SubjectKind: "account",
+			SubjectKind: subjectAccount,
 			SubjectID:   p.AccountID,
 		})
 	})

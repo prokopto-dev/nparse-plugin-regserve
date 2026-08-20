@@ -340,7 +340,7 @@ func (o *OAuth) createAccount(
 		Actor:       audit.ActorAccount,
 		AccountID:   accountID.String(),
 		Action:      "account.create",
-		SubjectKind: "account",
+		SubjectKind: subjectAccount,
 		SubjectID:   accountID.String(),
 		Detail: map[string]any{
 			"provider": id.Provider.String(),

@@ -50,7 +50,12 @@ const OAuthStateCookieName = "__Host-regserve_oauth"
 // It is exported because it is how a token is RECOGNISED, not only how one is built: the rule that
 // a token in a query string is refused with 401 is implemented by looking for this prefix in the
 // query, and a value that looks like a token in a URL is already in somebody's access log.
-const TokenPrefix = "nprs_pat_"
+const TokenPrefix = "nprs_pat_" //nolint:gosec // G101: the fixed, public opening of a token, not a secret
+
+// subjectAccount is the audit_log subject kind for a row about an account. One spelling: the
+// (subject_kind, subject_id) index is what an incident review queries on, and a second spelling
+// would put half the rows somewhere nobody looks.
+const subjectAccount = "account"
 
 // Credentials is whatever a request presented. Both fields may be empty; both may be set.
 //

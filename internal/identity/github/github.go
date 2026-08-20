@@ -195,7 +195,7 @@ func (p *Provider) token(ctx context.Context, code, verifier string) (string, er
 	// shape of. Asking for JSON means a malformed answer is a parse error rather than a surprise.
 	req.Header.Set("Accept", "application/json")
 
-	resp, body, err := guard.Do(ctx, p.client, req, maxResponseBytes)
+	resp, err := guard.Do(ctx, p.client, req, maxResponseBytes)
 	if err != nil {
 		return "", fmt.Errorf("%w: %w", identity.ErrProviderUnavailable, err)
 	}
@@ -207,7 +207,7 @@ func (p *Provider) token(ctx context.Context, code, verifier string) (string, er
 	}
 
 	var parsed tokenResponse
-	if err := json.Unmarshal(body, &parsed); err != nil {
+	if err := json.Unmarshal(resp.Body, &parsed); err != nil {
 		return "", fmt.Errorf("%w: parse the token response: %w", identity.ErrProviderUnavailable, err)
 	}
 	// GitHub reports a bad, reused or expired code as 200 with an `error` member. Treating a 200
@@ -232,7 +232,7 @@ func (p *Provider) user(ctx context.Context, accessToken string) (identity.Ident
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", apiVersion)
 
-	resp, body, err := guard.Do(ctx, p.client, req, maxResponseBytes)
+	resp, err := guard.Do(ctx, p.client, req, maxResponseBytes)
 	if err != nil {
 		return identity.Identity{}, fmt.Errorf("%w: %w", identity.ErrProviderUnavailable, err)
 	}
@@ -246,7 +246,7 @@ func (p *Provider) user(ctx context.Context, accessToken string) (identity.Ident
 	}
 
 	var parsed userResponse
-	if err := json.Unmarshal(body, &parsed); err != nil {
+	if err := json.Unmarshal(resp.Body, &parsed); err != nil {
 		return identity.Identity{}, fmt.Errorf("%w: parse the user response: %w",
 			identity.ErrProviderUnavailable, err)
 	}

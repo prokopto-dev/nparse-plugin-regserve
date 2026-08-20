@@ -279,14 +279,21 @@ func prepareCatalogue(
 
 // configureIdentity wires sign-in onto cfg, or explains why it is off.
 //
+// THE OAUTH PAIR IS WHAT DECIDES, not the pepper. The pepper keys every credential hash in the
+// database and deploy/compose.yaml has always required it, so the live deployment has one set with
+// no OAuth application behind it — treating "pepper present" as "sign-in wanted" would refuse to
+// start the very deployment this code has to land on.
+//
 // Three states, and only the middle one is a judgement call:
 //
-//   - NOTHING SET. Sign-in is off, said out loud at info. This is the live deployment today: it
-//     serves the catalogue and answers 404 on /auth/github/login, which is honest.
-//   - SOME OF IT SET. Fatal. Somebody has configured half of an OAuth application, and the two
+//   - NEITHER OAUTH VARIABLE SET. Sign-in is off, said out loud at info. This is the live
+//     deployment today: it serves the catalogue and answers 404 on /auth/github/login, which is
+//     honest.
+//   - ONE OF THE PAIR SET. Fatal. Somebody has configured half an OAuth application, and the two
 //     ways that can go wrong quietly are both worse than not starting: a login button that 500s,
 //     or a server that ignores the configuration it was given.
-//   - ALL SET. Sign-in is on, and the public URL must be https — see below.
+//   - BOTH SET. Sign-in is on, and the pepper and an https public URL are then required — see
+//     below for why each is not optional.
 func configureIdentity(ctx context.Context, cfg *api.Config, db *store.DB, clk clock.Clock) error {
 	var (
 		publicURL    = strings.TrimSpace(os.Getenv(envPublicURL))
@@ -295,24 +302,26 @@ func configureIdentity(ctx context.Context, cfg *api.Config, db *store.DB, clk c
 		pepper       = core.NewSecret(os.Getenv(envTokenPepper))
 	)
 
-	set := 0
-	for _, present := range []bool{clientID != "", !clientSecret.IsZero(), !pepper.IsZero()} {
-		if present {
-			set++
-		}
-	}
-	switch set {
-	case 0:
+	switch {
+	case clientID == "" && clientSecret.IsZero():
 		slog.InfoContext(ctx, "sign-in is not configured; the account surface is not served",
-			"needs", []string{envGitHubClientID, envGitHubClientSecret, envTokenPepper})
+			"needs", []string{envGitHubClientID, envGitHubClientSecret})
 		return nil
-	case 3:
-	default:
-		// Deliberately does NOT name which one is missing beyond the variable names, and never
+	case clientID == "" || clientSecret.IsZero():
+		// Deliberately does not say which half is missing beyond naming both variables, and never
 		// prints a value: the point is to send the operator to their .env, not to confirm which
 		// half of a secret pair they got right.
-		return fmt.Errorf("sign-in is half configured: %s, %s and %s must be set together",
-			envGitHubClientID, envGitHubClientSecret, envTokenPepper)
+		return fmt.Errorf("sign-in is half configured: %s and %s must be set together",
+			envGitHubClientID, envGitHubClientSecret)
+	}
+
+	// Without a pepper every credential hash would be keyed on nothing, and the argument for
+	// storing hashes rather than secrets would quietly be false. NewSessions refuses one too; this
+	// says so at boot with the variable's name in it, rather than as "session service: no token
+	// pepper configured" from three frames down.
+	if pepper.IsZero() {
+		return fmt.Errorf("sign-in needs %s: it keys every session and token hash in the database",
+			envTokenPepper)
 	}
 
 	// The session cookie is `__Host-` prefixed (canonical §6), and a browser refuses such a cookie

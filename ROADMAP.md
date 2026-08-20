@@ -41,13 +41,23 @@ catalogue it served before, out of SQLite.
 
 ## Phase 2 — identity
 
-- `internal/identity/github` behind the guarded dialer — the only provider
+- ✅ `internal/identity/github` behind the guarded dialer — the only provider
   ([ADR-0011](docs/adr/0011-github-is-the-only-identity-provider.md))
-- OAuth with `state` and PKCE; sessions on `__Host-regserve_session`
-- Accounts with linked `(provider, subject)` identities
-- `internal/authz` catalogue; PAT mint and verify; the capability floor
+- ✅ OAuth with `state` and PKCE; sessions on `__Host-regserve_session`
+- ✅ Accounts with linked `(provider, subject)` identities
+- ✅ `internal/authz` catalogue, generating `docs/reference/permissions.md`; the capability floor
+  declared and enforced from the same value the OpenAPI document renders
+- PAT mint and verify
+- A server-rendered account surface, because the capability floor is session-only and therefore
+  browser-required: without pages, nothing can reach it
+- Release notes as an additive wire-format field, with its own ADR
 - Seeding ownership from the existing `owners.json`, resolving handles to numeric ids (`make seed`;
   the catalogue itself is already imported at boot)
+
+**What works now:** a GitHub account can sign in and hold a session, and every operation's access
+declaration is enforced by middleware reading the same value the document renders. Sign-in is off
+in the live deployment until an OAuth application is configured — the routes are not registered at
+all rather than registered and failing.
 
 ## Phase 3 — publishing
 

@@ -28,6 +28,10 @@ const (
 // two spellings of the same path is how one of them stops being maintained.
 const PathAccount = "/account"
 
+// tagAuth groups the sign-in operations in the OpenAPI document, and in the SDKs generated from
+// it. One spelling, because a tag is how a reader finds the group and two spellings make two.
+const tagAuth = "auth"
+
 // Login is what internal/api needs in order to run a login. A consumer-declared interface, so the
 // handlers can be tested without a database or a provider.
 type Login interface {
@@ -94,7 +98,7 @@ func registerAuth(api huma.API, login Login, sessions SessionIssuer, providers *
 			"`" + auth.OAuthStateCookieName + "` cookie which the callback requires: the `state` " +
 			"parameter alone is a nonce anybody can supply, and the cookie is what binds the " +
 			"callback to the browser that started the flow.",
-		Tags:      []string{"auth"},
+		Tags:      []string{tagAuth},
 		Errors:    []int{http.StatusNotFound, http.StatusInternalServerError},
 		Responses: redirectResponses("The provider's consent screen."),
 	}, func(ctx context.Context, in *loginInput) (*redirectOutput, error) {
@@ -126,7 +130,7 @@ func registerAuth(api huma.API, login Login, sessions SessionIssuer, providers *
 		Summary:     "Complete a sign-in",
 		Description: "The provider's redirect target. Exchanges the authorization code, resolves " +
 			"the account behind the provider identity, and sets the session cookie.",
-		Tags:      []string{"auth"},
+		Tags:      []string{tagAuth},
 		Errors:    []int{http.StatusBadRequest, http.StatusForbidden, http.StatusNotFound, http.StatusBadGateway},
 		Responses: redirectResponses("The account page, or wherever the sign-in started from."),
 	}, func(ctx context.Context, in *callbackInput) (*redirectOutput, error) {
@@ -183,7 +187,7 @@ func registerAuth(api huma.API, login Login, sessions SessionIssuer, providers *
 		Description: "Revokes the session the request was made with and clears the cookie. It is " +
 			"a capability-floor operation: no personal access token can end a browser session, " +
 			"because a token holds no session to end.",
-		Tags:      []string{"auth"},
+		Tags:      []string{tagAuth},
 		Errors:    []int{http.StatusUnauthorized, http.StatusForbidden},
 		Responses: redirectResponses("The home page."),
 	}, func(ctx context.Context, _ *struct{}) (*redirectOutput, error) {

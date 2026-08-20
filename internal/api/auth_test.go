@@ -138,7 +138,7 @@ func (stubProvider) Exchange(context.Context, string, string) (identity.Identity
 }
 
 // do makes a request that does NOT follow redirects: the redirect is the response under test.
-func (h *harness) do(t *testing.T, method, path string, cookies ...*http.Cookie) *http.Response {
+func (h *harness) do(t *testing.T, method, path string, cookies ...*http.Cookie) response {
 	t.Helper()
 
 	req, err := http.NewRequestWithContext(t.Context(), method, h.srv.URL+path, nil)
@@ -152,13 +152,43 @@ func (h *harness) do(t *testing.T, method, path string, cookies ...*http.Cookie)
 	}
 	resp, err := client.Do(req)
 	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, resp.Body.Close()) })
-	return resp
+	defer func() { require.NoError(t, resp.Body.Close()) }()
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	return response{
+		status:  resp.StatusCode,
+		header:  resp.Header.Clone(),
+		body:    body,
+		cookies: resp.Cookies(),
+	}
+}
+
+// doWithToken posts to the logout route with a bearer token instead of a cookie.
+func (h *harness) doWithToken(t *testing.T, token string) response {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, h.srv.URL+"/auth/logout", nil)
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	client := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, resp.Body.Close()) }()
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	return response{status: resp.StatusCode, header: resp.Header.Clone(), body: body}
 }
 
 // cookie returns the Set-Cookie with the given name, or nil.
-func cookie(resp *http.Response, name string) *http.Cookie {
-	for _, c := range resp.Cookies() {
+func cookie(resp response, name string) *http.Cookie {
+	for _, c := range resp.cookies {
 		if c.Name == name {
 			return c
 		}
@@ -167,17 +197,14 @@ func cookie(resp *http.Response, name string) *http.Cookie {
 }
 
 // problemOf decodes the RFC 9457 body and asserts the media type. Never 200 with an error body.
-func problemOf(t *testing.T, resp *http.Response) api.Problem {
+func problemOf(t *testing.T, resp response) api.Problem {
 	t.Helper()
 
-	require.Equal(t, "application/problem+json", resp.Header.Get("Content-Type"))
-
-	body, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
+	require.Equal(t, "application/problem+json", resp.header.Get("Content-Type"))
 
 	var p api.Problem
-	require.NoError(t, json.Unmarshal(body, &p), "body was %s", body)
-	require.Equal(t, resp.StatusCode, p.Status, "the status and the document must not disagree")
+	require.NoError(t, json.Unmarshal(resp.body, &p), "body was %s", resp.body)
+	require.Equal(t, resp.status, p.Status, "the status and the document must not disagree")
 	return p
 }
 
@@ -187,8 +214,8 @@ func TestStartLogin_RedirectsAndBindsTheStateToThisBrowser(t *testing.T) {
 	h := newHarness(t)
 	resp := h.do(t, http.MethodGet, "/auth/github/login?next=/account")
 
-	require.Equal(t, http.StatusSeeOther, resp.StatusCode)
-	require.Equal(t, h.login.begun.AuthorizeURL, resp.Header.Get("Location"))
+	require.Equal(t, http.StatusSeeOther, resp.status)
+	require.Equal(t, h.login.begun.AuthorizeURL, resp.header.Get("Location"))
 	require.Equal(t, "/account", h.login.sawRedirect)
 
 	c := cookie(resp, auth.OAuthStateCookieName)
@@ -212,9 +239,9 @@ func TestStartLogin_UnknownProvider_Is404(t *testing.T) {
 	h := newHarness(t)
 	resp := h.do(t, http.MethodGet, "/auth/discord/login")
 
-	require.Equal(t, http.StatusNotFound, resp.StatusCode)
+	require.Equal(t, http.StatusNotFound, resp.status)
 	require.Equal(t, api.CodeNotFound, problemOf(t, resp).Code)
-	require.Empty(t, resp.Cookies(), "a refused login sets nothing")
+	require.Empty(t, resp.cookies, "a refused login sets nothing")
 }
 
 func TestCompleteLogin_SetsTheSessionCookieAndClearsTheStateCookie(t *testing.T) {
@@ -226,8 +253,8 @@ func TestCompleteLogin_SetsTheSessionCookieAndClearsTheStateCookie(t *testing.T)
 	resp := h.do(t, http.MethodGet, "/auth/github/callback?code=the-code&state="+testState,
 		&http.Cookie{Name: auth.OAuthStateCookieName, Value: testState})
 
-	require.Equal(t, http.StatusSeeOther, resp.StatusCode)
-	require.Equal(t, "/account/tokens", resp.Header.Get("Location"))
+	require.Equal(t, http.StatusSeeOther, resp.status)
+	require.Equal(t, "/account/tokens", resp.header.Get("Location"))
 
 	// The handler must hand both halves of the state to the service and compare neither itself.
 	require.Equal(t, testState, h.login.sawState)
@@ -257,8 +284,8 @@ func TestCompleteLogin_WithNoRedirect_LandsOnTheAccountPage(t *testing.T) {
 	resp := h.do(t, http.MethodGet, "/auth/github/callback?code=c&state="+testState,
 		&http.Cookie{Name: auth.OAuthStateCookieName, Value: testState})
 
-	require.Equal(t, http.StatusSeeOther, resp.StatusCode)
-	require.Equal(t, "/account", resp.Header.Get("Location"))
+	require.Equal(t, http.StatusSeeOther, resp.status)
+	require.Equal(t, "/account", resp.header.Get("Location"))
 }
 
 // TestCompleteLogin_MapsEachFailureOntoItsOwnStatus — the answer tells the person what to do.
@@ -316,7 +343,7 @@ func TestCompleteLogin_MapsEachFailureOntoItsOwnStatus(t *testing.T) {
 			resp := h.do(t, http.MethodGet, "/auth/github/callback?code=c&state="+testState,
 				&http.Cookie{Name: auth.OAuthStateCookieName, Value: testState})
 
-			require.Equal(t, tt.wantStatus, resp.StatusCode)
+			require.Equal(t, tt.wantStatus, resp.status)
 			require.Equal(t, tt.wantCode, problemOf(t, resp).Code)
 			require.Nil(t, cookie(resp, auth.SessionCookieName),
 				"a failed sign-in must not set a session cookie")
@@ -335,7 +362,7 @@ func TestCompleteLogin_DoesNotEchoTheProvidersErrorDescription(t *testing.T) {
 	resp := h.do(t, http.MethodGet,
 		"/auth/github/callback?error=access_denied&error_description=Call+555-1234+to+unlock")
 
-	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+	require.Equal(t, http.StatusForbidden, resp.status)
 	p := problemOf(t, resp)
 	require.NotContains(t, p.Detail, "555-1234")
 	require.NotContains(t, p.Detail, "unlock")
@@ -351,8 +378,8 @@ func TestEndSession_RevokesAndClearsTheCookie(t *testing.T) {
 	resp := h.do(t, http.MethodPost, "/auth/logout",
 		&http.Cookie{Name: auth.SessionCookieName, Value: "a-session-secret"})
 
-	require.Equal(t, http.StatusSeeOther, resp.StatusCode)
-	require.Equal(t, "/", resp.Header.Get("Location"))
+	require.Equal(t, http.StatusSeeOther, resp.status)
+	require.Equal(t, "/", resp.header.Get("Location"))
 	require.Equal(t, []string{"sess"}, h.sessions.revoked)
 
 	cleared := cookie(resp, auth.SessionCookieName)
@@ -370,7 +397,7 @@ func TestEndSession_WithNoCredential_Is401(t *testing.T) {
 	h := newHarness(t)
 	resp := h.do(t, http.MethodPost, "/auth/logout")
 
-	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	require.Equal(t, http.StatusUnauthorized, resp.status)
 	require.Equal(t, api.CodeUnauthorized, problemOf(t, resp).Code)
 	require.Empty(t, h.sessions.revoked, "the handler must not have run")
 }
@@ -392,18 +419,9 @@ func TestEndSession_RefusesAToken(t *testing.T) {
 	}
 	h.authn.err = nil
 
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, h.srv.URL+"/auth/logout", nil)
-	require.NoError(t, err)
-	req.Header.Set("Authorization", "Bearer "+auth.TokenPrefix+"abcd1234_secret")
+	resp := h.doWithToken(t, auth.TokenPrefix+"abcd1234_secret")
 
-	client := &http.Client{
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
-	resp, err := client.Do(req)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, resp.Body.Close()) })
-
-	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+	require.Equal(t, http.StatusForbidden, resp.status)
 	p := problemOf(t, resp)
 	require.Equal(t, api.CodeForbidden, p.Code)
 	require.Contains(t, p.Detail, "session-only",
@@ -443,7 +461,7 @@ func TestATokenInAQueryString_IsAlwaysRefused(t *testing.T) {
 			h := newHarness(t)
 			resp := h.do(t, http.MethodGet, tt.path)
 
-			require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+			require.Equal(t, http.StatusUnauthorized, resp.status)
 			p := problemOf(t, resp)
 			require.Equal(t, api.CodeUnauthorized, p.Code)
 			require.Contains(t, p.Detail, "query string")
@@ -459,7 +477,7 @@ func TestAQueryStringWithoutAToken_IsUntouched(t *testing.T) {
 	h := newHarness(t)
 	resp := h.do(t, http.MethodGet, "/auth/github/login?next=/account&other=nprs_pat")
 
-	require.Equal(t, http.StatusSeeOther, resp.StatusCode)
+	require.Equal(t, http.StatusSeeOther, resp.status)
 }
 
 // TestAnAuthenticatedRoute_WithNoAuthenticator_Is503 — a nil dependency must not open a door.
@@ -474,7 +492,7 @@ func TestAnAuthenticatedRoute_WithNoAuthenticator_Is503(t *testing.T) {
 	resp := h.do(t, http.MethodPost, "/auth/logout",
 		&http.Cookie{Name: auth.SessionCookieName, Value: "anything"})
 
-	require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+	require.Equal(t, http.StatusServiceUnavailable, resp.status)
 	require.Equal(t, api.CodeServiceUnavailable, problemOf(t, resp).Code)
 	require.Empty(t, h.sessions.revoked)
 }
@@ -492,7 +510,7 @@ func TestSignInRoutes_AreNotRegisteredWhenSignInIsNotConfigured(t *testing.T) {
 
 	for _, path := range []string{"/auth/github/login", "/auth/github/callback", "/auth/logout"} {
 		resp := h.do(t, http.MethodGet, path)
-		require.Equal(t, http.StatusNotFound, resp.StatusCode, "%s must not be served", path)
+		require.Equal(t, http.StatusNotFound, resp.status, "%s must not be served", path)
 	}
 }
 

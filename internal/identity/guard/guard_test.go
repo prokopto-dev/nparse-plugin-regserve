@@ -28,7 +28,7 @@ func TestNewClient_ProductionDefaults_RefuseLoopback(t *testing.T) {
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil)
 	require.NoError(t, err)
 
-	_, _, err = guard.Do(t.Context(), guard.NewClient(guard.Config{}), req, 1024)
+	_, err = guard.Do(t.Context(), guard.NewClient(guard.Config{}), req, 1024)
 	require.ErrorIs(t, err, guard.ErrBlockedAddress,
 		"the default client must refuse loopback; if this passes, every guarded call in the "+
 			"service can reach localhost")
@@ -174,10 +174,10 @@ func TestDo_CapsTheBodyOverARealSocket(t *testing.T) {
 		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil)
 		require.NoError(t, err)
 
-		resp, body, err := guard.Do(t.Context(), client, req, 8192)
+		resp, err := guard.Do(t.Context(), client, req, 8192)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, resp.StatusCode)
-		require.Len(t, body, 4096)
+		require.Len(t, resp.Body, 4096)
 	})
 
 	t.Run("over the cap", func(t *testing.T) {
@@ -186,8 +186,10 @@ func TestDo_CapsTheBodyOverARealSocket(t *testing.T) {
 		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil)
 		require.NoError(t, err)
 
-		_, body, err := guard.Do(t.Context(), client, req, 100)
+		resp, err := guard.Do(t.Context(), client, req, 100)
 		require.ErrorIs(t, err, guard.ErrTooLarge)
-		require.Nil(t, body)
+		require.Nil(t, resp.Body)
+		require.Equal(t, http.StatusOK, resp.StatusCode,
+			"the status is still reported: an oversized body and no answer at all are different")
 	})
 }

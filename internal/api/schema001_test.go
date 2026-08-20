@@ -55,6 +55,10 @@ type response struct {
 	status int
 	header http.Header
 	body   []byte
+
+	// cookies is what the response set. Parsed here rather than by each caller, because
+	// http.Response knows how and a hand-written Set-Cookie parser is a second one to be wrong.
+	cookies []*http.Cookie
 }
 
 // fetch performs a GET and reads the whole response. accept is sent verbatim when non-empty; the
@@ -75,7 +79,7 @@ func fetch(t *testing.T, srv *httptest.Server, path, accept string) response {
 
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
-	return response{status: resp.StatusCode, header: resp.Header.Clone(), body: body}
+	return response{status: resp.StatusCode, header: resp.Header.Clone(), body: body, cookies: resp.Cookies()}
 }
 
 func schemaV1(t *testing.T) *jsonschema.Schema {
