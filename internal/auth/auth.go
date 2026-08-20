@@ -112,7 +112,29 @@ type Principal struct {
 
 	// Scopes is what a token carries. A session carries none and needs none — it is the account.
 	Scopes []authz.Scope
+
+	// PluginID is the plugin a token is PINNED to, and is empty for an unpinned token or for a
+	// session. It is the second half of ADR-0005's containment argument: the scope says what the
+	// credential may do and the pin says what it may do it to, and a leak is contained to the
+	// repository it leaked from only if BOTH are enforced.
+	//
+	// It is on the principal rather than looked up at the point of use because a pin that a
+	// handler has to remember to fetch is a pin a handler forgets. AllowsPlugin is the only way to
+	// ask, and internal/api's middleware asks it before any handler runs.
+	PluginID string
 }
+
+// AllowsPlugin reports whether this principal may act on the given plugin.
+//
+// An unpinned credential — a session, or a token minted for no particular plugin — may act on any
+// plugin the account owns, and OWNERSHIP is a separate question answered per request against
+// plugin_owner. This answers only the pin.
+func (p Principal) AllowsPlugin(pluginID string) bool {
+	return p.PluginID == "" || p.PluginID == pluginID
+}
+
+// Pinned reports whether this credential is restricted to one plugin.
+func (p Principal) Pinned() bool { return p.PluginID != "" }
 
 // ViaToken reports whether this principal came from a personal access token.
 //
@@ -175,24 +197,23 @@ func requirePepper(pepper core.Secret) error {
 // It is the one place that decides which credential wins when a request presents both, and the
 // answer is the bearer token: a caller that sent one MEANT to act as that token, and quietly
 // falling back to a browser session would authenticate them as the person whose cookie happened to
-// be attached — with the session's authority rather than the token's.
+// be attached — with the session's authority rather than the token's, which is an escalation
+// performed by a fallback.
 type Authenticator struct {
 	sessions *Sessions
+	tokens   *Tokens
 }
 
 // NewAuthenticator wires the credential kinds this build issues.
-func NewAuthenticator(sessions *Sessions) *Authenticator {
-	return &Authenticator{sessions: sessions}
+func NewAuthenticator(sessions *Sessions, tokens *Tokens) *Authenticator {
+	return &Authenticator{sessions: sessions, tokens: tokens}
 }
 
 // Resolve turns credentials into a principal, or explains why it will not.
 func (a *Authenticator) Resolve(ctx context.Context, creds Credentials) (Principal, error) {
 	switch {
 	case creds.BearerToken != "":
-		// This build issues no personal access tokens, so a bearer token is a credential that
-		// cannot exist. Rejecting is the honest answer and the safe one: see the type comment for
-		// why it does not fall through to the cookie.
-		return Principal{}, ErrCredentialRejected
+		return a.tokens.Resolve(ctx, creds.BearerToken)
 	case creds.SessionCookie != "":
 		return a.sessions.Resolve(ctx, creds.SessionCookie)
 	default:

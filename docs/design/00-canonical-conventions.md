@@ -62,10 +62,10 @@ hand-written permission list anywhere else is forbidden.
 
 There is no permission TABLE and therefore no permission-table seed: permissions are a property of
 the build, not rows an operator can edit, and a table would be a second source with a different
-lifecycle. The scope enum reaches the database as a `CHECK` on the PAT scope column, written from
-the catalogue between `GENERATED` markers — that column, and therefore that half of the generator,
-arrives with the PAT table. Until it does, `authz.Scopes()` is the only list and nothing else
-restates it.
+lifecycle. The scope enum reaches the database as a `CHECK` on `pat_scope.scope`, written from the
+catalogue between `GENERATED` markers by `make gen-authz`. Do not hand-edit inside them: a scope
+the database accepts but the catalogue does not know grants nothing while looking like it grants
+something.
 
 - Permissions are `<resource>.<action>`, dot-separated, lowercase: `plugin.publish`, `owner.manage`.
 - Scopes are `<family>:<verb>`, colon-separated: `plugin:publish`, `plugin:read`.
@@ -109,7 +109,10 @@ regenerates it in CI to fail on any hand edit.
   `OAPI001` asserts the shape and the uniqueness; nothing can assert that a rename is not a rename,
   so that half stays a review rule.
 - Every operation declares its access: `Public()`, `Requires(permission, scopes…)` or `Floor()` for
-  a capability-floor operation. These render `security` plus the `x-regserve-permission`,
+  a capability-floor operation. An operation that acts on a plugin adds `.OnPlugin("id")`, naming
+  the path parameter, so a token's plugin pin can be compared against it — `PERM001` fails a
+  token-callable operation under `/plugins/{…}` without one, and a pinned token calling an
+  operation that declares no parameter is refused rather than allowed. These render `security` plus the `x-regserve-permission`,
   `x-regserve-public` and `x-regserve-pat-forbidden` extensions, and gate `PERM001` reads them back
   out of the generated document. A public operation declares `security: []` — present and empty —
   because an ABSENT `security` inherits the document-level default, so an operation that forgot to

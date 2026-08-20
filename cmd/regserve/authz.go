@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 
@@ -23,7 +24,7 @@ import (
 // way without a cycle. This command sits above both and hands the answer down — which also means
 // the page can only list operations the server actually registers.
 func newAuthzCmd() *cobra.Command {
-	var docs string
+	var docs, schema string
 
 	cmd := &cobra.Command{
 		Use:   "authz",
@@ -44,13 +45,45 @@ func newAuthzCmd() *cobra.Command {
 			if err := os.WriteFile(docs, page, 0o600); err != nil {
 				return fmt.Errorf("write the permissions page: %w", err)
 			}
-			return nil
+			if schema == "" {
+				return nil
+			}
+			return rewriteScopeCheck(schema)
 		},
 	}
 
 	cmd.Flags().StringVar(&docs, "docs", "",
 		"write the permissions page to this path instead of stdout")
+	cmd.Flags().StringVar(&schema, "schema", "",
+		"rewrite the generated scope CHECK in this HCL schema file")
 	return cmd
+}
+
+// rewriteScopeCheck writes the scope enum into db/schema.hcl between its GENERATED markers.
+//
+// Read, rewrite, compare, write. The comparison is not an optimisation: `make migration` diffs the
+// schema with Atlas, and a file whose mtime moved on every generator run would make every diff look
+// like it might have changed something.
+func rewriteScopeCheck(path string) error {
+	current, err := os.ReadFile(path) // #nosec G304 -- a path this repository owns, from a Makefile
+	if err != nil {
+		return fmt.Errorf("read the schema file %s: %w", path, err)
+	}
+
+	updated, err := authz.WriteScopeCheck(current)
+	if err != nil {
+		return fmt.Errorf("rewrite the scope check in %s: %w", path, err)
+	}
+	if bytes.Equal(current, updated) {
+		return nil
+	}
+	// #nosec G703 -- the path comes from a Makefile flag, not from a request. This command is a
+	// build-time generator invoked by `make gen-authz` and by the GEN001 gate; it serves no
+	// traffic and nothing user-supplied reaches it.
+	if err := os.WriteFile(path, updated, 0o600); err != nil {
+		return fmt.Errorf("write the schema file %s: %w", path, err)
+	}
+	return nil
 }
 
 // permissionUsage walks the generated OpenAPI document and reports which operations declare which

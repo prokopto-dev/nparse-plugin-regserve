@@ -101,6 +101,10 @@ func authMiddleware(api huma.API, authn Authenticator) func(huma.Context, func(h
 			writeProblem(api, ctx, http.StatusForbidden, detail)
 			return
 		}
+		if detail, denied := access.denyPlugin(principal, ctx); denied {
+			writeProblem(api, ctx, http.StatusForbidden, detail)
+			return
+		}
 
 		next(huma.WithValue(ctx, principalKey{}, principal))
 	}
@@ -125,6 +129,33 @@ func (a Access) deny(p auth.Principal) (string, bool) {
 	}
 	if !authz.Satisfies(a.permission, p.Scopes) {
 		return "this token does not carry a scope that grants " + a.permission.String(), true
+	}
+	return "", false
+}
+
+// denyPlugin enforces a token's plugin pin against the plugin the operation acts on.
+//
+// This is the second half of ADR-0005's containment: the scope says what a credential may do, the
+// pin says what it may do it to, and a token leaked from one plugin's pipeline is contained only
+// if both are checked. It runs in the middleware rather than in handlers because a check a handler
+// performs is a check the next handler forgets — and the failure is silent, since a pinned token
+// that is never compared behaves exactly like an unpinned one.
+//
+// A pinned token calling an operation that declares NO plugin parameter is refused. That is
+// deliberate and conservative: the pin cannot be checked there, and "cannot check" must not
+// resolve to "allow" — that is precisely how a pin becomes decorative. An operation that should be
+// callable by a pinned token declares its parameter with Access.OnPlugin.
+func (a Access) denyPlugin(p auth.Principal, ctx huma.Context) (string, bool) {
+	if !p.Pinned() {
+		return "", false
+	}
+	if a.pluginParam == "" {
+		return "this token is pinned to a single plugin, and this operation does not act on one", true
+	}
+	if !p.AllowsPlugin(ctx.Param(a.pluginParam)) {
+		// The token's own plugin is NOT named in the message. The holder knows it; anybody who has
+		// stolen the token would be learning which plugin to point it at.
+		return "this token is pinned to a different plugin", true
 	}
 	return "", false
 }
