@@ -52,7 +52,8 @@ from it is vendored here at `internal/registry/testdata/index-v1.schema.json`.
 | `internal/identity/{,github,guard}/` | Provider registry, credential dispatch, identity resolution. GitHub is the only provider ([ADR-0011](docs/adr/0011-github-is-the-only-identity-provider.md)). `guard` builds the client every outbound request goes through, and `internal/artifact` will use the same one |
 | `internal/artifact/` | Artifact download and re-hash. Never extracts, never executes |
 | `internal/registry/` | schema-v1 index rendering. The wire format lives here and nowhere else |
-| `internal/plugin/`, `ownership/`, `moderation/` | Domain services |
+| `internal/plugin/`, `ownership/` | Domain services. `ownership` answers who may change a listing, checked per request (ADR-0005), and refuses to leave a plugin with no owners |
+| `internal/api/webtmpl/` | The account surface's `html/template` pages, embedded. No JavaScript build, no separate deploy target. `template.HTML` appears nowhere |
 | `internal/store/` | The only holder of `*sql.DB`: two pools, `store.Tx`, migrations. `sqlitegen/` is generated and never hand-edited; `storetest/` builds real databases for tests |
 | `internal/core/` | Typed ids (`PluginID`, `ULID`), `Micros`, and `Secret` |
 | `internal/clock/` | The only `time.Now` |

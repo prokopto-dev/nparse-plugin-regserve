@@ -21,6 +21,7 @@ import (
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/identity"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/identity/github"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/identity/guard"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/ownership"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/plugin"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/store"
 )
@@ -361,6 +362,7 @@ func configureIdentity(ctx context.Context, cfg *api.Config, db *store.DB, clk c
 
 	cfg.Authn = auth.NewAuthenticator(sessions, tokens)
 	cfg.Tokens = tokens
+	cfg.Ownership = ownership.New(db, clk)
 	cfg.Login = login
 	cfg.Sessions = sessions
 	cfg.Providers = providers
