@@ -112,7 +112,29 @@ type Principal struct {
 
 	// Scopes is what a token carries. A session carries none and needs none — it is the account.
 	Scopes []authz.Scope
+
+	// PluginID is the plugin a token is PINNED to, and is empty for an unpinned token or for a
+	// session. It is the second half of ADR-0005's containment argument: the scope says what the
+	// credential may do and the pin says what it may do it to, and a leak is contained to the
+	// repository it leaked from only if BOTH are enforced.
+	//
+	// It is on the principal rather than looked up at the point of use because a pin that a
+	// handler has to remember to fetch is a pin a handler forgets. AllowsPlugin is the only way to
+	// ask, and internal/api's middleware asks it before any handler runs.
+	PluginID string
 }
+
+// AllowsPlugin reports whether this principal may act on the given plugin.
+//
+// An unpinned credential — a session, or a token minted for no particular plugin — may act on any
+// plugin the account owns, and OWNERSHIP is a separate question answered per request against
+// plugin_owner. This answers only the pin.
+func (p Principal) AllowsPlugin(pluginID string) bool {
+	return p.PluginID == "" || p.PluginID == pluginID
+}
+
+// Pinned reports whether this credential is restricted to one plugin.
+func (p Principal) Pinned() bool { return p.PluginID != "" }
 
 // ViaToken reports whether this principal came from a personal access token.
 //

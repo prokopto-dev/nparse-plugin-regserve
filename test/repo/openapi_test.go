@@ -92,6 +92,8 @@ func TestPERM001_FiresOnADeliberatelyBrokenOperation(t *testing.T) {
 	tests := []struct {
 		name string
 		op   huma.Operation
+		// path defaults to a non-plugin route; the plugin-pin case overrides it.
+		path string
 	}{
 		{
 			name: "declares nothing at all",
@@ -155,6 +157,17 @@ func TestPERM001_FiresOnADeliberatelyBrokenOperation(t *testing.T) {
 			},
 		},
 		{
+			name: "acts on a plugin with a token and declares no plugin parameter",
+			op: huma.Operation{
+				OperationID: "publishRelease",
+				Security: []map[string][]string{
+					{api.SchemePAT: {"plugin:publish"}}, {api.SchemeSession: {}},
+				},
+				Extensions: map[string]any{api.ExtPermission: "plugin.publish"},
+			},
+			path: "/api/v1/plugins/{id}/releases",
+		},
+		{
 			name: "capability floor that still takes a token",
 			op: huma.Operation{
 				OperationID: "newRoute",
@@ -169,12 +182,26 @@ func TestPERM001_FiresOnADeliberatelyBrokenOperation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			o := operation{path: "/api/v1/new", method: "POST", op: &tt.op}
+			path := tt.path
+			if path == "" {
+				path = "/api/v1/new"
+			}
+			o := operation{path: path, method: "POST", op: &tt.op}
 			require.NotEmpty(t, accessFindings(o, schemes),
 				"PERM001 must reject this operation; it accepted it, so the gate is not checking "+
 					"what it claims to")
 		})
 	}
+}
+
+// patCallable reports whether any security requirement admits a personal access token.
+func patCallable(security []map[string][]string) bool {
+	for _, req := range security {
+		if _, ok := req[api.SchemePAT]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // declaredSchemes is the set of security schemes the document defines. A requirement naming
@@ -246,6 +273,17 @@ func accessFindings(o operation, schemes map[string]bool) []string {
 	}
 
 	_, floor := o.op.Extensions[api.ExtPATForbidden]
+
+	// A token-callable operation that acts on a plugin must say WHICH path parameter names it, or
+	// a token's plugin pin has nothing to be compared against — and an unenforced pin fails open,
+	// silently, behaving exactly like no pin at all. ADR-0005's containment argument rests on it.
+	if !floor && strings.Contains(o.path, "/plugins/{") && patCallable(o.op.Security) {
+		if _, ok := o.op.Extensions[api.ExtPluginParam].(string); !ok {
+			add("acts on a plugin and is callable with a token, but declares no %s; "+
+				"a token pinned to one plugin could use it on another", api.ExtPluginParam)
+		}
+	}
+
 	for _, req := range o.op.Security {
 		for scheme, scopes := range req {
 			if !schemes[scheme] {

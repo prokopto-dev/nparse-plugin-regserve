@@ -445,3 +445,70 @@ func TestAuthenticator_PicksTheCredentialThatWasPresented(t *testing.T) {
 	_, err = authn.Resolve(t.Context(), auth.Credentials{})
 	require.ErrorIs(t, err, auth.ErrNoCredential)
 }
+
+// TestMint_APinnedToken_CarriesItsPinIntoThePrincipal — the pin has to survive resolution.
+//
+// If it does not, a publish handler receives an account and a set of scopes and no way to know the
+// token was minted for one plugin — so a token leaked from plugin A's pipeline would authorise
+// plugin B, and ADR-0005's containment argument would be false while the row said it was true. The
+// enforcement lives in internal/api's middleware; this is the half that makes it possible.
+func TestMint_APinnedToken_CarriesItsPinIntoThePrincipal(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	storetest.Exec(t, f.db,
+		`INSERT INTO plugin (id, name, claimed_at, updated_at) VALUES (?, ?, ?, ?)`,
+		"merchant-mode", "Merchant Mode", core.MicrosFromTime(now).Int64(),
+		core.MicrosFromTime(now).Int64())
+
+	minted, err := f.tokens(t).Mint(t.Context(), auth.MintRequest{
+		AccountID: f.accountID,
+		Name:      "merchant-mode release",
+		Scopes:    []authz.Scope{"plugin:publish"},
+		PluginID:  "merchant-mode",
+	})
+	require.NoError(t, err)
+
+	p, err := f.tokens(t).Resolve(t.Context(), minted.Secret)
+	require.NoError(t, err)
+
+	require.True(t, p.Pinned())
+	require.Equal(t, "merchant-mode", p.PluginID)
+	require.True(t, p.AllowsPlugin("merchant-mode"))
+	require.False(t, p.AllowsPlugin("raid-tools"),
+		"a token minted for one plugin must not authorise another")
+
+	listed, err := f.tokens(t).List(t.Context(), f.accountID)
+	require.NoError(t, err)
+	require.Equal(t, "merchant-mode", listed[0].PluginID,
+		"the account page must show the pin, or nobody can tell a narrow token from a broad one")
+}
+
+// TestMint_AnUnpinnedToken_IsNotPinned — the other side of the boundary.
+func TestMint_AnUnpinnedToken_IsNotPinned(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	p, err := f.tokens(t).Resolve(t.Context(), f.mint(t).Secret)
+	require.NoError(t, err)
+
+	require.False(t, p.Pinned())
+	require.True(t, p.AllowsPlugin("anything"),
+		"an unpinned token may act on any plugin the ACCOUNT owns; ownership is a separate check")
+}
+
+// TestMint_APinToAPluginThatDoesNotExist_IsRefused — the foreign key is doing work.
+//
+// A pin naming nothing would be a token that can never be used and looks narrow on the page, which
+// is the worst of both.
+func TestMint_APinToAPluginThatDoesNotExist_IsRefused(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	_, err := f.tokens(t).Mint(t.Context(), auth.MintRequest{
+		AccountID: f.accountID, Name: "x",
+		Scopes: []authz.Scope{"plugin:publish"}, PluginID: "no-such-plugin",
+	})
+	require.Error(t, err)
+	require.Empty(t, storetest.Column(t, f.db, `SELECT id FROM pat`))
+}
