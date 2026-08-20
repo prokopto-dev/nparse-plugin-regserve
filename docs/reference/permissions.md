@@ -32,7 +32,7 @@ differently on purpose — an absence cannot be told from a refusal.
 | `token.revoke` | **none — capability floor** | `POST /account/tokens/{id}/revoke` | Revoke a personal access token. |
 | `owner.manage` | **none — capability floor** | `GET /plugins/{id}/settings`<br>`POST /plugins/{id}/owners` | Add, remove or transfer a plugin's owners. |
 | `trust.set` | **none — capability floor** | *nothing yet* | Set an account's trust level. |
-| `release.review` | **none — capability floor** | *nothing yet* | Approve or reject a release that is waiting for review. |
+| `release.review` | **none — capability floor** | `GET /api/v1/releases/pending`<br>`POST /api/v1/releases/{id}/approve`<br>`POST /api/v1/releases/{id}/reject`<br>`POST /api/v1/releases/{id}/reverify` | Approve or reject a release that is waiting for review. |
 | `session.end` | **none — capability floor** | `POST /auth/logout` | End the browser session it is called with. |
 
 ## Scopes

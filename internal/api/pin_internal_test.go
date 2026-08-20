@@ -41,7 +41,7 @@ func pinServer(t *testing.T, principal auth.Principal) *httptest.Server {
 
 	mux := http.NewServeMux()
 	api := newHumaAPI(mux)
-	api.UseMiddleware(authMiddleware(api, pinnedAuthn{principal: principal}))
+	api.UseMiddleware(authMiddleware(api, pinnedAuthn{principal: principal}, nil))
 
 	ok := func(context.Context, *pluginScopedInput) (*struct{}, error) { return &struct{}{}, nil }
 

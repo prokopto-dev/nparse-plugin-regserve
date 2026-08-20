@@ -75,7 +75,10 @@ personal access token outright.
   submitted sha256 cannot be assigned where a computed one belongs
 - ✅ `POST /api/v1/plugins/{id}/releases` with `Idempotency-Key`
 - Id claims, ownership checks, transfers
-- Quarantine rules and the review queue; trust levels
+- ✅ The review queue: approve, reject, and re-verify an artifact a transient outage stopped the
+  server hashing. Reviewers are named in the deployment's environment, not in a row
+- Quarantine rules and trust levels — the part that lets a trusted owner's version bump publish
+  without a human
 - ✅ Populating `release.notes` (surfacing it on `latest` is Phase 4)
 - ✅ The gate for **"a stored sha256 was computed by the server"** — the last row in the invariants
   register without a mechanism, now carrying four: an unforgeable type, a single door, gate

@@ -15,6 +15,7 @@ import (
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/ownership"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/registry"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/release"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/review"
 )
 
 // Spec returns the OpenAPI document for every operation this service exposes.
@@ -35,6 +36,7 @@ func Spec() *huma.OpenAPI {
 	registerIndex(api, unavailable{})
 	registerAuth(api, unavailable{}, unavailable{}, identity.NewRegistry())
 	registerReleases(api, unavailablePublisher{})
+	registerReview(api, unavailableQueue{})
 	registerWeb(api, WebDeps{
 		Sessions:  unavailable{},
 		Tokens:    unavailableTokens{},
@@ -116,6 +118,23 @@ type unavailablePublisher struct{}
 
 func (unavailablePublisher) Publish(context.Context, release.Request) (release.Outcome, error) {
 	return release.Outcome{}, errSpecOnly
+}
+
+// unavailableQueue stands in for the review queue when the document is generated.
+type unavailableQueue struct{}
+
+func (unavailableQueue) List(context.Context) ([]review.Waiting, error) { return nil, errSpecOnly }
+
+func (unavailableQueue) Approve(context.Context, string, string, string) (review.Decision, error) {
+	return review.Decision{}, errSpecOnly
+}
+
+func (unavailableQueue) Reject(context.Context, string, string, string) (review.Decision, error) {
+	return review.Decision{}, errSpecOnly
+}
+
+func (unavailableQueue) Reverify(context.Context, string, string) (review.Verification, error) {
+	return review.Verification{}, errSpecOnly
 }
 
 type unavailableOwnership struct{}

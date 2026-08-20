@@ -51,6 +51,13 @@ services:
       REGSERVE_TOKEN_PEPPER: ${REGSERVE_TOKEN_PEPPER:?set REGSERVE_TOKEN_PEPPER in .env}
       REGSERVE_GITHUB_CLIENT_ID: ${REGSERVE_GITHUB_CLIENT_ID:-}
       REGSERVE_GITHUB_CLIENT_SECRET: ${REGSERVE_GITHUB_CLIENT_SECRET:-}
+      # Who may approve what this registry lists. Comma-separated GitHub handles.
+      #
+      # Empty means NOBODY can approve -- never everybody. Releases will publish, verify, and wait
+      # in the queue for ever, and the server says so at boot. There is deliberately no other way
+      # to grant this: the authority to decide what every installed client downloads comes from
+      # control of this file.
+      REGSERVE_REVIEWERS: ${REGSERVE_REVIEWERS:-}
 
     volumes:
       - regserve-data:/data
