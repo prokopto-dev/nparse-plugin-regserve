@@ -81,12 +81,15 @@ func TestSchema_RefusedStatements(t *testing.T) {
 			name:  "a second approved release of one plugin",
 			why:   "latest on the wire is derived from exactly one row; two makes it arbitrary",
 			setup: []string{seedPlugin, seedRelease},
+			// verified_at is set because a publish-sourced row carrying a hash must say when
+			// THIS SERVER computed it -- release_a_stored_hash_was_verified_or_imported. Without
+			// it the row is refused for the wrong reason and this case stops testing the index.
 			stmt: `INSERT INTO "release" (id, plugin_id, version, state, source, artifact_url,
-			           artifact_sha256, sdk_specifier, submitted_at)
+			           artifact_sha256, sdk_specifier, submitted_at, verified_at)
 			       VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FB0', 'merchant-mode', '2.0.0', 'approved', 'publish',
 			           'https://example.com/merchant-mode-2.zip',
 			           'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-			           '>=1.0,<2', 1700000000000001)`,
+			           '>=1.0,<2', 1700000000000001, 1700000000000001)`,
 			wantErr: "UNIQUE constraint failed: release.plugin_id",
 		},
 		{
@@ -130,6 +133,19 @@ func TestSchema_RefusedStatements(t *testing.T) {
 			           'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
 			           '>=1.0,<2', 1700000000000001)`,
 			wantErr: "release_artifact_sha256_shape",
+		},
+		{
+			name: "a publish-sourced hash with no verified_at",
+			why: "a stored sha256 was computed by THIS SERVER (ADR-0008); a publish row carrying " +
+				"one and no record of when it was computed is a hash that arrived from somewhere else",
+			setup: []string{seedPlugin},
+			stmt: `INSERT INTO "release" (id, plugin_id, version, state, source, artifact_url,
+			           artifact_sha256, sdk_specifier, submitted_at)
+			       VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FB6', 'merchant-mode', '3.0.0', 'pending', 'publish',
+			           'https://example.com/merchant-mode-3.zip',
+			           'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+			           '>=1.0,<2', 1700000000000001)`,
+			wantErr: "release_a_stored_hash_was_verified_or_imported",
 		},
 		{
 			name:  "a release of a plugin that was never claimed",
@@ -249,5 +265,44 @@ func TestSchema_DelistingWithAReason_IsAllowed(t *testing.T) {
 	_, err = raw.ExecContext(t.Context(),
 		`UPDATE plugin SET delisted_at = 1700000000000001, delisted_reason = 'author request'
 		 WHERE id = 'merchant-mode'`)
+	require.NoError(t, err)
+}
+
+// TestSchema_AVerifiedOrImportedHash_IsAllowed — the CHECK refuses only what it means to.
+//
+// A constraint that refused every row would pass TestSchema_RefusedStatements and break
+// publishing, so both legal shapes are asserted here: a publish row that records WHEN this server
+// hashed the bytes, and an import row whose hash came from the static registry and was reviewed by
+// a human in a pull request there rather than computed here.
+func TestSchema_AVerifiedOrImportedHash_IsAllowed(t *testing.T) {
+	t.Parallel()
+
+	raw := openRaw(t, storetest.New(t).Path())
+	_, err := raw.ExecContext(t.Context(), seedPlugin)
+	require.NoError(t, err)
+
+	// The import shape: a hash, no verified_at, `source = 'import'` saying so out loud.
+	_, err = raw.ExecContext(t.Context(), seedRelease)
+	require.NoError(t, err)
+
+	// The publish shape: a hash and the moment this server computed it.
+	_, err = raw.ExecContext(t.Context(),
+		`INSERT INTO "release" (id, plugin_id, version, state, source, artifact_url,
+		     artifact_sha256, sdk_specifier, submitted_at, verified_at)
+		 VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FB7', 'merchant-mode', '2.0.0', 'pending', 'publish',
+		     'https://example.com/merchant-mode-2.zip',
+		     'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+		     '>=1.0,<2', 1700000000000002, 1700000000000002)`)
+	require.NoError(t, err)
+
+	// And the shape a failed fetch leaves behind: no hash at all, which is how "we could not
+	// check" is recorded. It must not be refused, or an unverifiable artifact would have nowhere
+	// to go and the publish would have to lie or vanish.
+	_, err = raw.ExecContext(t.Context(),
+		`INSERT INTO "release" (id, plugin_id, version, state, source, artifact_url,
+		     sdk_specifier, submitted_at, review_note)
+		 VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FB8', 'merchant-mode', '3.0.0', 'pending', 'publish',
+		     'https://example.com/merchant-mode-3.zip',
+		     '>=1.0,<2', 1700000000000003, 'not verified: the artifact could not be downloaded')`)
 	require.NoError(t, err)
 }

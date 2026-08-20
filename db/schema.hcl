@@ -588,6 +588,22 @@ table "release" {
   check "release_approved_has_a_hash" {
     expr = "state <> 'approved' OR artifact_sha256 IS NOT NULL"
   }
+  # A STORED SHA256 WAS COMPUTED BY THIS SERVER (ADR-0008).
+  #
+  # This is the database's half of that invariant, and it is the half that holds for writes which
+  # never go through Go: a migration, a later phase, a hand-run UPDATE during an incident. It says
+  # that a row carrying a hash either declares itself an IMPORT -- whose hash came from the static
+  # registry and was reviewed by a human in a pull request there, not computed here -- or carries
+  # the timestamp at which this server fetched the bytes and hashed them.
+  #
+  # `verified_at IS NOT NULL` is not proof on its own that the value came from the hasher: Go could
+  # set both and store the wrong string. That hole is closed one layer up, by artifact.Digest being
+  # unconstructible outside the package that hashes bytes and by gate HASH001 policing the one door
+  # into this column. What this CHECK removes is the OTHER hole: a hash arriving by a route that
+  # never went through Go at all, silently, with nothing recording that nobody checked it.
+  check "release_a_stored_hash_was_verified_or_imported" {
+    expr = "artifact_sha256 IS NULL OR source = 'import' OR verified_at IS NOT NULL"
+  }
 }
 
 # --- personal access tokens ------------------------------------------------------------------------
@@ -926,5 +942,80 @@ table "audit_log" {
   }
   check "audit_log_action_not_empty" {
     expr = "length(action) > 0"
+  }
+}
+
+# A request this server has already answered, so answering it again does not do it again.
+#
+# Canonical §6: every mutating POST that creates domain state requires `Idempotency-Key`. The
+# dominant caller of the publish endpoint is a release workflow, and workflows are re-run -- by a
+# maintainer clicking "re-run failed jobs", by a runner that lost its network between the release
+# row being written and the response reaching it, by a retry inside the workflow itself. A re-run
+# must not mint a second pending release, because a second release row for the same version is
+# refused by release_plugin_version_key and the author is left reading "version already exists" for
+# a version they published once.
+#
+# THE KEY IS SCOPED TO THE ACCOUNT AND THE OPERATION, not global. Two accounts picking the same key
+# is not a collision worth having, and a key reused across two different operations is two
+# different requests.
+#
+# `request_hash` is what makes a replay with a DIFFERENT BODY a 409 rather than a silent no-op. A
+# caller that reused a key for a new version has made a mistake, and answering with the old
+# release's id would tell them their new version published when it did not.
+table "idempotency_key" {
+  schema = schema.main
+  strict = true
+
+  column "account_id" {
+    null = false
+    type = text
+  }
+  # The OperationID from the OpenAPI document, which is the SDK method name and therefore stable.
+  column "operation" {
+    null = false
+    type = text
+  }
+  # The key the client sent, verbatim. It is opaque to this service.
+  column "idempotency_key" {
+    null = false
+    type = text
+  }
+  # sha256 of the canonicalised request, hex. Not a secret: it is a digest of what the caller sent
+  # us, and the caller has it.
+  column "request_hash" {
+    null = false
+    type = text
+  }
+  # The release this request created. It is the whole reason the row exists: a replay is answered
+  # by reading this row back rather than by doing the work again.
+  column "release_id" {
+    null = false
+    type = text
+  }
+  column "created_at" {
+    null = false
+    type = integer
+  }
+
+  primary_key {
+    columns = [column.account_id, column.operation, column.idempotency_key]
+  }
+  foreign_key "idempotency_key_account_fk" {
+    columns     = [column.account_id]
+    ref_columns = [table.account.column.id]
+    on_update   = NO_ACTION
+    on_delete   = RESTRICT
+  }
+  foreign_key "idempotency_key_release_fk" {
+    columns     = [column.release_id]
+    ref_columns = [table.release.column.id]
+    on_update   = NO_ACTION
+    on_delete   = RESTRICT
+  }
+  check "idempotency_key_not_empty" {
+    expr = "length(idempotency_key) > 0"
+  }
+  check "idempotency_key_request_hash_shape" {
+    expr = "length(request_hash) = 64 AND NOT request_hash GLOB '*[^0-9a-f]*'"
   }
 }
