@@ -175,13 +175,24 @@ type Result struct {
 func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (Result, error) {
 	// Hop one. RequireHTTPS parses rather than matching a prefix, so `https://` naming no host at
 	// all is refused here rather than becoming a confusing dial error.
+	//
+	// ITS MESSAGE IS DROPPED AND ONLY ITS SENTINEL IS KEPT. RequireHTTPS formats the URL it was
+	// given with %q, and the URL it was given here came out of a publish request: `http://
+	// token@host/plugin.whl?sig=...` is a perfectly ordinary rejected input, and echoing it would
+	// put the credential in the log line and the review note. guard is a package with several
+	// callers and its own error is right for the ones whose URLs are configuration; this caller's
+	// URLs are hostile by construction, so the sanitising happens here rather than there.
 	if err := guard.RequireHTTPS(rawURL); err != nil {
-		return Result{}, fmt.Errorf("%w: %w", ErrNotFetched, err)
+		return Result{}, fmt.Errorf("%w: %w: %s", ErrNotFetched, guard.ErrNotHTTPS, safeRawURL(rawURL))
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return Result{}, fmt.Errorf("%w: build the request: %w", ErrNotFetched, err)
+		// transportCause for the same reason as below: NewRequest parses the URL, and a parse
+		// failure is a *url.Error carrying the raw string. RequireHTTPS has already parsed it
+		// successfully, so this is unreachable today — which is exactly when a leak gets in.
+		return Result{}, fmt.Errorf("%w: build the request for %s: %w",
+			ErrNotFetched, safeRawURL(rawURL), transportCause(err))
 	}
 
 	// #nosec G704 -- the URL is attacker-influenced BY DESIGN (ADR-0008), and this client is the
@@ -240,7 +251,8 @@ func safeURL(u *url.URL) string {
 		return ""
 	}
 	// Field by field rather than by clearing fields on a copy: a URL type that grows a member
-	// would otherwise start carrying it here, which is how this kind of function rots.
+	// would otherwise start carrying it here, which is how this kind of function rots. Opaque is
+	// among the ones left out — for `javascript:alert(secret)` it holds the entire payload.
 	safe := url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path}
 	return safe.String()
 }
@@ -266,6 +278,21 @@ func transportCause(err error) error {
 		return urlErr.Err
 	}
 	return err
+}
+
+// safeRawURL is safeURL for a string that has not been parsed yet, and may not parse at all.
+//
+// It exists for the first-hop rejection, where the URL is refused BECAUSE it is malformed or has
+// the wrong scheme — so there is no *url.URL to hand to safeURL, and the string itself is the one
+// thing that must not be echoed.
+func safeRawURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		// Deliberately says nothing about the value. A parse error's message quotes the input,
+		// and an input this service could not even parse is the last one to start trusting.
+		return "(the url could not be parsed)"
+	}
+	return safeURL(u)
 }
 
 // finalHost reports the host the last hop landed on.

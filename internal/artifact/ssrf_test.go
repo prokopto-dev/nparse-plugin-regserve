@@ -416,6 +416,91 @@ func TestFetch_AFailedFetch_NeverEchoesACredentialFromTheURL(t *testing.T) {
 	}
 }
 
+// TestFetch_AURLRefusedOnItsScheme_NeverEchoesACredential — the first-hop rejection.
+//
+// A URL refused before a request is built is the MOST COMMON failure this endpoint will have: a
+// typo, a copied `http://` link, a template that did not interpolate. It is an ordinary rejected
+// publish input, and its error goes to the log and to the review note like every other one.
+//
+// guard.RequireHTTPS formats the URL it was given with %q, which is right for its other callers —
+// their URLs are configuration. Here the URL came out of a publish request, so Fetch keeps the
+// sentinel and drops the message. Every row below is a credential that the %q would have printed.
+func TestFetch_AURLRefusedOnItsScheme_NeverEchoesACredential(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		url      string
+		secrets  []string
+		wantHost string
+	}{
+		{
+			name:     "an http url with a token in userinfo and a signature in the query",
+			url:      "http://ghp_averysecretlookingtoken@example.test/plugin.whl?sig=deadbeefcafe",
+			secrets:  []string{"ghp_averysecretlookingtoken", "deadbeefcafe", "sig="},
+			wantHost: "example.test",
+		},
+		{
+			name:     "an http url with a password",
+			url:      "http://alice:hunter2@example.test/plugin.whl",
+			secrets:  []string{"hunter2"},
+			wantHost: "example.test",
+		},
+		{
+			name:     "a scheme that is neither, carrying a password",
+			url:      "ftp://alice:hunter2@example.test/plugin.whl",
+			secrets:  []string{"hunter2"},
+			wantHost: "example.test",
+		},
+		{
+			// Parses as https and names no host, which RequireHTTPS refuses separately. The query
+			// is still attacker-supplied and still must not come back.
+			name:    "https naming no host, with a signature",
+			url:     "https://?X-Amz-Signature=deadbeefcafe",
+			secrets: []string{"deadbeefcafe", "X-Amz-Signature"},
+		},
+		{
+			// An opaque URL: net/url puts the whole payload in Opaque, which safeURL drops.
+			name:    "an opaque scheme carrying the secret in its body",
+			url:     "javascript:fetch('/x?token=hunter2')",
+			secrets: []string{"hunter2", "fetch("},
+		},
+		{
+			// Does not parse at all, so there is no *url.URL to sanitise. The answer must say
+			// nothing about the value rather than quoting it, which is what a parse error does.
+			name:    "a url that does not parse, carrying a password",
+			url:     "http://alice:hunter2@exa mple.test/x",
+			secrets: []string{"hunter2"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f, err := artifact.NewFetcher(testClock, artifact.Config{Timeout: 5 * time.Second})
+			require.NoError(t, err)
+
+			_, err = f.Fetch(t.Context(), tc.url)
+
+			require.ErrorIs(t, err, artifact.ErrNotFetched)
+			require.ErrorIs(t, err, guard.ErrNotHTTPS,
+				"the sentinel must survive the sanitising; callers match on it")
+			require.Equal(t, "not verified: the artifact url, or a redirect from it, was not https",
+				artifact.Reason(err))
+
+			for _, secret := range tc.secrets {
+				require.NotContains(t, err.Error(), secret,
+					"a refused url put %q into an error the publish path logs and records", secret)
+			}
+			if tc.wantHost != "" {
+				require.Contains(t, err.Error(), tc.wantHost,
+					"the host is what makes this diagnosable; it is not the secret part")
+			}
+		})
+	}
+}
+
 // TestFetch_AnOversizedBody_DoesNotEchoACredentialEither — the second error path.
 //
 // The size-cap failure builds its own message, and a fix applied to one of the two call sites and
