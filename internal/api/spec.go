@@ -36,6 +36,7 @@ func Spec() *huma.OpenAPI {
 	registerIndex(api, unavailable{})
 	registerAuth(api, unavailable{}, unavailable{}, identity.NewRegistry())
 	registerReleases(api, unavailablePublisher{})
+	registerPlugins(api, unavailableOwnership{})
 	registerReview(api, unavailableQueue{})
 	registerTrust(api, unavailableTrust{})
 	registerWeb(api, WebDeps{
@@ -163,5 +164,9 @@ func (unavailableOwnership) Add(context.Context, string, string, string, ownersh
 }
 
 func (unavailableOwnership) Remove(context.Context, string, string, string) error {
+	return errSpecOnly
+}
+
+func (unavailableOwnership) ClaimID(context.Context, ownership.Claim, string) error {
 	return errSpecOnly
 }

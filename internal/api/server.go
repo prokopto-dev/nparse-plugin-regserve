@@ -121,6 +121,11 @@ type Config struct {
 	// account surface.
 	Tokens TokenService
 
+	// Claimer registers new plugin ids. It is the same OwnershipService in practice; declared
+	// separately because the account surface needs the one and the API needs the other, and a
+	// build could reasonably serve the pages without the endpoint.
+	Claimer Claimer
+
 	// Ownership backs the plugin settings page. Nil, like a nil Tokens, means the account surface
 	// is not registered — an honest 404 rather than a page that half works.
 	Ownership OwnershipService
@@ -180,6 +185,9 @@ func New(cfg Config) http.Handler {
 	}
 	if cfg.Publisher != nil {
 		registerReleases(api, cfg.Publisher)
+	}
+	if cfg.Claimer != nil {
+		registerPlugins(api, cfg.Claimer)
 	}
 	if cfg.Queue != nil && cfg.Reviewers != nil {
 		registerReview(api, cfg.Queue)

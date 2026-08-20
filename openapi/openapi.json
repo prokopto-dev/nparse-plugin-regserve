@@ -1,6 +1,62 @@
 {
   "components": {
     "schemas": {
+      "ClaimPluginBody": {
+        "additionalProperties": false,
+        "properties": {
+          "author": {
+            "maxLength": 120,
+            "type": "string"
+          },
+          "description": {
+            "maxLength": 500,
+            "type": "string"
+          },
+          "homepage": {
+            "description": "An https URL. It is rendered as a link in a desktop application and published to every client, so other schemes are refused: they are instructions to whatever renders the link rather than homepages.",
+            "maxLength": 500,
+            "type": "string"
+          },
+          "id": {
+            "description": "The plugin's permanent id, matching the SDK's pattern. It is first-come, permanent, and NEVER RECYCLED — it identifies this plugin in every installed copy on every user's machine, so it cannot be released or reassigned later, even if the plugin is delisted.",
+            "maxLength": 40,
+            "minLength": 2,
+            "type": "string"
+          },
+          "name": {
+            "description": "What a human sees in the plugin browser.",
+            "maxLength": 120,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
+      },
+      "ClaimPluginResult": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "listed": {
+            "description": "Always false for a newly claimed id: a plugin appears in the index only once a release of it has been approved, and the first release of a new id always goes to human review.",
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "listed"
+        ],
+        "type": "object"
+      },
       "PendingReleases": {
         "additionalProperties": false,
         "properties": {
@@ -803,6 +859,105 @@
         "x-regserve-pat-forbidden": true,
         "x-regserve-permission": "trust.set",
         "x-regserve-reviewer": true
+      }
+    },
+    "/api/v1/plugins": {
+      "post": {
+        "description": "Registers a plugin id to your account and makes you its owner.\n\n**Ids are first-come, permanent and never recycled.** An id identifies this plugin in every installed copy on every user's machine, so it cannot be released or reassigned later — delisting a plugin clears its listing and keeps the claim. Choose carefully.\n\nClaiming does not publish anything. The plugin appears in the index once a release of it has been approved, and **the first release of a new id always goes to human review**, whatever your trust level.\n\nThis is session-only: no personal access token can claim an id, however scoped.",
+        "operationId": "claimPlugin",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClaimPluginBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaimPluginResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "summary": "Claim a plugin id",
+        "tags": [
+          "plugins"
+        ],
+        "x-regserve-pat-forbidden": true,
+        "x-regserve-permission": "plugin.claim"
       }
     },
     "/api/v1/plugins/{id}/releases": {
