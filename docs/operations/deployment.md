@@ -75,6 +75,35 @@ openssl rand -base64 32     # -> REGSERVE_TOKEN_PEPPER
 through a pipeline is a secret in that pipeline's logs, its cache, and the context of every pull
 request from a fork. CI ships an image; the host holds the credentials.
 
+#### Reviewers
+
+`REGSERVE_REVIEWERS` is a comma-separated list of GitHub handles: the people who may approve what
+this registry lists.
+
+```bash
+REGSERVE_REVIEWERS=prokopto-dev,someone-else
+```
+
+**This is the only way to grant moderation, and that is deliberate.** There is no column and no API
+endpoint that makes somebody a reviewer — a row would be one somebody can `UPDATE` at 2am, and an
+endpoint would be an escalation path. The authority to decide what every installed client downloads
+comes from control of *this file*, which is the same place it came from when the registry was a
+GitHub repository and a merge button.
+
+Three things follow, and each has bitten somebody somewhere:
+
+- **Unset means nobody can approve anything.** Not "everybody" — nobody. Releases will publish,
+  verify, and sit in the queue for ever. The server says so at boot:
+  `releases are waiting for review and no reviewers are configured`.
+- **A handle grants nothing until that person has signed in here at least once.** The check
+  resolves against a proven `identity` row, so a typo grants nobody rather than granting whoever
+  registers that name next.
+- **Removing a handle takes effect on that person's next request**, no restart needed. The list is
+  read per request.
+
+Reviewing is capability-floor: no personal access token can approve a release however it is scoped,
+including a reviewer's own. Moderation is a browser-and-session operation only.
+
 ### 2. On the droplet — the catalogue
 
 The catalogue lives in the database, on the `/data` volume. `seed.json` is how it got there: on the

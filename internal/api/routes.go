@@ -26,6 +26,13 @@ const (
 	// scoped, because a token that could would be equivalent to the account. Canonical §5.
 	ExtPATForbidden = "x-regserve-pat-forbidden"
 
+	// ExtReviewer marks an operation only a configured reviewer of this registry may perform:
+	// approving a release, rejecting one, asking the server to fetch an artifact again. It is
+	// ALWAYS paired with the capability floor — PERM001 fails a reviewer operation that is not —
+	// because "only a reviewer may do this" and "no token may do this" are both true and the
+	// second is the stronger statement.
+	ExtReviewer = "x-regserve-reviewer"
+
 	// ExtPluginParam names the path parameter identifying the plugin an operation acts on, so a
 	// token's plugin pin can be enforced against it. Its ABSENCE on a token-callable operation
 	// under /plugins/{…} is what gate PERM001 fails: a pin nothing compares is decorative, and it
@@ -55,6 +62,28 @@ type Access struct {
 	// pluginParam names the PATH PARAMETER that identifies the plugin an operation acts on, and is
 	// empty for an operation that does not act on one. See OnPlugin.
 	pluginParam string
+
+	// reviewerOnly restricts the operation to a configured reviewer of this registry. See Reviewer.
+	reviewerOnly bool
+}
+
+// Reviewer restricts an operation to a configured reviewer of this registry.
+//
+// Moderation is not a permission anybody can be granted through this service. Reviewers are named
+// in the deployment's environment, so the people who may approve what gets listed are the people
+// who control what the droplet runs — the same place the authority came from when this was a
+// GitHub repository and a merge button. internal/review says why that is not a database row.
+//
+// It composes with Floor rather than replacing it: `Floor("release.review").Reviewer()`. The floor
+// says no token may ever do this, and this says not every session may either. PERM001 fails a
+// reviewer operation that is not also floor, because a reviewer-only operation reachable by a
+// scoped token would be moderation delegated to a CI credential.
+//
+// The check runs in the MIDDLEWARE, from this declaration, for the reason the plugin pin does: a
+// check a handler performs is a check the next handler forgets, and the failure is silent.
+func (a Access) Reviewer() Access {
+	a.reviewerOnly = true
+	return a
 }
 
 // OnPlugin declares which path parameter names the plugin this operation acts on.
@@ -131,6 +160,9 @@ func (a Access) extensions(into map[string]any) map[string]any {
 	into[ExtPermission] = a.permission.String()
 	if a.patForbidden {
 		into[ExtPATForbidden] = true
+	}
+	if a.reviewerOnly {
+		into[ExtReviewer] = true
 	}
 	return into
 }

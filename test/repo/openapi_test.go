@@ -100,6 +100,34 @@ func TestPERM001_FiresOnADeliberatelyBrokenOperation(t *testing.T) {
 			op:   huma.Operation{OperationID: "newRoute", Security: sessionOnly},
 		},
 		{
+			// Moderation reachable by a token is moderation delegated to whatever CI job that
+			// token was minted for.
+			name: "reviewer-only without the capability floor",
+			op: huma.Operation{
+				OperationID: "newRoute",
+				Security: []map[string][]string{
+					{api.SchemePAT: {"plugin:publish"}},
+					{api.SchemeSession: {}},
+				},
+				Extensions: map[string]any{
+					api.ExtPermission: "release.review",
+					api.ExtReviewer:   true,
+				},
+			},
+		},
+		{
+			name: "reviewer-only, floor, but the extension is not true",
+			op: huma.Operation{
+				OperationID: "newRoute",
+				Security:    sessionOnly,
+				Extensions: map[string]any{
+					api.ExtPermission:   "release.review",
+					api.ExtPATForbidden: true,
+					api.ExtReviewer:     "yes",
+				},
+			},
+		},
+		{
 			name: "no security declaration",
 			op: huma.Operation{
 				OperationID: "newRoute",
@@ -273,6 +301,24 @@ func accessFindings(o operation, schemes map[string]bool) []string {
 	}
 
 	_, floor := o.op.Extensions[api.ExtPATForbidden]
+
+	// A REVIEWER OPERATION MUST ALSO BE CAPABILITY-FLOOR.
+	//
+	// "Only a configured reviewer may do this" and "no token may do this" are both true of
+	// moderation, and the second is the stronger statement. An operation that declared the first
+	// without the second would be reachable by a scoped personal access token belonging to a
+	// reviewer — which is moderation delegated to whatever CI job that token was minted for, and
+	// is exactly the escalation the floor exists to prevent. A leaked publish token must stay a
+	// leaked publish token.
+	if reviewer, ok := o.op.Extensions[api.ExtReviewer]; ok {
+		if reviewer != true {
+			add("%s is %v rather than true", api.ExtReviewer, reviewer)
+		}
+		if !floor {
+			add("is reviewer-only but not capability-floor: a scoped token belonging to a " +
+				"reviewer could moderate this registry")
+		}
+	}
 
 	// A token-callable operation that acts on a plugin must say WHICH path parameter names it, or
 	// a token's plugin pin has nothing to be compared against — and an unenforced pin fails open,

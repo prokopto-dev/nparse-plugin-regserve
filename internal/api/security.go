@@ -25,6 +25,16 @@ type Authenticator interface {
 	Resolve(ctx context.Context, creds auth.Credentials) (auth.Principal, error)
 }
 
+// ReviewerCheck answers whether an account may moderate this registry.
+//
+// A consumer-declared interface like the rest: this package says what it needs and the wiring
+// supplies it. It takes an account id rather than a principal so that the implementation cannot
+// accidentally depend on HOW somebody authenticated — the floor has already settled that, and this
+// answers a different question.
+type ReviewerCheck interface {
+	IsReviewer(ctx context.Context, accountID string) (bool, error)
+}
+
 // principalKey is the context key the middleware stores the resolved principal under. It is an
 // unexported struct type so nothing outside this package can write one, which is the difference
 // between "the middleware decided who you are" and "somebody set a value".
@@ -54,7 +64,9 @@ const metaAccess = "regserve.access"
 // this is what makes the declaration do something. Enforcing from the same value the document is
 // rendered from means "the spec says a session is required" and "the server requires a session"
 // cannot drift apart — there is one value and two readers.
-func authMiddleware(api huma.API, authn Authenticator) func(huma.Context, func(huma.Context)) {
+func authMiddleware(
+	api huma.API, authn Authenticator, reviewers ReviewerCheck,
+) func(huma.Context, func(huma.Context)) {
 	return func(ctx huma.Context, next func(huma.Context)) {
 		access, ok := accessFor(ctx)
 		if !ok {
@@ -103,6 +115,9 @@ func authMiddleware(api huma.API, authn Authenticator) func(huma.Context, func(h
 		}
 		if detail, denied := access.denyPlugin(principal, ctx); denied {
 			writeProblem(api, ctx, http.StatusForbidden, detail)
+			return
+		}
+		if !allowReviewer(ctx, api, access, principal, reviewers) {
 			return
 		}
 
@@ -158,6 +173,46 @@ func (a Access) denyPlugin(p auth.Principal, ctx huma.Context) (string, bool) {
 		return "this token is pinned to a different plugin", true
 	}
 	return "", false
+}
+
+// allowReviewer enforces Access.Reviewer, and reports whether the request may continue.
+//
+// It writes its own refusal rather than returning one, because there are three of them and each is
+// a different statement: a build with no reviewer check wired, a failure to answer the question,
+// and an account that is simply not a reviewer.
+func allowReviewer(
+	ctx huma.Context, api huma.API, access Access, p auth.Principal, reviewers ReviewerCheck,
+) bool {
+	if !access.reviewerOnly {
+		return true
+	}
+	if reviewers == nil {
+		// A reviewer-only route registered on a build that cannot answer the question. Refusing is
+		// the only safe reading; 503 because the honest statement is "this instance cannot serve
+		// this", exactly as for a nil Authenticator.
+		writeProblem(api, ctx, http.StatusServiceUnavailable,
+			"this instance is not configured to decide who may review")
+		return false
+	}
+
+	ok, err := reviewers.IsReviewer(ctx.Context(), p.AccountID)
+	if err != nil {
+		// "We could not check" must never resolve to "allow". The cause goes to the log.
+		slog.ErrorContext(ctx.Context(), "check whether the caller may review",
+			"operation", operationID(ctx), "error", err)
+		writeProblem(api, ctx, http.StatusInternalServerError, "")
+		return false
+	}
+	if !ok {
+		// 403 and not 404. Unlike a plugin somebody does not own, the existence of a review queue
+		// is not a secret, and hiding it would only confuse an operator who has misspelled their
+		// own handle in the deployment configuration.
+		writeProblem(api, ctx, http.StatusForbidden,
+			"this registry's reviewers are configured by whoever operates the deployment, and "+
+				"this account is not one of them")
+		return false
+	}
+	return true
 }
 
 // credentialsFrom reads whatever the request presented. It never logs either value.

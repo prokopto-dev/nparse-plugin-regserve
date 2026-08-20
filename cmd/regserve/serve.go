@@ -25,6 +25,7 @@ import (
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/ownership"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/plugin"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/release"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/review"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/store"
 )
 
@@ -169,6 +170,26 @@ func runServe(ctx context.Context, addr, dbPath, seedPath string) error {
 			return fmt.Errorf("build the artifact fetcher: %w", err)
 		}
 		cfg.Publisher = release.NewPublisher(db, clk, fetcher)
+
+		// The review queue, and who may work it.
+		//
+		// Reviewers are named in the environment rather than in a row, because the authority to
+		// moderate should come from control of the DEPLOYMENT -- the same place it came from when
+		// this was a GitHub repository and a merge button. internal/review argues the alternatives.
+		//
+		// An empty list is a normal state and not an error: it means nothing can be approved yet.
+		// It is logged with the queue depth so that "twelve releases waiting and nobody able to
+		// approve them" is visible at boot rather than discovered a fortnight later by an author.
+		reviewers := review.NewReviewers(db, review.ParseHandleList(os.Getenv(review.EnvVar())))
+		queue := review.NewQueue(db, clk, fetcher)
+		cfg.Reviewers = reviewers
+		cfg.Queue = queue
+
+		if pending, err := queue.Pending(ctx); err != nil {
+			slog.ErrorContext(ctx, "count the review queue at boot", "error", err)
+		} else {
+			reviewers.LogConfiguration(ctx, pending)
+		}
 
 		// Sign-in is configured or it is not, and a half-configured one is fatal. See
 		// configureIdentity: an operator who has set a client id has asked for this to work, and a

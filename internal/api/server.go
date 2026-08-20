@@ -129,6 +129,19 @@ type Config struct {
 	// on the same principle as a nil Catalogue: a publish endpoint that exists and cannot fetch or
 	// store anything would accept a release and lose it, which is worse than an honest 404.
 	Publisher Publisher
+
+	// Queue and Reviewers back the review queue, and are needed TOGETHER.
+	//
+	// Reviewers is what the middleware asks whether a caller may moderate. A queue registered
+	// without it would be a set of reviewer-only routes on a build that cannot tell who is a
+	// reviewer — which the middleware answers 503 for, correctly, and which is a wiring bug worth
+	// making unrepresentable instead. So both or neither.
+	//
+	// Note that a build with reviewers configured and NOBODY named in them is a normal, working
+	// state: nothing can be approved until an operator names somebody. That is not the same as an
+	// absent dependency, and internal/review says why an empty set must never mean "everybody".
+	Queue     ReviewQueue
+	Reviewers ReviewerCheck
 }
 
 // TokenService is what the account surface needs in order to manage personal access tokens.
@@ -155,7 +168,7 @@ func New(cfg Config) http.Handler {
 	// document's description of who may call an operation and the server's behaviour come from one
 	// value rather than two. A middleware added only when authentication is configured would be a
 	// middleware that is absent on exactly the instance where a route was left undeclared.
-	api.UseMiddleware(authMiddleware(api, cfg.Authn))
+	api.UseMiddleware(authMiddleware(api, cfg.Authn, cfg.Reviewers))
 
 	registerHealth(api, cfg.Readiness)
 	if cfg.Catalogue != nil {
@@ -163,6 +176,9 @@ func New(cfg Config) http.Handler {
 	}
 	if cfg.Publisher != nil {
 		registerReleases(api, cfg.Publisher)
+	}
+	if cfg.Queue != nil && cfg.Reviewers != nil {
+		registerReview(api, cfg.Queue)
 	}
 	if cfg.Login != nil && cfg.Sessions != nil && cfg.Providers != nil {
 		registerAuth(api, cfg.Login, cfg.Sessions, cfg.Providers)
