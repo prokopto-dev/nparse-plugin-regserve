@@ -347,18 +347,43 @@ var ErrBadArtifactURL = errors.New("artifact url is not one this registry will p
 
 // ValidateURL checks a submitted artifact URL before anything is fetched or stored.
 //
-// It is https-and-fetchable, per guard.RequireHTTPS, PLUS one rule that is about publication
-// rather than about safety:
+// It is https-and-fetchable, per guard.RequireHTTPS, PLUS a rule that is about PUBLICATION rather
+// than about safety, and that is the part worth reading twice.
 //
-// A URL CARRYING USERINFO IS REFUSED. `https://token@host/plugin.whl` fetches perfectly well, and
-// storing it would put that credential in release.artifact_url — which is rendered into the index
-// document and served to every client on the internet, and which this service cannot take back
-// once a client has cached it. The submitter has almost certainly made a mistake; publishing it
-// for them is not the way to find out.
+// # This value is published, and cannot be recalled
 //
-// It refuses the value rather than stripping it, because a URL that needed credentials to fetch is
-// a URL that will not fetch without them. Silently removing the userinfo would produce a listing
-// whose artifact 401s for every user, which is a worse answer than a refused publish.
+// release.artifact_url is rendered verbatim into the index document and served to every nParse+
+// client on the internet. It is cached by clients and by anything in front of them. Whatever goes
+// in that column is public the moment a client polls, and this registry cannot take it back.
+//
+// So a URL that carries a credential is refused, in both of the two shapes that carry one:
+//
+//   - USERINFO. `https://token@host/plugin.whl` fetches perfectly well and would publish the token.
+//   - QUERY AND FRAGMENT. `https://host/plugin.whl?X-Amz-Signature=...` is a BEARER CREDENTIAL for
+//     those bytes for as long as the signature is valid — that is the entire purpose of a signed
+//     URL. Publishing one hands it to everybody, and the same reasoning already keeps signed
+//     queries out of this service's error messages and out of audit_log. The field that is
+//     ACTUALLY PUBLISHED is the one where it matters most.
+//
+// # Why the whole query, and not the parameters that look dangerous
+//
+// A denylist of `X-Amz-Signature`, `token`, `sig`, `Signature`, `AWSAccessKeyId`... is a list
+// somebody has to remember to extend, and the one that gets forgotten is the one that leaks. The
+// guarded dialer refuses addresses by CATEGORY for the same reason. A submitted artifact URL has
+// no legitimate need for a query string: ADR-0002 keeps artifacts on GitHub, whose release assets
+// are `https://github.com/owner/repo/releases/download/vX/asset.whl` — path only. The redirect TO
+// a signed CDN URL happens during the fetch and is not what gets stored.
+//
+// THE COST, STATED: an upstream that genuinely needs a query parameter to serve an artifact cannot
+// be published here without a change to this function. That is a loud, fixable refusal at publish
+// time, argued in a pull request — which is the right way round compared to discovering that a
+// signature has been sitting in the public index for a week.
+//
+// # Refused, not stripped
+//
+// A URL that needed a credential to fetch will not fetch without it, so silently removing the
+// credential would produce a listing whose artifact 401s for every user. A refused publish tells
+// the submitter something they can act on; a broken listing tells their users nothing.
 func ValidateURL(rawURL string) error {
 	if err := guard.RequireHTTPS(rawURL); err != nil {
 		// The message is dropped for the reason Fetch drops it: RequireHTTPS quotes the URL, and
@@ -373,10 +398,23 @@ func ValidateURL(rawURL string) error {
 	if err != nil {
 		return fmt.Errorf("%w: %s", ErrBadArtifactURL, safeRawURL(rawURL))
 	}
-	if u.User != nil {
-		// The URL is NOT echoed. It contains the credential that is the reason for the refusal.
-		return fmt.Errorf("%w: it carries credentials in the url, which would be published in the "+
-			"index to every client", ErrBadArtifactURL)
+
+	// NONE of these messages echo the URL. Each one is refusing a value BECAUSE it may contain a
+	// credential, and putting it in an error would send it to the log and the review note — the
+	// two places this service has already had to take it out of.
+	switch {
+	case u.User != nil:
+		return fmt.Errorf("%w: it carries credentials in its userinfo, and this url is published "+
+			"in the index to every client", ErrBadArtifactURL)
+	case u.RawQuery != "" || u.ForceQuery:
+		return fmt.Errorf("%w: it carries a query string, and this url is published in the index "+
+			"to every client — a signed url's signature is a credential for those bytes. Submit "+
+			"the stable download url; redirects to a signed one are followed when the artifact is "+
+			"fetched", ErrBadArtifactURL)
+	case u.Fragment != "" || u.RawFragment != "":
+		return fmt.Errorf("%w: it carries a fragment, which is never sent to the server and so "+
+			"cannot be part of fetching the artifact, but would be published in the index",
+			ErrBadArtifactURL)
 	}
 	return nil
 }

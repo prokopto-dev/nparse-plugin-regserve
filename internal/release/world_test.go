@@ -285,3 +285,14 @@ func (w *world) auditDetail(t *testing.T, releaseID string) map[string]any {
 	require.NoError(t, json.Unmarshal([]byte(rows[0]), &detail))
 	return detail
 }
+
+// storedURLs is every artifact_url in the database.
+//
+// The assertion it serves is about what would be PUBLISHED: the index renders this column verbatim
+// to every client, so "no row exists" and "no url is stored" are the two halves of "there is
+// nothing to leak".
+func (w *world) storedURLs(t *testing.T) []string {
+	t.Helper()
+
+	return storetest.Column(t, w.db, `SELECT artifact_url FROM "release"`)
+}

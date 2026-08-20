@@ -446,8 +446,27 @@ func TestNewSubmission_RefusesHostileInput(t *testing.T) {
 		{
 			// It would fetch fine. It must not be STORED: artifact_url is rendered into the index
 			// and served to every client, and this registry cannot take it back once cached.
-			"a url carrying credentials",
+			"a url carrying credentials in userinfo",
 			func(r *release.RawSubmission) { r.ArtifactURL = "https://tok@example.com/x.whl" },
+			artifact.ErrBadArtifactURL,
+		},
+		{
+			// A signed url's signature IS a bearer credential for those bytes. Publishing one
+			// hands it to everybody who polls the index, cached, for as long as it is valid.
+			"a signed url",
+			func(r *release.RawSubmission) {
+				r.ArtifactURL = "https://cdn.example.com/x.whl?X-Amz-Signature=deadbeefcafe"
+			},
+			artifact.ErrBadArtifactURL,
+		},
+		{
+			"a url with any query string at all",
+			func(r *release.RawSubmission) { r.ArtifactURL = "https://example.com/x.whl?v=1" },
+			artifact.ErrBadArtifactURL,
+		},
+		{
+			"a url with a fragment",
+			func(r *release.RawSubmission) { r.ArtifactURL = "https://example.com/x.whl#sha256=ab" },
 			artifact.ErrBadArtifactURL,
 		},
 		{
@@ -553,3 +572,71 @@ func TestNewSubmission_AnAbsentMinimumAppVersion_StaysAbsent(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// TestPublish_ACredentialBearingURL_NeverReachesTheColumn — end to end, at the layer that matters.
+//
+// release.artifact_url is rendered verbatim into the index and served to every client. The
+// submission validator is what refuses these, and this asserts the consequence rather than the
+// mechanism: whatever the shape, the row does not exist and there is nothing to publish.
+//
+// It goes through Publish rather than NewSubmission so that the assertion is about the DATABASE.
+// A validator that was correct and a publish path that skipped it would pass the unit test and
+// fail this one.
+func TestPublish_ACredentialBearingURL_NeverReachesTheColumn(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"a signed cdn url", "https://cdn.example.com/x.whl?X-Amz-Signature=deadbeefcafe"},
+		{"an azure sas", "https://a.blob.core.windows.net/c/x.whl?sv=2021-08-06&sig=abc123def"},
+		{"a token in userinfo", "https://ghp_secrettoken@example.com/x.whl"},
+		{"a fragment", "https://example.com/x.whl#sha256=deadbeefcafe"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			w := newWorld(t, []byte("PK\x03\x04 bytes"))
+
+			// Refused at construction: the publish never happens, so the server never spends
+			// forty-five seconds downloading on behalf of a request it was always going to reject.
+			_, err := release.NewSubmission(release.RawSubmission{
+				PluginID:       w.plugin,
+				Version:        "1.0.0",
+				ArtifactURL:    tc.url,
+				ArtifactSHA256: w.truth(),
+				SDKSpecifier:   ">=1.0,<2",
+			})
+			require.ErrorIs(t, err, artifact.ErrBadArtifactURL)
+
+			// And nothing was written, so there is nothing for the index to render.
+			require.Zero(t, w.releaseCount(t))
+			require.Empty(t, w.storedURLs(t))
+		})
+	}
+}
+
+// TestPublish_TheStoredURL_IsExactlyWhatWasSubmitted — and it is query-free.
+//
+// The fetch follows redirects, and a GitHub release asset ends on a signed CDN url. What gets
+// STORED is the submitted url, not where the redirect chain landed -- if the final url were
+// stored, every listing would carry an expiring signature and the whole rule above would be
+// pointless. This is the assertion that the two are not confused.
+func TestPublish_TheStoredURL_IsExactlyWhatWasSubmitted(t *testing.T) {
+	t.Parallel()
+
+	w := newWorld(t, []byte("PK\x03\x04 bytes"))
+
+	out, err := w.publish(t, w.submit(t, nil), "key-stored-url")
+	require.NoError(t, err)
+
+	row, err := w.db.Read().GetReleaseByID(t.Context(), out.ReleaseID)
+	require.NoError(t, err)
+	require.Equal(t, w.artifactURL(), row.ArtifactUrl)
+	require.NotContains(t, row.ArtifactUrl, "?")
+	require.NotContains(t, row.ArtifactUrl, "#")
+	require.NotContains(t, row.ArtifactUrl, "@")
+}
