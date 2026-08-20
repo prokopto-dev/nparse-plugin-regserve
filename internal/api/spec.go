@@ -12,6 +12,7 @@ import (
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/auth"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/core"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/identity"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/ownership"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/registry"
 )
 
@@ -32,6 +33,12 @@ func Spec() *huma.OpenAPI {
 	registerHealth(api, unavailable{})
 	registerIndex(api, unavailable{})
 	registerAuth(api, unavailable{}, unavailable{}, identity.NewRegistry())
+	registerWeb(api, WebDeps{
+		Sessions:  unavailable{},
+		Tokens:    unavailableTokens{},
+		Ownership: unavailableOwnership{},
+		Providers: identity.NewRegistry(),
+	})
 
 	return api.OpenAPI()
 }
@@ -80,3 +87,41 @@ func (unavailable) Create(context.Context, string) (auth.NewSession, error) {
 }
 
 func (unavailable) Revoke(context.Context, auth.Principal) error { return errSpecOnly }
+
+func (unavailable) CSRFToken(auth.Principal) string { return "" }
+
+func (unavailable) CheckCSRF(auth.Principal, string) bool { return false }
+
+// unavailableTokens and unavailableOwnership are separate types rather than more methods on
+// `unavailable` because a session and a token are both revoked, with different arguments. One
+// stub cannot have two `Revoke`s, and collapsing the two domain methods onto one signature to
+// make a test double simpler would be the tail wagging the dog.
+type unavailableTokens struct{}
+
+func (unavailableTokens) Mint(context.Context, auth.MintRequest) (auth.NewToken, error) {
+	return auth.NewToken{}, errSpecOnly
+}
+
+func (unavailableTokens) List(context.Context, string) ([]auth.Listing, error) {
+	return nil, errSpecOnly
+}
+
+func (unavailableTokens) Revoke(context.Context, string, string) error { return errSpecOnly }
+
+type unavailableOwnership struct{}
+
+func (unavailableOwnership) Mine(context.Context, string) ([]ownership.Plugin, error) {
+	return nil, errSpecOnly
+}
+
+func (unavailableOwnership) Owners(context.Context, string, string) ([]ownership.Owner, error) {
+	return nil, errSpecOnly
+}
+
+func (unavailableOwnership) Add(context.Context, string, string, string, ownership.Role) error {
+	return errSpecOnly
+}
+
+func (unavailableOwnership) Remove(context.Context, string, string, string) error {
+	return errSpecOnly
+}

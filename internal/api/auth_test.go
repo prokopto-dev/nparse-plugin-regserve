@@ -68,6 +68,22 @@ func (f *fakeSessions) Revoke(_ context.Context, p auth.Principal) error {
 	return f.revokeErr
 }
 
+// The fake CSRF pair is deliberately trivial: what these tests are about is the sign-in journey,
+// and the real derivation is covered against a real pepper in internal/auth. A fake that accepted
+// ANYTHING would be worse than trivial, though — the web tests rely on this refusing, so it
+// compares.
+func (f *fakeSessions) CSRFToken(p auth.Principal) string {
+	if p.SessionID == "" {
+		return ""
+	}
+	return "csrf-for-" + p.SessionID
+}
+
+func (f *fakeSessions) CheckCSRF(p auth.Principal, presented string) bool {
+	want := f.CSRFToken(p)
+	return want != "" && presented == want
+}
+
 // fakeAuthn resolves every request to one principal, or to one error. The middleware is what is
 // under test, not the resolution.
 type fakeAuthn struct {
