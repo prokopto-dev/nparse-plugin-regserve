@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"strings"
 	"unicode/utf8"
 
@@ -176,37 +175,24 @@ func (c *Claim) validate() error {
 
 // validateHomepage refuses a homepage that is not an ordinary https URL.
 //
-// THIS VALUE IS RENDERED AS A LINK IN A DESKTOP APPLICATION, and served to every client through
-// the index. Two things follow:
+// THE RULE ITSELF IS core.CheckPublishedURL, shared with release.artifact_url — the other column
+// the index renders verbatim. It used to be written out here as well, refusing userinfo and
+// nothing else, so a homepage carrying `?token=...` was publishable while an artifact URL with the
+// same shape was not. That is what two copies of a rule do, and why there is now one.
 //
-//   - THE SCHEME IS RESTRICTED TO https. `javascript:`, `data:` and `file:` are not homepages; they
-//     are instructions to whatever component renders the link, and this registry has no way to know
-//     what a given client version does with one. Refusing them here costs an author nothing:
-//     GitHub, GitLab, PyPI and every forge are https.
-//   - CREDENTIALS ARE REFUSED, for the same reason `artifact_url` refuses them — this string is
-//     published to every client, cached, and cannot be recalled.
+// What is local to a homepage: EMPTY IS FINE and means the plugin has no homepage, which is what
+// the column defaults to and what the index renders.
 //
-// Empty is fine and means the plugin has no homepage, which is what the column defaults to.
+// Worth being explicit about what the shared rule buys here, because a homepage is not an artifact:
+// this value is rendered as a LINK IN A DESKTOP APPLICATION. `javascript:`, `data:` and `file:`
+// are not homepages — they are instructions to whatever component renders the link, and this
+// registry has no way to know what a given client version does with one.
 func validateHomepage(raw string) error {
 	if raw == "" {
 		return nil
 	}
-
-	u, err := url.Parse(raw)
-	if err != nil {
-		// The value is NOT echoed: a parse error's message quotes its input, and this input is
-		// about to be refused precisely because nothing here trusts it.
-		return fmt.Errorf("%w: the homepage is not a url", ErrBadListing)
-	}
-	switch {
-	case u.Scheme != "https":
-		return fmt.Errorf("%w: the homepage must be an https url, and %q is not a scheme this "+
-			"registry will publish as a link", ErrBadListing, u.Scheme)
-	case u.Hostname() == "":
-		return fmt.Errorf("%w: the homepage names no host", ErrBadListing)
-	case u.User != nil:
-		return fmt.Errorf("%w: the homepage carries credentials, and this value is published in "+
-			"the index to every client", ErrBadListing)
+	if err := core.CheckPublishedURL(raw); err != nil {
+		return fmt.Errorf("%w: the homepage is not usable: %w", ErrBadListing, err)
 	}
 	return nil
 }

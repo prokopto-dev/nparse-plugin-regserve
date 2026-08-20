@@ -163,6 +163,27 @@ func TestClaimID_RefusesListingDetailsAListingCannotCarry(t *testing.T) {
 			"a homepage carrying credentials",
 			func(c *ownership.Claim) { c.Homepage = "https://tok@example.com" },
 		},
+		{
+			// A signed url's signature IS a bearer credential for what it points at. This used to
+			// be publishable here while an artifact_url of the same shape was refused, because
+			// the rule was written out twice and only one copy had it.
+			"a homepage carrying a signed query",
+			func(c *ownership.Claim) {
+				c.Homepage = "https://example.com/p?X-Amz-Signature=deadbeefcafe"
+			},
+		},
+		{
+			"a homepage carrying a token in an unremarkable parameter",
+			func(c *ownership.Claim) { c.Homepage = "https://example.com/docs?t=s3cr3tvalue" },
+		},
+		{
+			"a homepage carrying a bare question mark",
+			func(c *ownership.Claim) { c.Homepage = "https://example.com/?" },
+		},
+		{
+			"a homepage carrying a fragment",
+			func(c *ownership.Claim) { c.Homepage = "https://example.com/readme#token=deadbeef" },
+		},
 	}
 
 	for _, tc := range tests {
@@ -222,4 +243,72 @@ func TestClaimID_IsRecordedInTheAuditLog(t *testing.T) {
 		`SELECT actor_account_id FROM audit_log WHERE action = ? AND subject_id = ?`,
 		"plugin.claim", "audited-plugin")
 	require.Equal(t, []string{w.other}, rows)
+}
+
+// TestClaimID_ARefusedHomepage_NeverEchoesTheCredential.
+//
+// The refusal reaches a log, and its whole reason for existing is that the value may hold a
+// secret. A message that quoted what it was refusing would put the credential in the one place the
+// refusal was meant to keep it out of.
+func TestClaimID_ARefusedHomepage_NeverEchoesTheCredential(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		home    string
+		secrets []string
+	}{
+		{
+			name:    "a signed query",
+			home:    "https://example.com/p?X-Amz-Signature=deadbeefcafe&X-Amz-Expires=900",
+			secrets: []string{"deadbeefcafe", "X-Amz-Signature"},
+		},
+		{
+			name:    "a token parameter",
+			home:    "https://example.com/docs?t=s3cr3tvalue",
+			secrets: []string{"s3cr3tvalue"},
+		},
+		{
+			name:    "a fragment",
+			home:    "https://example.com/readme#token=deadbeefcafe",
+			secrets: []string{"deadbeefcafe"},
+		},
+		{
+			name:    "a password in userinfo",
+			home:    "https://alice:hunter2@example.com",
+			secrets: []string{"hunter2"},
+		},
+		{
+			name:    "a username-only credential",
+			home:    "https://ghp_averysecretlookingtoken@example.com",
+			secrets: []string{"ghp_averysecretlookingtoken"},
+		},
+		{
+			name:    "all of them, on a url that does not even parse",
+			home:    "https://alice:hunter2@exa mple.com/x?sig=abc123",
+			secrets: []string{"hunter2", "abc123"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			w := newWorld(t)
+			claim := claimOf(t, "leaky-homepage")
+			claim.Homepage = tc.home
+
+			err := w.svc.ClaimID(t.Context(), claim, w.other)
+			require.ErrorIs(t, err, ownership.ErrBadListing)
+
+			for _, secret := range tc.secrets {
+				require.NotContains(t, err.Error(), secret,
+					"the refusal echoed %q, which is the credential it exists to keep out", secret)
+			}
+
+			// And nothing was stored, so there is nothing for the index to render.
+			require.Empty(t, storetest.Column(t, w.db,
+				`SELECT homepage FROM plugin WHERE id = ?`, "leaky-homepage"))
+		})
+	}
 }
