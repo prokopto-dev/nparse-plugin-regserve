@@ -141,8 +141,9 @@ func New(cfg Config) http.Handler {
 
 	// Plain http.Handler wrappers rather than Huma middleware, because they must also cover the
 	// responses Huma never sees: the 404 and 405 the mux answers by itself. A request id that
-	// covers only the routes that matched is a request id nobody can quote in a bug report.
-	return middleware.RequestID(middleware.SecureHeaders(mux))
+	// covers only the routes that matched is a request id nobody can quote in a bug report — and a
+	// token refused only on the routes that matched is a token accepted on the ones that did not.
+	return middleware.RequestID(middleware.SecureHeaders(RefuseTokenInQuery(mux)))
 }
 
 // newHumaAPI builds the Huma API, and every line of the config is load-bearing.

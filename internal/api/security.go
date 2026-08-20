@@ -2,9 +2,11 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -54,17 +56,6 @@ const metaAccess = "regserve.access"
 // cannot drift apart — there is one value and two readers.
 func authMiddleware(api huma.API, authn Authenticator) func(huma.Context, func(huma.Context)) {
 	return func(ctx huma.Context, next func(huma.Context)) {
-		// A token in a query string is rejected with 401, no exception (canonical §6). Query
-		// strings land in access logs, proxy logs and browser history, so a token that appears in
-		// one is already leaked — answering 401 is what stops it also being useful. This runs
-		// before the public check on purpose: a leaked token is a leaked token whatever route it
-		// was sent to.
-		if tokenInQuery(ctx) {
-			writeProblem(api, ctx, http.StatusUnauthorized,
-				"a token in a query string is never accepted; send it as an Authorization header")
-			return
-		}
-
 		access, ok := accessFor(ctx)
 		if !ok {
 			// Unreachable through register(), which always sets it. Refusing rather than allowing
@@ -152,14 +143,49 @@ func credentialsFrom(ctx huma.Context) auth.Credentials {
 	return creds
 }
 
-// tokenInQuery reports whether any query parameter carries something shaped like a PAT.
+// RefuseTokenInQuery answers 401 to any request carrying something shaped like a PAT in its query
+// string. Canonical §6: no exception.
 //
-// It matches on the token's own prefix rather than on parameter names: `?access_token=` is the
-// spelling people expect, but the rule is about the VALUE being in a URL, and a token sent as
-// `?t=` is in exactly as many logs.
-func tokenInQuery(ctx huma.Context) bool {
-	u := ctx.URL()
-	if !strings.Contains(u.RawQuery, auth.TokenPrefix) {
+// A plain http.Handler wrapper rather than Huma middleware, for the reason the request-id and
+// secure-header wrappers give: Huma middleware runs only for a route that MATCHED, so a token sent
+// to a misspelled path or with the wrong method would be answered 404 or 405 by the mux with the
+// check never running. The rule is about the value being in a URL — by the time it is there it is
+// in an access log, a proxy log and a browser history — so what it was sent to does not enter into
+// it, and neither does whether the route was public.
+//
+// It matches on the token's own prefix rather than on parameter names. `?access_token=` is the
+// spelling people expect; a token sent as `?t=` is in exactly as many logs.
+func RefuseTokenInQuery(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !tokenInQuery(r.URL) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Written here rather than through Huma, which is not in this layer. It is the same
+		// document type handlers return, so a client parses one shape whatever refused it.
+		problem := NewProblem(http.StatusUnauthorized, CodeUnauthorized,
+			"a token in a query string is never accepted; send it as an Authorization header")
+		body, err := json.Marshal(problem)
+		if err != nil {
+			// Unreachable: Problem is four strings and an int. Refusing loudly beats serving the
+			// request we just decided to refuse.
+			slog.ErrorContext(r.Context(), "render the query-token problem", "error", err)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		w.Header().Set("Content-Type", problemContentType)
+		w.WriteHeader(http.StatusUnauthorized)
+		if _, err := w.Write(body); err != nil {
+			slog.ErrorContext(r.Context(), "write the query-token problem", "error", err)
+		}
+	})
+}
+
+// tokenInQuery reports whether any query parameter carries something shaped like a PAT.
+func tokenInQuery(u *url.URL) bool {
+	if u == nil || !strings.Contains(u.RawQuery, auth.TokenPrefix) {
 		return false
 	}
 	for _, values := range u.Query() {
