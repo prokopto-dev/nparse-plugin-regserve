@@ -33,6 +33,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"strings"
 	"syscall"
 	"time"
@@ -129,14 +130,32 @@ func NewClient(cfg Config) *http.Client {
 	}
 }
 
-// RequireHTTPS rejects a URL that is not https before a request is built.
+// RequireHTTPS rejects a URL that is not a usable https URL, before a request is built.
 //
 // The redirect check above covers hops two onward; this covers hop one, where the URL came
 // straight from a publish request or from configuration. Both are needed: a plain http:// URL
 // never reaches CheckRedirect, because there is nothing to redirect from.
+//
+// It PARSES rather than matching a prefix, and the difference is not pedantry. `https://` and
+// `https://?x` both begin with the right eight characters and name no host at all. A prefix check
+// passes them, and what happens next is worse than a rejection would have been: this service
+// enables sign-in and builds a callback URL of `https:///auth/github/callback`, which GitHub
+// cannot redirect to — so the configuration is accepted at boot and fails in a browser, which is
+// the failure mode this repository exists to design against. The function's NAME is a promise that
+// what comes back is fetchable; a prefix is not evidence of that.
 func RequireHTTPS(rawURL string) error {
-	if !strings.HasPrefix(strings.ToLower(rawURL), "https://") {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("%w: %q is not a url: %w", ErrNotHTTPS, rawURL, err)
+	}
+	// url.Parse lower-cases the scheme, so `HTTPS://example.com` is accepted here as it is by the
+	// client's own parser — being the stricter end of a tolerant protocol is one thing, rejecting
+	// a spelling everything else accepts is another.
+	if u.Scheme != "https" {
 		return fmt.Errorf("%w: %q", ErrNotHTTPS, rawURL)
+	}
+	if u.Hostname() == "" {
+		return fmt.Errorf("%w: %q names no host", ErrNotHTTPS, rawURL)
 	}
 	return nil
 }
