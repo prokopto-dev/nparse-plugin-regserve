@@ -94,6 +94,26 @@ func (q *Queries) GetListing(ctx context.Context, id string) (GetListingRow, err
 	return i, err
 }
 
+const getPlugin = `-- name: GetPlugin :one
+SELECT id, name, delisted_at FROM plugin WHERE id = ?
+`
+
+type GetPluginRow struct {
+	ID         string
+	Name       string
+	DelistedAt *int64
+}
+
+// Whether an id is claimed at all, and its listing state. Used by the ownership import, which must
+// NOT create a plugin row for an id owners.json names but this registry does not carry: a claim on
+// an id nobody can check is exactly the squatting the first-come rule exists to prevent.
+func (q *Queries) GetPlugin(ctx context.Context, id string) (GetPluginRow, error) {
+	row := q.db.QueryRowContext(ctx, getPlugin, id)
+	var i GetPluginRow
+	err := row.Scan(&i.ID, &i.Name, &i.DelistedAt)
+	return i, err
+}
+
 const insertPlugin = `-- name: InsertPlugin :exec
 INSERT INTO plugin (id, name, description, author, homepage, claimed_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?)

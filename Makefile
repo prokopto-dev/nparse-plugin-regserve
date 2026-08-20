@@ -168,10 +168,18 @@ migration: gen-authz
 migrate:
 	$(GO) run ./cmd/$(BIN) migrate --db $(DB)
 
-## seed: seed a local database with the current public catalogue
+## seed: import ownership records from owners.json (OWNERS=./owners.json DB=./regserve.db)
+#
+# The CATALOGUE is not seeded here: it is imported at boot from --seed, once, into an empty
+# database. This is the other half — the ownership records the static registry kept as GitHub
+# handles, resolved to the numeric ids that survive a rename.
+#
+# It reaches GitHub once per handle, which is why it is a command an operator runs rather than
+# something boot depends on.
 .PHONY: seed
 seed:
-	@$(call notyet,Phase 2,importing owners.json — the catalogue itself is imported at boot from --seed)
+	@[ -n "$(OWNERS)" ] || { printf 'OWNERS is required: make seed OWNERS=./owners.json\n'; exit 2; }
+	$(GO) run ./cmd/$(BIN) seed-owners --owners $(OWNERS) --db $(DB)
 
 ## docker: build the container image
 .PHONY: docker

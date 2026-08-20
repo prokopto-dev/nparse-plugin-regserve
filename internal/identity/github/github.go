@@ -9,6 +9,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -26,6 +27,11 @@ const (
 	authorizeEndpoint = "https://github.com/login/oauth/authorize"
 	tokenEndpoint     = "https://github.com/login/oauth/access_token" //nolint:gosec // G101: a URL, not a credential
 	userEndpoint      = "https://api.github.com/user"
+
+	// usersEndpoint looks up a public profile BY HANDLE. It is the one place in this service that
+	// starts from a handle, and it exists for exactly one job: resolving the GitHub handles in the
+	// static registry's owners.json to the numeric ids that survive a rename (ADR-0003).
+	usersEndpoint = "https://api.github.com/users/"
 )
 
 // maxResponseBytes caps every response read from GitHub.
@@ -58,11 +64,12 @@ type Config struct {
 	// one pointed at an httptest server.
 	Client *http.Client
 
-	// AuthorizeEndpoint, TokenEndpoint and UserEndpoint override the constants above. They exist
-	// for tests and are empty everywhere else — see Config.endpoints.
+	// AuthorizeEndpoint, TokenEndpoint, UserEndpoint and UsersEndpoint override the constants
+	// above. They exist for tests and are empty everywhere else.
 	AuthorizeEndpoint string
 	TokenEndpoint     string
 	UserEndpoint      string
+	UsersEndpoint     string
 }
 
 // Provider is the GitHub identity provider.
@@ -75,6 +82,7 @@ type Provider struct {
 	authorizeEndpoint string
 	tokenEndpoint     string
 	userEndpoint      string
+	usersEndpoint     string
 }
 
 // ErrNotConfigured is returned by New when a required setting is missing. It names which one,
@@ -115,6 +123,7 @@ func New(cfg Config) (*Provider, error) {
 		authorizeEndpoint: firstNonEmpty(cfg.AuthorizeEndpoint, authorizeEndpoint),
 		tokenEndpoint:     firstNonEmpty(cfg.TokenEndpoint, tokenEndpoint),
 		userEndpoint:      firstNonEmpty(cfg.UserEndpoint, userEndpoint),
+		usersEndpoint:     firstNonEmpty(cfg.UsersEndpoint, usersEndpoint),
 	}
 	return p, nil
 }
@@ -259,6 +268,70 @@ func (p *Provider) user(ctx context.Context, accessToken string) (identity.Ident
 	return identity.Identity{
 		Provider:    identity.KindGitHub,
 		Subject:     strconv.FormatInt(parsed.ID, 10),
+		Handle:      parsed.Login,
+		DisplayName: parsed.Name,
+	}, nil
+}
+
+// ErrNoSuchHandle is a handle GitHub does not know. It is distinct from a provider failure
+// because the answers differ: an unknown handle in owners.json is a claim that needs a human to
+// look at it, and an unreachable GitHub is a reason to run the import again later.
+var ErrNoSuchHandle = errors.New("no such github account")
+
+// LookupHandle resolves a GitHub handle to the immutable identity behind it.
+//
+// This is the ONE place in this service that starts from a handle, and it exists for one job:
+// the static registry's owners.json records ownership as handles, compared case-insensitively, and
+// migrating those claims means resolving each to the numeric id ONCE, at import, and recording
+// both (ADR-0003). After that the subject is the identity and the handle is decoration.
+//
+// It is unauthenticated: a public profile needs no token, and asking for one would mean holding a
+// credential for a job that does not need it. The cost is GitHub's unauthenticated rate limit,
+// which the caller is expected to notice rather than this function to hide — a partial import that
+// looked complete is the failure mode worth avoiding here.
+func (p *Provider) LookupHandle(ctx context.Context, handle string) (identity.Identity, error) {
+	handle = strings.TrimPrefix(strings.TrimSpace(handle), "@")
+	if handle == "" {
+		return identity.Identity{}, ErrNoSuchHandle
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		p.usersEndpoint+url.PathEscape(handle), nil)
+	if err != nil {
+		return identity.Identity{}, fmt.Errorf("build the github user lookup: %w", err)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", apiVersion)
+
+	resp, err := guard.Do(ctx, p.client, req, maxResponseBytes)
+	if err != nil {
+		return identity.Identity{}, fmt.Errorf("%w: %w", identity.ErrProviderUnavailable, err)
+	}
+	switch {
+	case resp.StatusCode == http.StatusNotFound:
+		return identity.Identity{}, fmt.Errorf("%w: %s", ErrNoSuchHandle, handle)
+	case resp.StatusCode != http.StatusOK:
+		// A 403 here is almost always the unauthenticated rate limit. It is reported as the
+		// provider being unavailable rather than as "no such account", because treating a rate
+		// limit as a missing person would silently drop an owner from the import.
+		return identity.Identity{}, fmt.Errorf("%w: user lookup answered %d",
+			identity.ErrProviderUnavailable, resp.StatusCode)
+	}
+
+	var parsed userResponse
+	if err := json.Unmarshal(resp.Body, &parsed); err != nil {
+		return identity.Identity{}, fmt.Errorf("%w: parse the user lookup: %w",
+			identity.ErrProviderUnavailable, err)
+	}
+	if parsed.ID == 0 {
+		return identity.Identity{}, identity.ErrNoSubject
+	}
+
+	return identity.Identity{
+		Provider: identity.KindGitHub,
+		Subject:  strconv.FormatInt(parsed.ID, 10),
+		// The handle GitHub returned, not the one that was asked for: owners.json compared
+		// case-insensitively, and what gets stored should be how the person spells it.
 		Handle:      parsed.Login,
 		DisplayName: parsed.Name,
 	}, nil

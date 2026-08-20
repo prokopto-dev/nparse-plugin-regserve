@@ -230,6 +230,7 @@ make help      # every target, documented
 make status    # what is still stubbed — derived from notyet call sites, never hand-maintained
 make check     # what CI runs
 make gen       # regenerate the OpenAPI document, the permissions page and the sqlc bindings
+make seed OWNERS=./owners.json   # import ownership records; the catalogue is seeded at boot
 make gen-authz # the permissions page alone; needs no generator toolchain
 make gen-openapi  # the OpenAPI document alone; needs no generator toolchain
 ```
