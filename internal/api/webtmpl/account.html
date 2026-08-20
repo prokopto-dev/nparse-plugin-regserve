@@ -1,0 +1,109 @@
+{{define "content"}}
+<h2>Your plugins</h2>
+{{if .Plugins}}
+  <table>
+    <thead><tr><th>Plugin</th><th>Role</th><th>State</th><th></th></tr></thead>
+    <tbody>
+    {{range .Plugins}}
+      <tr>
+        <td><code>{{.ID}}</code><br><span class="muted">{{.Name}}</span></td>
+        <td>{{.Role}}</td>
+        <td>
+          {{if not .Listed}}delisted
+          {{else if .HasApprovedRelease}}listed
+          {{else}}claimed, nothing approved yet{{end}}
+        </td>
+        <td><a href="/plugins/{{.ID}}/settings">settings</a></td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+{{else}}
+  <p class="muted">
+    You do not own any plugins yet. Ownership of the plugins carried over from the static registry
+    was migrated from <code>owners.json</code>; if one of those is yours and is not here, that is
+    worth reporting rather than working around.
+  </p>
+{{end}}
+
+<h2>Personal access tokens</h2>
+
+{{if .NewToken}}
+  <div class="notice">
+    <p><strong>Copy this now. It is not shown again, and it is not stored anywhere it could be.</strong></p>
+    <code class="secret">{{.NewToken}}</code>
+    <p class="muted">
+      What this registry keeps is a keyed hash of it. There is no way to recover the value from
+      here, which is the same reason nobody else can recover it either. If you lose it, revoke the
+      token and mint another.
+    </p>
+  </div>
+{{end}}
+
+<p class="muted">
+  A token is a deployment credential for one plugin's pipeline. It cannot mint another token,
+  change who owns a plugin, or set a trust level — those need a browser session, so a token that
+  leaks out of a CI log stays a publish credential rather than becoming your account.
+</p>
+
+{{if .Tokens}}
+  <table>
+    <thead><tr><th>Name</th><th>Prefix</th><th>Scopes</th><th>Plugin</th><th>Last used</th><th></th></tr></thead>
+    <tbody>
+    {{range .Tokens}}
+      <tr>
+        <td>{{if .Name}}{{.Name}}{{else}}<span class="muted">unnamed</span>{{end}}</td>
+        <td><code>{{.Prefix}}</code></td>
+        <td>{{range .Scopes}}<code>{{.}}</code> {{end}}</td>
+        <td>{{if .PluginID}}<code>{{.PluginID}}</code>{{else}}<span class="muted">any</span>{{end}}</td>
+        <td>
+          {{if .RevokedAt}}<span class="muted">revoked</span>
+          {{else if .LastUsedAt}}{{.LastUsedAt.Format "2006-01-02"}}
+          {{else}}<span class="muted">never</span>{{end}}
+        </td>
+        <td>
+          {{if not .RevokedAt}}
+          <form method="post" action="/account/tokens/{{.ID}}/revoke" style="margin:0">
+            <input type="hidden" name="{{$.CSRFField}}" value="{{$.CSRFToken}}">
+            <button type="submit" class="link">revoke</button>
+          </form>
+          {{end}}
+        </td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+{{else}}
+  <p class="muted">No tokens yet.</p>
+{{end}}
+
+<form method="post" action="/account/tokens">
+  <fieldset>
+    <legend>Mint a token</legend>
+    <input type="hidden" name="{{.CSRFField}}" value="{{.CSRFToken}}">
+
+    <label for="name">What is it for</label>
+    <input type="text" id="name" name="name" placeholder="merchant-mode release workflow" required>
+
+    <label for="plugin_id">Pin it to one plugin</label>
+    <select id="plugin_id" name="plugin_id">
+      <option value="">any plugin you own</option>
+      {{range .Plugins}}<option value="{{.ID}}">{{.ID}}</option>{{end}}
+    </select>
+
+    <label>Scopes</label>
+    {{range .Scopes}}
+      <label style="font-weight:normal">
+        <input type="checkbox" name="scope" value="{{.Name}}"> <code>{{.Name}}</code>
+        <span class="muted">— {{.Summary}}</span>
+      </label>
+    {{end}}
+
+    <p><button type="submit">Mint</button></p>
+    <p class="muted">
+      Pin it to the plugin its pipeline publishes and give it only <code>plugin:publish</code>.
+      That is what makes a leaked token a contained problem instead of an account takeover.
+    </p>
+  </fieldset>
+</form>
+{{end}}

@@ -209,3 +209,46 @@ func (s *Sessions) List(ctx context.Context, accountID string) ([]sqlitegen.List
 	}
 	return rows, nil
 }
+
+// CSRFFieldName is the form field the token travels in. It is also the name the templates use, so
+// it is a constant rather than a string written twice.
+const CSRFFieldName = "csrf_token"
+
+// csrfPurpose separates the CSRF key from every other use of the pepper.
+//
+// The pepper keys credential hashes, whose inputs are 32 random bytes. A CSRF token's input is a
+// session id, which is not secret from the server and is a much smaller space. Prefixing the
+// message means a CSRF token can never collide with, or be mistaken for, a stored credential hash
+// even though both are HMAC-SHA256 under the same key.
+const csrfPurpose = "csrf:v1:"
+
+// CSRFToken returns the token a form must carry back.
+//
+// It is derived from the session rather than stored, so there is no table, no expiry to manage and
+// nothing to clean up: a token is valid exactly as long as the session it was minted for. It is
+// bound to the session id, so a token from somebody else's session does not match.
+//
+// This is the SECOND CSRF defence, not the only one. The session cookie is SameSite=Lax, which
+// already withholds it from a cross-site POST in every browser that matters. Lax is a browser
+// behaviour we do not control and cannot test in CI; this is one we do and can, and the classic
+// hole is exactly "a session cookie plus a form post".
+func (s *Sessions) CSRFToken(p Principal) string {
+	if p.SessionID == "" {
+		return ""
+	}
+	return keyedHash(s.pepper, csrfPurpose+p.SessionID)
+}
+
+// CheckCSRF reports whether presented is the token for this session, compared in constant time.
+//
+// A principal with no session — a personal access token — can never satisfy it. That is not the
+// mechanism protecting the account surface (every one of its routes is capability-floor and
+// refuses a token outright), but a CSRF check that silently passed for a credential kind it was
+// never designed for would be a hole waiting for the first route that forgets.
+func (s *Sessions) CheckCSRF(p Principal, presented string) bool {
+	want := s.CSRFToken(p)
+	if want == "" || presented == "" {
+		return false
+	}
+	return equalHash(want, presented)
+}

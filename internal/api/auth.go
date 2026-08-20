@@ -45,10 +45,21 @@ type Login interface {
 		auth.Completed, error)
 }
 
-// SessionIssuer mints and ends browser sessions.
+// SessionIssuer mints and ends browser sessions, and mints the form tokens that go with them.
+//
+// The CSRF pair is here rather than in a second interface because a session and its form token are
+// one concept: the token is derived from the session and is valid exactly as long as it is. Two
+// interfaces would let a build wire a session issuer and no CSRF guard, which is a build whose
+// forms accept anything.
 type SessionIssuer interface {
 	Create(ctx context.Context, accountID string) (auth.NewSession, error)
 	Revoke(ctx context.Context, p auth.Principal) error
+
+	// CSRFToken returns the token a form must carry back. Empty for a principal with no session.
+	CSRFToken(p auth.Principal) string
+
+	// CheckCSRF compares a presented token in constant time.
+	CheckCSRF(p auth.Principal, presented string) bool
 }
 
 // redirectOutput is a 303 with cookies. It carries no body on purpose: a browser follows the

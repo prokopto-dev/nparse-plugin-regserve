@@ -1,0 +1,62 @@
+{{define "content"}}
+<p class="muted"><a href="/account">← your account</a></p>
+<h2><code>{{.Plugin.ID}}</code></h2>
+<p>
+  {{.Plugin.Name}} —
+  {{if not .Plugin.Listed}}delisted; the id stays claimed and is never recycled
+  {{else if .Plugin.HasApprovedRelease}}listed in <a href="/plugins/{{.Plugin.ID}}/index.json">the index</a>
+  {{else}}claimed, with nothing approved behind it yet{{end}}
+</p>
+
+<h2>Owners</h2>
+<table>
+  <thead><tr><th>Who</th><th>Role</th><th>Since</th><th></th></tr></thead>
+  <tbody>
+  {{range .Owners}}
+    <tr>
+      <td>{{if .Handle}}<code>{{.Handle}}</code>{{else}}{{.DisplayName}}{{end}}</td>
+      <td>{{.Role}}</td>
+      <td>{{.GrantedAt.Format "2006-01-02"}}</td>
+      <td>
+        {{if gt (len $.Owners) 1}}
+        <form method="post" action="/plugins/{{$.Plugin.ID}}/owners" style="margin:0">
+          <input type="hidden" name="{{$.CSRFField}}" value="{{$.CSRFToken}}">
+          <input type="hidden" name="action" value="remove">
+          <input type="hidden" name="account_id" value="{{.AccountID}}">
+          <button type="submit" class="link">remove</button>
+        </form>
+        {{else}}<span class="muted">last owner</span>{{end}}
+      </td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+
+<form method="post" action="/plugins/{{.Plugin.ID}}/owners">
+  <fieldset>
+    <legend>Add an owner</legend>
+    <input type="hidden" name="{{.CSRFField}}" value="{{.CSRFToken}}">
+    <input type="hidden" name="action" value="add">
+
+    <label for="handle">Their GitHub handle</label>
+    <input type="text" id="handle" name="handle" placeholder="octocat" required>
+
+    <label for="role">Role</label>
+    <select id="role" name="role">
+      <option value="maintainer">maintainer — may publish</option>
+      <option value="owner">owner — may publish and change this list</option>
+    </select>
+
+    <p><button type="submit">Add</button></p>
+    <p class="muted">
+      They must have signed in here at least once. There is no invitation by name: a grant to a
+      handle nobody has proved they hold is a grant to whoever registers that name next.
+    </p>
+    <p class="muted">
+      <strong>Handing the plugin over is two steps.</strong> Add them as an owner, let them mint
+      their own token, and only then remove yourself — your tokens stop working the moment you stop
+      being an owner, because ownership is checked on every request rather than cascade-revoked.
+    </p>
+  </fieldset>
+</form>
+{{end}}

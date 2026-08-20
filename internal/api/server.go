@@ -120,6 +120,10 @@ type Config struct {
 	// a capability-floor operation and therefore browser-only, and the pages arrive with the
 	// account surface.
 	Tokens TokenService
+
+	// Ownership backs the plugin settings page. Nil, like a nil Tokens, means the account surface
+	// is not registered — an honest 404 rather than a page that half works.
+	Ownership OwnershipService
 }
 
 // TokenService is what the account surface needs in order to manage personal access tokens.
@@ -154,6 +158,18 @@ func New(cfg Config) http.Handler {
 	}
 	if cfg.Login != nil && cfg.Sessions != nil && cfg.Providers != nil {
 		registerAuth(api, cfg.Login, cfg.Sessions, cfg.Providers)
+
+		// The account surface needs everything the sign-in journey needs, plus somewhere to read
+		// and write. Registered together with it and on the same condition: a sign-in that leads
+		// to a 404 and an account page with no way to reach it are the same defect from two ends.
+		if cfg.Tokens != nil && cfg.Ownership != nil {
+			registerWeb(api, WebDeps{
+				Sessions:  cfg.Sessions,
+				Tokens:    cfg.Tokens,
+				Ownership: cfg.Ownership,
+				Providers: cfg.Providers,
+			})
+		}
 	}
 
 	// Plain http.Handler wrappers rather than Huma middleware, because they must also cover the
