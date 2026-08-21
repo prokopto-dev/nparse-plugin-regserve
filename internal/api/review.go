@@ -29,8 +29,14 @@ const (
 const tagReview = "review"
 
 // ReviewQueue is what internal/api needs in order to serve moderation.
+//
+// Detail is used only by the review PAGES and not by the JSON API, and it is on this interface
+// rather than on a second one because there is one service behind both surfaces. Two interfaces
+// over one object would let a build wire the pages to a different queue from the endpoints, which
+// is a shape worth making unrepresentable rather than documenting.
 type ReviewQueue interface {
 	List(ctx context.Context) ([]review.Waiting, error)
+	Detail(ctx context.Context, releaseID string) (review.Detail, error)
 	Approve(ctx context.Context, releaseID, reviewerID, note string) (review.Decision, error)
 	Reject(ctx context.Context, releaseID, reviewerID, reason string) (review.Decision, error)
 	Reverify(ctx context.Context, releaseID, reviewerID string) (review.Verification, error)

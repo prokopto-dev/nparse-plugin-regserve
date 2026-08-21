@@ -44,6 +44,12 @@ func Spec() *huma.OpenAPI {
 		Tokens:    unavailableTokens{},
 		Ownership: unavailableOwnership{},
 		Providers: identity.NewRegistry(),
+		// The review pages are part of what this build exposes, so they are in the document
+		// whether or not a given deployment has a queue wired. A spec that varied with one
+		// instance's configuration would be useless as a published contract — and PERM001 walks
+		// this document, so an operation missing from it is an operation no gate checks.
+		Queue:     unavailableQueue{},
+		Reviewers: unavailableReviewers{},
 	})
 
 	return api.OpenAPI()
@@ -127,6 +133,10 @@ type unavailableQueue struct{}
 
 func (unavailableQueue) List(context.Context) ([]review.Waiting, error) { return nil, errSpecOnly }
 
+func (unavailableQueue) Detail(context.Context, string) (review.Detail, error) {
+	return review.Detail{}, errSpecOnly
+}
+
 func (unavailableQueue) Approve(context.Context, string, string, string) (review.Decision, error) {
 	return review.Decision{}, errSpecOnly
 }
@@ -138,6 +148,13 @@ func (unavailableQueue) Reject(context.Context, string, string, string) (review.
 func (unavailableQueue) Reverify(context.Context, string, string) (review.Verification, error) {
 	return review.Verification{}, errSpecOnly
 }
+
+// unavailableReviewers stands in for the reviewer check when the document is generated. It answers
+// FALSE rather than an error: the spec generator never serves a request, and "nobody may review"
+// is the safe answer for a thing that is never asked.
+type unavailableReviewers struct{}
+
+func (unavailableReviewers) IsReviewer(context.Context, string) (bool, error) { return false, nil }
 
 type unavailableTrust struct{}
 

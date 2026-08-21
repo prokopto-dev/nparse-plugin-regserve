@@ -99,3 +99,78 @@ WHERE id = ? AND state = 'pending' AND verified_at IS NULL;
 -- All of them rather than the first: an account with two linked identities holds both, and picking
 -- one by linked_at would make whether somebody can review depend on the order they signed in.
 SELECT provider_kind, handle FROM identity WHERE account_id = ? ORDER BY linked_at, id;
+
+-- name: GetReleaseForReview :one
+-- One release, whatever state it is in, with the plugin's name and what it would replace.
+--
+-- NOT restricted to 'pending', deliberately. A reviewer who has just approved something is
+-- redirected back to the page they acted on, and a page that 404ed the moment it was decided would
+-- leave them unable to see what they did -- or to read the audit row that records it.
+--
+-- live_version is what this release would replace, empty when the plugin has nothing approved.
+-- Excluding the row itself matters: once THIS release is the approved one, an unfiltered subquery
+-- would report the release as replacing itself.
+SELECT
+    r.id,
+    r.plugin_id,
+    p.name AS plugin_name,
+    r.version,
+    r.state,
+    r.source,
+    r.artifact_url,
+    r.artifact_sha256,
+    r.artifact_bytes,
+    r.sdk_specifier,
+    r.minimum_app_version,
+    r.notes,
+    r.submitted_by,
+    r.submitted_at,
+    r.verified_at,
+    r.reviewed_by,
+    r.reviewed_at,
+    r.review_note,
+    CAST(coalesce((SELECT prior.version FROM "release" prior
+        WHERE prior.plugin_id = r.plugin_id AND prior.state = 'approved' AND prior.id <> r.id
+        LIMIT 1), '') AS TEXT) AS live_version
+FROM "release" r
+JOIN plugin p ON p.id = r.plugin_id
+WHERE r.id = ?;
+
+-- name: ListAuditForRelease :many
+-- Every audit row whose SUBJECT is this release: the approvals, rejections and re-verifications.
+--
+-- The account is joined so a reviewer reads a name rather than a ULID. LEFT JOIN because a system
+-- action names no account, and an INNER JOIN would silently drop exactly the rows nobody performed.
+SELECT
+    a.id,
+    a.recorded_at,
+    a.actor_kind,
+    a.actor_account_id,
+    a.action,
+    a.detail,
+    CAST(coalesce(acct.display_name, '') AS TEXT) AS actor_name
+FROM audit_log a
+LEFT JOIN account acct ON acct.id = a.actor_account_id
+WHERE a.subject_kind = 'release' AND a.subject_id = ?
+ORDER BY a.recorded_at, a.id;
+
+-- name: ListAuditForPlugin :many
+-- Every audit row whose subject is this PLUGIN.
+--
+-- A publish is recorded against the plugin, not the release -- an incident review asks "what has
+-- happened to this plugin" -- so the row that says WHY a release is in the queue, carrying the
+-- quarantine reasons and the submitted hash, is not reachable by the query above. The caller keeps
+-- the rows whose detail names this release and drops the rest, rather than this filtering on the
+-- shape of a JSON document from SQL.
+SELECT
+    a.id,
+    a.recorded_at,
+    a.actor_kind,
+    a.actor_account_id,
+    a.action,
+    a.detail,
+    CAST(coalesce(acct.display_name, '') AS TEXT) AS actor_name
+FROM audit_log a
+LEFT JOIN account acct ON acct.id = a.actor_account_id
+WHERE a.subject_kind = 'plugin' AND a.subject_id = ?
+ORDER BY a.recorded_at, a.id;

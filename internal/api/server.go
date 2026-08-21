@@ -145,6 +145,10 @@ type Config struct {
 	// Note that a build with reviewers configured and NOBODY named in them is a normal, working
 	// state: nothing can be approved until an operator names somebody. That is not the same as an
 	// absent dependency, and internal/review says why an empty set must never mean "everybody".
+	//
+	// They also back the review PAGES, which are the only way a human can work the queue at all —
+	// moderation is capability-floor, so it is session-only, so it is browser-only. The pages need
+	// sign-in configured as well, and are registered with the rest of the account surface.
 	Queue     ReviewQueue
 	Reviewers ReviewerCheck
 
@@ -207,6 +211,11 @@ func New(cfg Config) http.Handler {
 				Tokens:    cfg.Tokens,
 				Ownership: cfg.Ownership,
 				Providers: cfg.Providers,
+				// The same two dependencies the JSON API's review routes are wired from, so the
+				// pages and the endpoints cannot be looking at different queues. Nil leaves the
+				// review pages unregistered — see registerWeb.
+				Queue:     cfg.Queue,
+				Reviewers: cfg.Reviewers,
 			})
 		}
 	}

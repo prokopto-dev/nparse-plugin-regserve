@@ -1,0 +1,181 @@
+{{define "content"}}
+{{with .Release}}
+<p class="muted"><a href="/review">← the review queue</a></p>
+
+<h2><code>{{.PluginID}}</code> {{.Version}}</h2>
+<p>
+  {{.PluginName}} — <strong>{{.State}}</strong>{{if .LiveVersion}}, and it would replace {{.LiveVersion}}{{else}},
+  and this plugin has nothing live{{end}}.
+</p>
+
+<h2>Why it is here</h2>
+
+{{if .Quarantine}}
+  <ul>
+    {{range .Quarantine}}<li>{{.}}</li>{{end}}
+  </ul>
+  <p class="muted">
+    Recorded when the release was submitted, by the rules that were applied then — not recomputed
+    now. What the server acted on is what a reviewer needs to see.
+  </p>
+{{else if .Note}}
+  <p>{{.Note}}</p>
+{{else}}
+  <p class="muted">No rule fired. It is waiting because nothing publishes without a human yet.</p>
+{{end}}
+
+{{if .FirstRelease}}
+<div class="notice problem">
+  <strong>This is the first appearance of the plugin id <code>{{.PluginID}}</code>.</strong>
+  A new id always gets a human, whatever the submitter’s trust level, because the first appearance
+  of an id is where impersonation is caught. Ids are permanent and never recycled: approving this
+  settles who owns the name for good.
+</div>
+{{end}}
+
+<h2>The artifact</h2>
+<table>
+  <tbody>
+    <tr>
+      <th>URL</th>
+      <td class="mono">{{.ArtifactURL}}</td>
+    </tr>
+    <tr>
+      <th>Computed sha256</th>
+      <td>
+        {{if .SHA256}}
+          <span class="mono">{{.SHA256}}</span><br>
+          <span class="muted">Computed by this server from bytes it downloaded itself.</span>
+        {{else}}
+          <strong class="warn">none — the artifact was never fetched</strong><br>
+          <span class="muted">
+            It cannot be approved: the database refuses a listing with no hash. Re-verify it below,
+            or reject it.
+          </span>
+        {{end}}
+      </td>
+    </tr>
+    {{if .SubmittedSHA256}}
+    <tr>
+      <th>Submitted sha256</th>
+      <td>
+        <span class="mono">{{.SubmittedSHA256}}</span><br>
+        <strong class="warn">This is not the hash above.</strong>
+        <span class="muted">
+          The submitter claimed one value and the bytes this server downloaded hashed to another.
+          It is shown only because they disagree — on the ordinary path the claim is compared and
+          discarded, never stored. Something changed between the author’s build and this fetch.
+        </span>
+      </td>
+    </tr>
+    {{end}}
+    <tr><th>Size</th><td>{{if .Bytes}}{{.Bytes}} bytes{{else}}<span class="muted">unknown</span>{{end}}</td></tr>
+    <tr><th>Provenance</th><td>{{.Source}}</td></tr>
+    <tr><th>SDK</th><td class="mono">{{.SDKSpecifier}}</td></tr>
+    <tr>
+      <th>Minimum app</th>
+      <td>{{if .MinimumAppVersion}}{{.MinimumAppVersion}}{{else}}<span class="muted">no constraint</span>{{end}}</td>
+    </tr>
+    <tr>
+      <th>Submitted</th>
+      <td>{{.SubmittedAt.Format "2006-01-02 15:04:05"}}{{if .SubmittedBy}} by {{.SubmittedBy}}{{end}}</td>
+    </tr>
+    {{if not .ReviewedAt.IsZero}}
+    <tr>
+      <th>Decided</th>
+      <td>{{.ReviewedAt.Format "2006-01-02 15:04:05"}}{{if .ReviewedBy}} by {{.ReviewedBy}}{{end}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+
+{{if .Notes}}
+<h2>Release notes</h2>
+<pre class="notes">{{.Notes}}</pre>
+<p class="muted">
+  Author-supplied plain text, published to every client exactly as it appears here. It is not
+  markup, and nothing renders it as markup — what you are reading is what they will read.
+</p>
+{{end}}
+
+{{if eq .State "pending"}}
+<h2>Decide</h2>
+
+<form method="post" action="/review/releases/{{.ReleaseID}}/decide">
+  <fieldset>
+    <legend>Approve or reject</legend>
+    <input type="hidden" name="{{$.CSRFField}}" value="{{$.CSRFToken}}">
+
+    <label for="note">Note</label>
+    <input type="text" id="note" name="note" maxlength="2048"
+           placeholder="optional when approving, required when rejecting">
+
+    <p>
+      <button type="submit" name="action" value="approve"{{if not .Verified}} disabled{{end}}>Approve</button>
+      <button type="submit" name="action" value="reject">Reject</button>
+    </p>
+
+    {{if not .Verified}}
+    <p class="muted">
+      Approval is not offered: there is no hash to publish. Re-verify the artifact first.
+    </p>
+    {{end}}
+    <p class="muted">
+      A rejection <strong>must</strong> say why — the author cannot see this queue and has no other
+      way to learn what to fix. The row stays either way, and so does its claim on the version: a
+      version is used once per plugin, ever, so rejecting 1.0.0 does not free 1.0.0.
+    </p>
+  </fieldset>
+</form>
+
+{{if not .Verified}}
+<form method="post" action="/review/releases/{{.ReleaseID}}/decide">
+  <fieldset>
+    <legend>Re-verify the artifact</legend>
+    <input type="hidden" name="{{$.CSRFField}}" value="{{$.CSRFToken}}">
+    <p><button type="submit" name="action" value="reverify">Fetch and hash it again</button></p>
+    <p class="muted">
+      For a release this server could not verify at publish time — an upstream outage, a slow
+      morning. It can only ever <strong>fill in a blank</strong>: a release that already carries a
+      hash is refused, because a path that could recompute one is a path that could swap the bytes
+      behind a listing without anybody reviewing the swap.
+    </p>
+    <p class="muted">
+      This downloads the artifact now and may take up to forty-five seconds. A failure is not an
+      error: the release stays as it is and the attempt is recorded either way.
+    </p>
+  </fieldset>
+</form>
+{{end}}
+{{else}}
+<p class="muted">
+  This release is <strong>{{.State}}</strong> and there is nothing left to decide. Nothing here
+  edits it: a correction is a new release, and the record below is append-only.
+</p>
+{{end}}
+
+<h2>Audit trail</h2>
+{{if not .Events}}
+  <p class="muted">Nothing recorded. That is a bug — every publish writes a row.</p>
+{{else}}
+  <table>
+    <thead><tr><th>When</th><th>What</th><th>Who</th><th>Recorded</th></tr></thead>
+    <tbody>
+    {{range .Events}}
+      <tr>
+        <td>{{.At.Format "2006-01-02 15:04:05"}}</td>
+        <td class="mono">{{.Action}}</td>
+        <td>{{if .System}}<span class="muted">the system</span>{{else if .Actor}}{{.Actor}}{{else}}<span class="muted">unknown</span>{{end}}</td>
+        <td><code class="detail">{{.Detail}}</code></td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  <p class="muted">
+    Append-only, by database trigger. A correction is a new row, so this is the history rather than
+    its latest state — including re-verification attempts that failed, because three failures in a
+    row is a different story from one.
+  </p>
+{{end}}
+{{end}}
+{{end}}

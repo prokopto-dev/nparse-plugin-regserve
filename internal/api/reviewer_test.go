@@ -166,6 +166,10 @@ type emptyQueue struct{}
 
 func (emptyQueue) List(context.Context) ([]review.Waiting, error) { return nil, nil }
 
+func (emptyQueue) Detail(context.Context, string) (review.Detail, error) {
+	return review.Detail{}, review.ErrNoSuchRelease
+}
+
 func (emptyQueue) Approve(context.Context, string, string, string) (review.Decision, error) {
 	return review.Decision{}, nil
 }

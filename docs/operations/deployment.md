@@ -104,6 +104,28 @@ Three things follow, and each has bitten somebody somewhere:
 Reviewing is capability-floor: no personal access token can approve a release however it is scoped,
 including a reviewer's own. Moderation is a browser-and-session operation only.
 
+##### Working the queue
+
+A configured reviewer signs in and gets a **review queue** link in the page header; the pages are at
+`/review` and `/review/releases/{id}`, served by the same binary as everything else.
+
+The queue lists what is waiting, oldest first. Opening a release shows **why it is there** — every
+quarantine rule that fired when it was submitted, read from the audit row the publish wrote rather
+than recomputed — the hash this server computed, the hash the submitter claimed when the two
+disagree, the notes that will be published to every client, and the release's audit trail. Approve,
+reject and re-verify are forms on that page.
+
+Two things a reviewer will meet:
+
+- **A release whose artifact was never fetched cannot be approved**, and the button is not offered.
+  The database refuses a listing with no hash, so the way out is a re-verification or a rejection.
+- **A rejection must say why.** The author cannot see this queue and has no other way to learn what
+  to fix.
+
+Nothing on these pages edits history. `audit_log` is append-only by trigger, a rejected version is
+never freed, and a superseded release is kept — so the record of what was approved, and by whom,
+survives every decision made after it.
+
 ### 2. On the droplet — the catalogue
 
 The catalogue lives in the database, on the `/data` volume. `seed.json` is how it got there: on the

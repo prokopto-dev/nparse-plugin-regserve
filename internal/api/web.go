@@ -18,6 +18,7 @@ import (
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/core"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/identity"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/ownership"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/review"
 )
 
 // The account surface: server-rendered HTML from this same binary.
@@ -70,6 +71,15 @@ type WebDeps struct {
 	Tokens    TokenService
 	Ownership OwnershipService
 	Providers *identity.Registry
+
+	// Queue and Reviewers back the review pages, and are needed TOGETHER for the reason the JSON
+	// API needs them together: a reviewer-only route on a build that cannot say who reviews is a
+	// wiring bug worth making unrepresentable rather than answering 503 for.
+	//
+	// Nil means the review pages are not registered at all — an honest 404 rather than a queue
+	// nobody can work.
+	Queue     ReviewQueue
+	Reviewers ReviewerCheck
 }
 
 // OwnershipService is the part of internal/ownership the pages use.
@@ -107,6 +117,17 @@ type pageData struct {
 	// and may not change who holds it — so the page does not offer controls the service will
 	// refuse. Both this and the refusal read the same fact through Role.CanManageOwners.
 	CanManageOwners bool
+
+	// Queue and Release are the review surface's data. Release is a pointer because "no release on
+	// this page" is a real state and a zero-valued one would render as a release with no id.
+	Queue   []review.Waiting
+	Release *review.Detail
+
+	// IsReviewer decides whether the layout offers a link to the queue. It is DECORATION and not
+	// authorisation: the middleware refuses a non-reviewer at every review route whatever this
+	// says, and a page that hid the link would still be a page that could not be reached. Its job
+	// is that a reviewer landing on their account page can find the queue at all.
+	IsReviewer bool
 }
 
 // scopeOption is one checkbox on the mint form, from the catalogue rather than from a list here.
@@ -129,6 +150,13 @@ func registerWeb(api huma.API, deps WebDeps) {
 	registerAccountPage(api, deps)
 	registerTokenForms(api, deps)
 	registerPluginPages(api, deps)
+
+	// Both or neither, exactly as the JSON API's review routes are wired: a reviewer-only page on
+	// a build that cannot answer "is this account a reviewer" is a page the middleware refuses
+	// with a 503, which reads to an operator like an outage rather than a missing variable.
+	if deps.Queue != nil && deps.Reviewers != nil {
+		registerReviewPages(api, deps)
+	}
 }
 
 func registerHomePage(api huma.API, deps WebDeps) {
@@ -481,7 +509,30 @@ func accountData(ctx context.Context, deps WebDeps, p auth.Principal) (pageData,
 		Plugins:   plugins,
 		Tokens:    tokens,
 		Scopes:    options,
+		// Whether to OFFER the queue, not whether it may be reached. Asked per request rather than
+		// resolved at sign-in, like every other reviewer check: an operator who adds a handle and
+		// redeploys should not need everybody to sign in again.
+		IsReviewer: isReviewer(ctx, deps, p),
 	}, nil
+}
+
+// isReviewer answers whether to show the queue link, and never opens a door.
+//
+// An error is FALSE and is logged. That direction is the only safe one — "we could not check" must
+// never resolve to "yes" — and the cost of being wrong is a missing link on a page, not a
+// permission: every review route asks the same question again in the middleware before a handler
+// runs.
+func isReviewer(ctx context.Context, deps WebDeps, p auth.Principal) bool {
+	if deps.Reviewers == nil {
+		return false
+	}
+	ok, err := deps.Reviewers.IsReviewer(ctx, p.AccountID)
+	if err != nil {
+		slog.ErrorContext(ctx, "check whether to offer the review queue",
+			"account_id", p.AccountID, "error", err)
+		return false
+	}
+	return ok
 }
 
 func pluginData(ctx context.Context, deps WebDeps, p auth.Principal, rawID string) (pageData, error) {
@@ -568,6 +619,17 @@ const (
 	// A maintainer holds the plugin and may publish to it. Changing who holds it is an owner's
 	// business, and saying so plainly is better than a generic refusal that reads as a bug.
 	msgOwnerRoleTooNarrow = "owner_role_too_narrow"
+
+	// The review surface. Each is a distinct outcome a reviewer needs told apart — in particular
+	// "re-verified" and "still could not be fetched", which a single "done" would collapse into
+	// the confident mistake this whole service is designed against.
+	msgReleaseDecided         = "release_decided"
+	msgReleaseStillUnverified = "release_still_unverified"
+	msgReleaseNotPending      = "release_not_pending"
+	msgReleaseNotVerified     = "release_not_verified"
+	msgReleaseAlreadyVerified = "release_already_verified"
+	msgReleaseNoReason        = "release_no_reason"
+	msgReleaseFailed          = "release_failed"
 )
 
 // messages maps each code onto the sentence a page shows, and whether it is good news.
@@ -593,6 +655,34 @@ var messages = map[string]struct {
 		text:    "You hold this plugin as a maintainer. Only an owner can change who holds it.",
 		problem: true,
 	},
+
+	msgReleaseDecided: {text: "Recorded. The audit trail below says what happened and when."},
+	msgReleaseStillUnverified: {
+		text: "The artifact still could not be fetched, so its bytes are still unchecked. The " +
+			"release is unchanged and the reason is on it; the attempt is in the audit trail.",
+		problem: true,
+	},
+	msgReleaseNotPending: {
+		text: "That release is no longer waiting: somebody else decided it while this page was " +
+			"open. Reload to see what they did.",
+		problem: true,
+	},
+	msgReleaseNotVerified: {
+		text: "That release cannot be approved: this server never managed to fetch and hash its " +
+			"artifact, so there is no verified hash to publish. Re-verify it, or reject it.",
+		problem: true,
+	},
+	msgReleaseAlreadyVerified: {
+		text: "That release already carries a hash this server computed. Re-verification can only " +
+			"fill in a blank, never replace a hash clients may already have seen.",
+		problem: true,
+	},
+	msgReleaseNoReason: {
+		text: "A rejection must say why. The author cannot see this queue and has no other way to " +
+			"learn what to fix.",
+		problem: true,
+	},
+	msgReleaseFailed: {text: "That could not be recorded.", problem: true},
 }
 
 // messageFor returns (notice, problem) for a code. An unknown code renders nothing.
