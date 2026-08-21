@@ -30,6 +30,38 @@ else
   vacant PIN001 "workflows pinned to SHAs"
 fi
 
+# --- ACT001 / ACT002 — the GitHub Actions gates ------------------------------------------------
+# The logic lives in scripts/act-gates.sh, which takes a DIRECTORY, so that test/repo/act_test.go
+# can point it at deliberately broken fixtures and require it to fire. That is not tidiness: the
+# first version of ACT001 inspected only `run: |` and reported green over a workflow that could
+# have said `run: echo "${{ github.ref_name }}"` -- a caller's tag name substituted into a script
+# before bash sees it, which is the one line the gate exists for.
+#
+# ACT001: an expression inside a shell script. GitHub substitutes the VALUE into the script text,
+# so it is EXECUTED rather than read. The fix is always `env:` plus "$VAR", so the gate has no
+# exceptions -- an exception list is a thing somebody appends to at 2am.
+#
+# ACT002: `bash -n` over every extracted script. Workflow shell is not compiled, not linted and not
+# executed until a tag is pushed, so a broken script ships.
+if compgen -G ".github/workflows/*.yml" >/dev/null; then
+  if out=$(bash scripts/act-gates.sh expressions .github/workflows 2>&1); then
+    pass ACT001 "no workflow interpolates an expression into a shell script"
+  else
+    report ACT001 "${out%%$'\n'*}"
+    printf '%s\n' "${out#*$'\n'}"
+  fi
+
+  if out=$(bash scripts/act-gates.sh syntax .github/workflows 2>&1); then
+    pass ACT002 "$out workflow shell script(s) parse"
+  else
+    report ACT002 "${out%%$'\n'*}"
+    printf '%s\n' "${out#*$'\n'}"
+  fi
+else
+  vacant ACT001 "workflows keep expressions out of shell scripts"
+  vacant ACT002 "workflow shell scripts parse"
+fi
+
 # --- Go architectural gates live in test/repo/arch_test.go -------------------------------------
 # CLOCK001, SQL001, NET001, ROUTE001 and SCHEMA002 parse the tree with go/ast rather than grepping
 # it. Two failures drove that: a grep matches the rule's own name inside the comment explaining the

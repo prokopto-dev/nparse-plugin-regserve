@@ -170,9 +170,14 @@ jobs:
       # Pinned host key, NOT ssh-keyscan. Scanning at deploy time trusts whatever answers, which
       # means a deploy is the one moment an attacker gets a free man-in-the-middle.
       - name: Pin the host key
+        # The value arrives through `env:` rather than being interpolated into the script (gate
+        # ACT001). It matters most here of anywhere in this file: an expression written into a
+        # shell script is executed by that shell, and this one is a repository secret.
+        env:
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
         run: |
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
       # Staged as a separate file, not written over the live one. Nothing on the droplet changes

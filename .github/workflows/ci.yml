@@ -92,8 +92,14 @@ jobs:
     if: always()
     steps:
       - name: Fail if any required job did not succeed
+        # Through `env:`, not interpolated into the script. Gate ACT001 requires it of every
+        # workflow in this repository: an expression written into a shell script is EXECUTED by
+        # that shell, and the rule is only checkable if it has no exceptions — including the ones,
+        # like this boolean, that are obviously safe today.
+        env:
+          ANY_FAILED: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
         run: |
-          if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+          if [[ "$ANY_FAILED" == "true" ]]; then
             echo "a required job failed"; exit 1
           fi
           echo "all required jobs succeeded"

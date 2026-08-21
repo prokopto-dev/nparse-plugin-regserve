@@ -125,12 +125,17 @@ jobs:
             BUILD_DATE=${{ steps.vars.outputs.date }}
 
       - name: Summary
+        # Through `env:`, not interpolated (gate ACT001). A tag list is metadata this workflow
+        # computed, and it is still a value reaching a shell from an expression.
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           {
             echo "### Image published"
             echo
             echo '```'
-            echo "${{ steps.meta.outputs.tags }}"
-            echo "digest: ${{ steps.build.outputs.digest }}"
+            echo "$IMAGE_TAGS"
+            echo "digest: $IMAGE_DIGEST"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

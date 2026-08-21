@@ -90,6 +90,8 @@ own, so they must not move when the product API versions
 - [`docs/concepts/trust-model.md`](docs/concepts/trust-model.md) — what replaced the PR-gated registry
 - [`docs/api/errors.md`](docs/api/errors.md) — the closed error-code enum
 - [`docs/operations/deployment.md`](docs/operations/deployment.md) — the DigitalOcean + Traefik runbook
+- [`docs/operations/publishing-from-ci.md`](docs/operations/publishing-from-ci.md) — how a plugin
+  repository publishes on tag, with the reusable workflow it calls
 
 ## Working on it
 

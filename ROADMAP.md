@@ -90,7 +90,10 @@ personal access token outright.
 
 - ✅ `release.notes` surfaced on `latest` as `release_notes` — additive, `omitempty`, so a listing
   with no notes renders byte-identically to what the live registry served before it
-- A reusable workflow for plugin repositories that publishes on tag
+- ✅ A reusable workflow for plugin repositories that publishes on tag —
+  `.github/workflows/publish-plugin.yml`, called with a scoped PAT, sending an idempotency key
+  so a re-run replays rather than submitting a second release, and reporting "waiting for
+  review" as neither a failure nor a completed publish
 - `prokopto-dev/nparseplus-plugin-template` wired to it
 - The client update repointing `DEFAULT_REGISTRY_URL`
 - ✅ Admin surface for the review queue — server-rendered pages from the same binary, session-only
