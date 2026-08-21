@@ -52,7 +52,7 @@ const tagAccount = "account"
 // a page that begins with a comment can be sniffed as text/plain.
 const contentTypeHTML = "text/html; charset=utf-8"
 
-//go:embed webtmpl/*.html
+//go:embed webtmpl/*.html webtmpl/assets/*.svg
 var webFiles embed.FS
 
 // pages is parsed once, at package init, because a template that fails to parse should take the
@@ -62,7 +62,13 @@ var webFiles embed.FS
 // a script — and that is what makes a plugin id or a display name coming from a provider safe to
 // render. Nothing here reaches for template.HTML to make something render; if a value needs it,
 // the answer is that the value is wrong.
-var pages = template.Must(template.ParseFS(webFiles, "webtmpl/*.html"))
+//
+// The vendored mark is parsed alongside the pages, and that is what lets layout.html inline it
+// with `{{template "nparseplus-mark.svg" .}}`: a template's own body is literal markup, so the SVG
+// is emitted verbatim without template.HTML and without a hand-copied second version of it in the
+// layout. html/template elides the file's long provenance comment on the way out, so the page
+// carries the markup and the reasoning stays on disk where somebody editing it will read it.
+var pages = template.Must(template.ParseFS(webFiles, "webtmpl/*.html", "webtmpl/assets/*.svg"))
 
 // WebDeps is what the account surface needs. Consumer-declared, like every other dependency in
 // this package.
