@@ -60,4 +60,5 @@ Public ones. They declare `x-regserve-public: true` and an explicitly empty `sec
 - `GET /index.json`
 - `GET /plugins/{id}`
 - `GET /plugins/{id}/index.json`
+- `GET /publish`
 - `GET /readyz`

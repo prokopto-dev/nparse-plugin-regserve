@@ -1,0 +1,187 @@
+{{define "content"}}
+{{/* The author on-ramp.
+
+     The front page answers "what plugins exist". Until this page there was nowhere that answered
+     "how do I make one", so a visitor who wanted to WRITE a plugin left with the same information
+     they arrived with. The walkthrough below is the REAL path in the order it actually happens,
+     including the step this service has no form for yet — an on-ramp that skipped that step would
+     be a confident mistake, and every author would hit it second. */}}
+<h2>Publish a plugin</h2>
+<p>
+  A plugin is a Python package with a manifest, built and released by your own repository. This
+  registry never holds your code: it holds a plugin's id, who owns it, and a pointer to the release
+  artifact you published, together with a sha256 <strong>this server computed itself</strong> from
+  the bytes it downloaded.
+</p>
+<p>
+  Publishing is a step in your release pipeline, not a pull request against anybody's repository.
+  The whole path is below, in order.
+</p>
+
+<section class="onramp">
+  <h2>Start from the template</h2>
+  <p>
+    The <a href="https://github.com/prokopto-dev/nparse-plugin-template">plugin template</a>
+    (<code>prokopto-dev/nparse-plugin-template</code>) is a working plugin with the manifest, the
+    layout and a release workflow already in it. Use it as a GitHub template repository and you
+    start from something that builds.
+  </p>
+  <p class="muted">
+    Writing one from scratch is fine too. What this registry needs from a build is one artifact at
+    a public <code>https</code> URL and a version string your plugin declares.
+  </p>
+</section>
+
+<h2>The path, in order</h2>
+
+<ol class="steps">
+  <li>
+    <strong>Start from the template.</strong>
+    Build your plugin, and make your release produce one artifact — normally a zip attached to a
+    GitHub Release.
+  </li>
+
+  <li>
+    <strong>Claim your plugin id.</strong>
+    An id is <em>first come, permanent, and never recycled</em>: it names your plugin in every
+    installed copy on every user's machine, so it is never released or reassigned, not even after a
+    delisting. Claiming it registers the id to your account and makes you its owner. It does not
+    list anything.
+    {{if .Providers}}
+      {{range .Providers}}
+      <p class="muted">
+        <a href="/auth/{{.}}/login?next=/account">Sign in with GitHub</a> first — GitHub is the
+        only identity this registry accepts, because the artifacts live on GitHub Releases and the
+        ownership records it was migrated from are GitHub handles.
+      </p>
+      {{end}}
+    {{else}}
+      <p class="muted">
+        This instance has no sign-in configured, so an id cannot be claimed here.
+      </p>
+    {{end}}
+    <p class="warn">
+      <strong>There is no form for this step yet.</strong> Claiming is
+      <code>POST /api/v1/plugins</code>, and it is session-only — no token can claim an id, however
+      scoped, because a deployment credential that could register new ids would grow its own reach
+      every time it was used. Until the page exists, <strong>send that request yourself</strong>,
+      signed in and carrying your own session cookie. Saying so is better than sending you looking
+      for a button that is not there; it is tracked as
+      <a href="https://github.com/prokopto-dev/nparse-plugin-regserve/issues/42">issue 42</a>.
+    </p>
+    <p class="muted">
+      <strong>Do not ask somebody else to claim it for you.</strong> The account whose session sends
+      the request becomes the owner — the claim takes the caller's own id and there is no
+      on-behalf-of field — and an id is permanent, so that is not something anybody can correct
+      afterwards. It has to be handed over instead: they add you as an owner, you mint your own
+      token, and only then do they remove themselves. That needs you to have signed in here at least
+      once anyway, so signing in and claiming it yourself is strictly less work.
+    </p>
+  </li>
+
+  <li>
+    <strong>Mint a scoped token.</strong>
+    On <a href="/account">your account</a>, mint a personal access token with
+    <code>plugin:publish</code> and nothing else, <strong>pinned to that one plugin id</strong>. The
+    pin is the half that contains a leak: a token stolen from one repository's CI can publish to one
+    plugin.
+    <p class="muted">
+      The secret is shown exactly once and is never recoverable — what is stored is a keyed hash of
+      it. If you lose it, revoke it and mint another.
+    </p>
+  </li>
+
+  <li>
+    <strong>Store it as a repository secret.</strong>
+    In your plugin repository, <em>Settings → Secrets and variables → Actions</em>, as
+    <code>REGSERVE_TOKEN</code>. It goes to the reusable workflow through <code>secrets:</code>,
+    never through an input and never into a <code>run:</code> block.
+  </li>
+
+  <li>
+    <strong>Tag a release.</strong>
+    Your workflow builds the artifact, uploads it to the GitHub Release, and then calls the
+    registry's reusable workflow with the plugin id, the version your plugin declares, the artifact
+    URL and its sha256.
+  </li>
+
+  <li>
+    <strong>The reusable workflow publishes.</strong>
+    One job in your pipeline. It sends an idempotency key derived from your repository, id and
+    version, so a re-run replays the original answer instead of burning a version that can only be
+    used once.
+    {{/* The GitHub expression delimiters are written as HTML ENTITIES. `{{` opens an action in
+         html/template, so a literal one here would be parsed as one rather than printed — a
+         template file cannot carry both syntaxes unescaped. Literal template text is emitted
+         verbatim, so what reaches the page, and what a reader copies out of it, is the real
+         `${{ … }}` a workflow needs. The <pre> below starts at column 0 on purpose: whitespace
+         inside it is content, and indenting it to match the markup would indent the YAML. */}}
+<pre class="snippet">  publish:
+    needs: build
+    uses: prokopto-dev/nparse-plugin-regserve/.github/workflows/publish-plugin.yml@5b0d87f7666f20c0c188b7208ad2738bd55c10d7 # v0.3.0
+    with:
+      plugin-id: your-plugin-id
+      version: $&#123;&#123; needs.build.outputs.version &#125;&#125;
+      artifact-url: https://github.com/$&#123;&#123; github.repository &#125;&#125;/releases/download/$&#123;&#123; github.ref_name &#125;&#125;/your_plugin.zip
+      artifact-sha256: $&#123;&#123; needs.build.outputs.sha256 &#125;&#125;
+    secrets:
+      registry-token: $&#123;&#123; secrets.REGSERVE_TOKEN &#125;&#125;</pre>
+  </li>
+</ol>
+
+<h2>Your first release waits for a human, and that is not a failure</h2>
+<p>
+  <strong>A new plugin id always goes to human review</strong>, whatever your trust level. The first
+  appearance of an id is where impersonation is caught, and nothing bypasses it — not a trusted
+  account, not a second attempt.
+</p>
+<p>
+  So the first run of your publish job normally reports <code>state: pending</code> and
+  <strong>succeeds with a warning</strong>. The release is durably recorded and its version is
+  claimed; it is simply not in the index yet. An author who expects a green tick to mean "live"
+  reads that as a broken publish, and it is not one. Later version bumps of an
+  <em>already-approved</em> plugin can publish without a human, which is what trust levels govern.
+</p>
+<p>
+  There is a third outcome worth knowing before you meet it: <code>verified: false</code>, meaning
+  the registry could not download your artifact at all. It waits for review and is honest about
+  having checked nothing. The usual cause is ordering — a GitHub Release asset does not exist for an
+  anonymous caller until the release is published, so a draft release gives the registry a 404.
+</p>
+
+<h2>Pin the workflow to a commit, not to a tag and not to a branch</h2>
+<p>
+  The <code>uses:</code> line above ends in a 40-character commit SHA, with the release it belongs
+  to written beside it. That is not fussiness: a reusable workflow runs <em>inside your job, with
+  your publish token</em>, so the ref you copy from us decides what gets to run next to that secret.
+</p>
+<p>
+  <strong><code>@main</code> would mean your pipeline changes whenever this repository does.</strong>
+  And <strong><code>@v0.3.0</code> is not a pin either</strong> — a tag is a movable label, so one
+  <code>git tag -f</code> and a force-push here would change what every pipeline that copied it runs
+  on its next release, with no diff to review and nothing to notice. A commit SHA cannot be moved,
+  and that is the whole property worth buying.
+</p>
+<p class="muted">
+  The comment is what makes it readable: <code># v0.3.0</code> says which release you are on when
+  forty hex characters do not, and a pin you cannot place is a pin you will never update. This
+  repository pins every action it uses the same way, and it is a fair rule to hold us to.
+</p>
+
+<h2>The rest of it</h2>
+<ul>
+  <li>
+    <a href="https://github.com/prokopto-dev/nparse-plugin-regserve/blob/main/docs/operations/publishing-from-ci.md">Publishing
+    from CI</a> — every input, what happens to the hash you send, how re-runs behave, and how to
+    make a release that lands in review fail your pipeline if that is what you want.
+  </li>
+  <li>
+    <a href="https://github.com/prokopto-dev/nparse-plugin-template">The plugin template</a> — a
+    plugin that builds, to start from.
+  </li>
+  <li>
+    <a href="{{.IndexPath}}">The index</a> — the public JSON document every nParse+ install reads.
+    Your plugin appears in it once a release of it has been approved.
+  </li>
+</ul>
+{{end}}

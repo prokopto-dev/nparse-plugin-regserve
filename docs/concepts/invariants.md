@@ -107,7 +107,34 @@ rules that travel with the palette are the ones a colour picker breaks, so they 
 | `ADR003` | Every ADR contains `## Considered options` |
 | `DOC001` | Every error code in the closed enum has a documentation page |
 | `DOC002` | Every gate defined in `scripts/repo-gates.sh` is recorded in this file |
+| `DOC003` | Every reference to the reusable publish workflow is an immutable 40-character commit SHA — never a branch and never a tag — there is exactly one such commit across the documentation and the web pages, and each reference names its release in a comment |
 | `CMD001` | Every `make <target>` named in the docs resolves to a real Makefile target |
+
+`DOC003` is the one of these with a security argument rather than a tidiness one.
+`.github/workflows/publish-plugin.yml` is consumed by OTHER repositories through `workflow_call`: it
+runs a plugin author's release job, with that author's publish token. The ref we publish therefore
+decides what gets to run next to somebody else's secret.
+
+**A tag is not a pin, and the first version of this gate accepted one.** `@main` is the obvious
+mistake, but `git tag -f` plus a force-push moves `v0.3.0` just as freely — every pipeline that
+copied the tag then runs different code on its next release, with no diff to review and nothing to
+notice. That is `@main`'s property spelled slower. The gate now refuses both and accepts only the
+40-character commit SHA, which is the only ref in git that cannot be repointed. The prose had
+already conceded the point ("a tag can be moved and a SHA cannot") while the gate went on passing
+the tag, which is the specific failure a governing rule about gates exists to catch: a page that
+calls a movable label a pin teaches the wrong lesson *and* keeps its green tick.
+
+Two further rules travel with it. The release tag must appear in a comment on the same line, because
+forty hex characters do not say which version a reader's pipeline is on and a pin nobody can place
+is a pin nobody ever updates. And there must be exactly ONE commit across
+[`docs/operations/publishing-from-ci.md`](../operations/publishing-from-ci.md) and the `/publish`
+page, because two pages quoting different SHAs is drift where neither page looks wrong on its own.
+
+It lives in `scripts/docs-check.sh` and reads its sources from `$DOC003_SOURCES`, so
+`test/repo/docs_test.go` can point it at trees it must reject and **watch it fail** — a shell gate
+whose pattern stops matching reports "no findings" over files it never read, which is
+indistinguishable from a clean tree. A release tag is one of the fixtures it must refuse, precisely
+because it is what this documentation used to publish.
 
 ## Data invariants
 

@@ -94,7 +94,8 @@ personal access token outright.
   `.github/workflows/publish-plugin.yml`, called with a scoped PAT, sending an idempotency key
   so a re-run replays rather than submitting a second release, and reporting "waiting for
   review" as neither a failure nor a completed publish
-- `prokopto-dev/nparseplus-plugin-template` wired to it
+- `prokopto-dev/nparse-plugin-template` wired to it — the template repository exists; its
+  `release.yml` still inlines its own publish job rather than calling the reusable workflow
 - The client update repointing `DEFAULT_REGISTRY_URL`
 - ✅ Admin surface for the review queue — server-rendered pages from the same binary, session-only
   and reviewer-gated, showing every quarantine reason that fired, both hashes when they disagree,
