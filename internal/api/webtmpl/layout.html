@@ -68,7 +68,9 @@
                 display: flex; justify-content: space-between; align-items: center;
                 gap: 1rem; flex-wrap: wrap; }
   header a { color: var(--plate-accent); }
-  header .muted { color: var(--plate-muted); }
+  header .muted, header .who { color: var(--plate-muted); }
+  header nav { display: flex; align-items: baseline; flex-wrap: wrap; gap: .25rem .85rem;
+               font-size: .9rem; }
   .brand { display: flex; align-items: center; gap: .6rem; text-decoration: none;
            color: var(--plate-fg); }
   /* The mark is 256x256 in its own coordinates; the attributes on the vendored file say so and are
@@ -132,16 +134,23 @@
       <h1>nParse+<span class="sub">plugin registry</span></h1>
     </a>
     {{if .Account}}
-      <span class="muted">
-        {{if .IsReviewer}}<a href="/review">review queue</a> ·{{end}}
-        <a href="/account">{{.Account.DisplayName}}</a>
+      {{/* EVERY signed-in page carries the same three links, and "your account" is one of them on
+           purpose. It used to be that the header showed the display name as plain text, the review
+           queue had no back link of its own, and the front page could not tell a signed-in visitor
+           from an anonymous one — so a reviewer who clicked through to the queue had no way back
+           to their account at all without editing the URL. A name is an identity, not a
+           destination: the destinations are spelled out. */}}
+      <nav>
+        <span class="who">{{.Account.DisplayName}}</span>
+        <a href="/account">your account</a>
+        {{if .IsReviewer}}<a href="/review">review queue</a>{{end}}
         {{if .CSRFToken}}
         <form method="post" action="/auth/logout" style="display:inline;margin:0">
           <input type="hidden" name="{{.CSRFField}}" value="{{.CSRFToken}}">
           <button type="submit" class="link">sign out</button>
         </form>
         {{end}}
-      </span>
+      </nav>
     {{end}}
   </div>
 </header>
