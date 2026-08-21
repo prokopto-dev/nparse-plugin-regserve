@@ -91,6 +91,13 @@ Each has a mechanism. The mechanism is authoritative; this list is a description
    as operation metadata, which `security.go`'s middleware enforces. The spec and the server cannot
    disagree, because there is one value and two readers.
 
+   **And what it declares has to RESOLVE.** `PERM001` also asks `internal/authz` whether the
+   permission exists, whether its floor flag agrees, and whether the scopes offered to a token
+   actually satisfy it. Declaring was gated and resolving was not, and the gap shipped: the publish
+   route named `release.publish`, a permission the catalogue has never held, so `authz.Satisfies`
+   missed and every scoped token was answered 403 — publishing, the point of this service, closed,
+   with no test red. A permission that fails closed is safe and still broken.
+
 7. **A permission or a scope is a whole quoted literal in `internal/authz/catalogue.go`.**
    `AUTHZ001` reads that file as text. A composed key produces the right runtime value and answers
    no question anybody asks while grepping for it at 2am.

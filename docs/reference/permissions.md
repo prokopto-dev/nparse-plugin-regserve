@@ -25,7 +25,7 @@ differently on purpose — an absence cannot be told from a refusal.
 | Permission | Scopes that satisfy it | Declared by | What it allows |
 |---|---|---|---|
 | `plugin.read` | `plugin:read` | *nothing yet* | Read a plugin's registry state, including releases that are pending review and therefore absent from the public index. |
-| `plugin.publish` | `plugin:publish` | *nothing yet* | Submit a release of a plugin. A new plugin id always goes to human review; a version bump of an approved plugin may publish automatically. |
+| `plugin.publish` | `plugin:publish` | `POST /api/v1/plugins/{id}/releases` | Submit a release of a plugin. A new plugin id always goes to human review; a version bump of an approved plugin may publish automatically. |
 | `plugin.manage` | `plugin:manage` | *nothing yet* | Change a listing's name, description, author or homepage, and delist it. Delisting keeps the id claimed — ids are never recycled. |
 | `token.mint` | **none — capability floor** | `POST /account/tokens` | Mint a personal access token. |
 | `token.read` | **none — capability floor** | `GET /account` | List the account's personal access tokens. Secrets are shown once at mint time and never again — this lists prefixes, scopes and dates. |

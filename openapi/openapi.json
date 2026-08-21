@@ -1094,7 +1094,7 @@
         "tags": [
           "releases"
         ],
-        "x-regserve-permission": "release.publish",
+        "x-regserve-permission": "plugin.publish",
         "x-regserve-plugin-param": "id"
       }
     },
