@@ -13,37 +13,55 @@
 #
 # THREE SPELLINGS OF `run:`, and the first version of this gate handled only the first:
 #
-#   run: |            a block scalar; the script is the more-indented lines that follow
-#   run: >            a folded block scalar; likewise
+#   run: |            a literal block scalar; the script is the more-indented lines that follow
+#   run: >            a FOLDED block scalar; likewise, but its line breaks fold
 #   run: echo hi      a PLAIN scalar; the script is on the same line, and may continue onto
 #                     more-indented lines below it
 #
-# The third is the one that mattered. `run: echo "${{ github.ref_name }}"` is a caller-controlled
-# tag name substituted into a script before bash sees it — the exact line ACT001 exists to catch —
-# and it sailed past a gate that reported green over the workflows written the other way.
+# The third is the one that mattered for ACT001. `run: echo "${{ github.ref_name }}"` is a
+# caller-controlled tag name substituted into a script before bash sees it — the exact line the
+# gate exists to catch — and it sailed past a version that reported green over the workflows
+# written the other way.
 #
-# # Two of those three FOLD, and extraction has to fold with them
+# # Extraction has to reproduce YAML's line breaks, and that is the fiddly part
 #
-# A literal block (`|`) keeps its newlines: what the runner executes is line for line what is
-# written. A folded block (`>`) and a plain multi-line scalar do NOT — YAML joins their
-# continuation lines with a single SPACE, so
+# ACT002 hands the extracted script to `bash -n`, so it has to be the script the RUNNER executes.
+# Not approximately: a script that is one line short of correct is a syntax error somebody has to
+# be told is not real, and a gate that reports problems that are not there gets switched off,
+# taking the real findings with it. Both of the bugs this file has had were in that direction.
 #
-#     - run: echo one
-#         && echo two
+# The three styles break differently:
 #
-# is the one-line script `echo one && echo two`. Writing that out as two lines instead produces
-# `echo one` followed by `&& echo two`, which is a bash syntax error — so ACT002 would have failed
-# a workflow that is perfectly valid and that Actions runs without complaint.
+#   |   LITERAL. Every newline is a newline. Written out unchanged.
 #
-# That direction is the dangerous one. A gate that reports a real problem gets fixed; a gate that
-# reports a problem that is not there gets switched off, and takes the real findings with it.
+#   >   FOLDED, but not uniformly. A break between two lines at the block's base indentation folds
+#       to a SPACE — so `echo one` / `&& echo two` is one command. A MORE-INDENTED line is literal,
+#       and the breaks on BOTH SIDES of it are kept, which is what makes this legal:
 #
-# The folding here is the useful subset rather than all of YAML's: continuation lines join with a
-# space, and a blank line folds to a newline. What it does NOT implement is a folded block's
-# more-indented lines being kept literal, which nothing in this repository writes and which would
-# only ever change the SHAPE of a script handed to `bash -n`, never whether it is inspected.
+#           run: >
+#             if true; then
+#               echo hi
+#             fi
+#
+#       Folding that into `if true; then echo hi fi` is a bash syntax error, and it is a workflow
+#       Actions runs without complaint.
+#
+#   plain   Folds uniformly. There is no more-indented rule for a plain scalar: every break is a
+#           space and leading whitespace on a continuation line is dropped.
+#
+# In all three, a BLANK line is a newline.
+#
+# What is deliberately not implemented is the rest of YAML — anchors, quoted scalars spanning
+# lines, tabs where spaces belong. Those do not appear in a workflow's `run:` and each would be a
+# separate, visible failure rather than a silent one.
 
 function indent(s) { match(s, /^[ \t]*/); return RLENGTH }
+
+function trim(s) {
+  sub(/^[ \t]+/, "", s)
+  sub(/[ \t]+$/, "", s)
+  return s
+}
 
 # script_for opens the file for the current block, once.
 function script_for(file) {
@@ -54,10 +72,12 @@ function script_for(file) {
   started = 1
 }
 
+# emit takes one line of the value, already stripped of the block's base indentation. `more` says
+# whether it was indented further than that base — the fact the folded style turns on.
 function emit(line, file, lineno) {
   if (mode == "expressions") {
     # Line by line, whatever the style. Folding cannot make a `${{` appear or disappear, and a
-    # finding has to name the line the reader will look at.
+    # finding has to name the line the reader will open the file to.
     if (line ~ /\$\{\{/) printf "  %s:%d: %s\n", file, lineno, line
     return
   }
@@ -67,9 +87,21 @@ function emit(line, file, lineno) {
     print line > script
     return
   }
-  # Folded: hold the line and join it to the next with a space, exactly as YAML would.
-  if (pending == "") pending = line
-  else pending = pending " " line
+  if (pending == "") {
+    pending = line
+    prev_more = more
+    return
+  }
+  # THE BREAK IS KEPT when either side of it is more-indented, and only in a folded BLOCK: a plain
+  # scalar has no such rule and folds every break.
+  if (style == "folded" && (more || prev_more)) {
+    print pending > script
+    pending = line
+    prev_more = more
+    return
+  }
+  pending = pending " " line
+  prev_more = more
 }
 
 function blank() {
@@ -78,14 +110,14 @@ function blank() {
     print "" > script
     return
   }
-  # A blank line inside a folded scalar folds to a NEWLINE. Whatever has been accumulated is a
-  # complete line, so it is written out before the break.
+  # A blank line folds to a NEWLINE in every style. Whatever has been accumulated is a complete
+  # line, so it is written out before the break.
   fold_flush()
   print "" > script
 }
 
-# fold_flush writes the accumulated folded line. It must be called at every point a value ENDS:
-# a following key, the next `run:`, or the end of the file. A missed call silently drops the last
+# fold_flush writes the accumulated folded line. It must be called at every point a value ENDS: a
+# following key, the next `run:`, or the end of the file. A missed call silently drops the last
 # line of a script, which would make ACT002 parse something shorter than what runs.
 function fold_flush() {
   if (mode != "extract" || !started || style == "literal") return
@@ -93,6 +125,7 @@ function fold_flush() {
     print pending > script
     pending = ""
   }
+  prev_more = 0
 }
 
 # A `run:` key, with or without the list dash that puts it on the same line as its step.
@@ -103,8 +136,7 @@ function fold_flush() {
   # ri is the COLUMN THE `run` KEY STARTS AT, not the indent of the line, because that is what the
   # extent of the value is measured against. Taking the line indent would swallow the sibling keys
   # of a step written with the dash — an `env:` block two lines down would be read as script, and
-  # every `${{ … }}` in it reported as a finding. A gate with false positives gets switched off,
-  # which is a worse outcome than the one it was added to prevent.
+  # every `${{ … }}` in it reported as a finding.
   match($0, /^[ \t]*(- +)?/)
   ri = RLENGTH
 
@@ -115,6 +147,8 @@ function fold_flush() {
   started = 0
   strip = -1
   pending = ""
+  prev_more = 0
+  more = 0
   block_start = FNR
 
   # A block indicator — | or >, with an optional chomping and indentation hint — means the script
@@ -128,7 +162,7 @@ function fold_flush() {
     next
   }
 
-  style = "folded"
+  style = "plain"
   emit(rest, FILENAME, FNR)
   next
 }
@@ -138,8 +172,14 @@ inrun {
   # The value ends at the first non-blank line indented no further than the key, which is the same
   # rule the YAML parser applies.
   if (indent($0) <= ri) { fold_flush(); inrun = 0; next }
+
+  # The block's base indentation is set by its first content line, and everything is measured
+  # against that — including whether a line counts as more-indented.
   if (strip < 0) strip = indent($0)
-  emit(substr($0, strip + 1), FILENAME, FNR)
+  more = (indent($0) > strip)
+
+  if (style == "plain") emit(trim(substr($0, strip + 1)), FILENAME, FNR)
+  else emit(substr($0, strip + 1), FILENAME, FNR)
   next
 }
 

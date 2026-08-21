@@ -212,6 +212,26 @@ func TestACT002_FoldsWhatYAMLFolds(t *testing.T) {
 			yaml: step("      - run: test -f x\n          && echo found\n          || echo missing"),
 			why:  "folding is not a special case for two lines",
 		},
+		{
+			// The case that broke the FIRST folding fix, and the reason this gate cannot get away
+			// with an approximation of YAML. A more-indented line inside a folded block is
+			// literal, and the breaks on BOTH sides of it are kept — so this is a multi-line
+			// shell construct that Actions runs happily. Joining it produces
+			// `if true; then echo hi fi`, which bash rejects.
+			name: "a folded block whose body is indented",
+			yaml: step("      - name: x\n        run: >\n          if true; then\n            echo hi\n          fi"),
+			why:  "more-indented lines in a > block keep their newlines; only the base indent folds",
+		},
+		{
+			name: "a folded block with a blank line in it",
+			yaml: step("      - name: x\n        run: >\n          echo one\n\n          echo two"),
+			why:  "a blank line folds to a newline rather than disappearing",
+		},
+		{
+			name: "a folded block that both folds and does not",
+			yaml: step("      - name: x\n        run: >\n          set -e\n          && for f in a b; do\n            echo \"$f\"\n          done"),
+			why:  "the two rules apply within one block, line by line",
+		},
 	}
 
 	for _, tt := range tests {
