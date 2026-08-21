@@ -51,9 +51,24 @@
 #
 # In all three, a BLANK line is a newline.
 #
-# What is deliberately not implemented is the rest of YAML — anchors, quoted scalars spanning
-# lines, tabs where spaces belong. Those do not appear in a workflow's `run:` and each would be a
-# separate, visible failure rather than a silent one.
+# # What this does NOT implement, stated rather than discovered
+#
+# The rest of YAML: anchors, quoted scalars spanning lines, tabs where spaces belong. None appears
+# in a workflow's `run:` value, and each would be a visible failure rather than a silent one.
+#
+# One deliberate over-report is left in, and it is in ACT001 only. A trailing YAML comment on a
+# PLAIN scalar — `- run: make check # uses ${{ github.sha }}` — is stripped by a real parser, and
+# is reported here as a finding. Stripping it would mean deciding whether a `#` is inside quotes,
+# which is the class of question that has already produced three false positives in this file. The
+# over-report is in the safe direction: it names a line a human can read, and the fix is to move
+# the value or delete the comment. ACT002 is unaffected, because bash treats `#` as a comment too.
+#
+# THREE FALSE POSITIVES IN THIS FILE SO FAR, each a valid workflow reported broken: the plain
+# scalar that was not matched at all, the folded block whose indented body was joined into one
+# line, and the block header with a comment after it. That is a fair signal about hand-parsing
+# YAML with awk. The alternative — parsing the document properly in Go, where `gopkg.in/yaml.v3`
+# is already in the module graph — is a dependency decision for a human, and is proposed in
+# issue #37 rather than taken here.
 
 function indent(s) { match(s, /^[ \t]*/); return RLENGTH }
 
@@ -151,10 +166,18 @@ function fold_flush() {
   more = 0
   block_start = FNR
 
-  # A block indicator — | or >, with an optional chomping and indentation hint — means the script
-  # starts on the NEXT line. Anything else is the first line of a plain scalar, and is script.
-  if (rest ~ /^\|[+-]?[0-9]*[ \t]*$/) { style = "literal"; next }
-  if (rest ~ /^>[+-]?[0-9]*[ \t]*$/)  { style = "folded";  next }
+  # A block indicator — | or >, with optional chomping and indentation hints IN EITHER ORDER, and
+  # optionally followed by a YAML COMMENT — means the script starts on the NEXT line. Anything else
+  # is the first line of a plain scalar, and is script.
+  #
+  # The comment is legal and was the gate's third false positive: `run: > # folded for width` fell
+  # through to the plain branch, and the extracted script began `> # folded for width echo …`,
+  # which bash rejects while Actions runs the block happily.
+  #
+  # Over-accepting AFTER a `|` or `>` is safe: YAML forbids a plain scalar from starting with
+  # either character, so there is no valid value this could steal.
+  if (rest ~ /^\|[0-9+-]*[ \t]*(#.*)?$/) { style = "literal"; next }
+  if (rest ~ /^>[0-9+-]*[ \t]*(#.*)?$/)  { style = "folded";  next }
   if (rest == "") {
     # `run:` with nothing after it is not a script anybody writes. Treated as literal, which is the
     # conservative reading: it preserves whatever follows rather than joining it into one line.

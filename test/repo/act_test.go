@@ -228,6 +228,37 @@ func TestACT002_FoldsWhatYAMLFolds(t *testing.T) {
 			why:  "a blank line folds to a newline rather than disappearing",
 		},
 		{
+			// A YAML comment may follow a block-scalar header. This was the gate's THIRD false
+			// positive: the header was not recognised, the value fell through to the plain
+			// branch, and the extracted script began `> # folded for width echo …`.
+			name: "a folded block header with a comment after it",
+			yaml: step("      - name: x\n        run: > # folded so the long command fits\n          echo \"a\"\n          && echo \"b\""),
+			why:  "a comment after a block header is legal YAML and is not part of the script",
+		},
+		{
+			name: "a literal block header with a comment after it",
+			yaml: step("      - name: x\n        run: | # every newline matters here\n          set -euo pipefail\n          echo one"),
+			why:  "the same, for the literal style",
+		},
+		{
+			name: "a chomped header with a comment after it",
+			yaml: step("      - name: x\n        run: |-  # chomped, and explained\n          echo one"),
+			why:  "the indicators and the comment appear together",
+		},
+		{
+			name: "indicators in the other order",
+			yaml: step("      - name: x\n        run: >2-\n          echo one\n          && echo two"),
+			why:  "YAML permits the indentation hint before the chomping one",
+		},
+		{
+			// The other direction: a `#` inside a plain scalar is not a comment unless whitespace
+			// precedes it, and this one is inside quotes either way. Accepting comments in a block
+			// HEADER must not turn into stripping them from a script.
+			name: "a hash inside a plain scalar",
+			yaml: step(`      - run: echo "#1 done"`),
+			why:  "the value is the script, hash and all",
+		},
+		{
 			name: "a folded block that both folds and does not",
 			yaml: step("      - name: x\n        run: >\n          set -e\n          && for f in a b; do\n            echo \"$f\"\n          done"),
 			why:  "the two rules apply within one block, line by line",
