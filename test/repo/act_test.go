@@ -180,6 +180,67 @@ func TestACT002_FiresOnAScriptThatDoesNotParse(t *testing.T) {
 	}
 }
 
+// TestACT002_FoldsWhatYAMLFolds — the false positive that would have switched this gate off.
+//
+// A plain scalar and a folded block (`>`) join their continuation lines with a SPACE: what the
+// runner executes is one line. Extracting them as separate lines instead hands `bash -n` a script
+// nobody wrote — `echo one` followed by `&& echo two` — and fails a workflow that Actions runs
+// without complaint.
+//
+// That direction is the dangerous one. A gate that reports a real problem gets fixed; a gate that
+// reports a problem that is not there gets switched off, and takes the real findings with it.
+func TestACT002_FoldsWhatYAMLFolds(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		yaml string
+		why  string
+	}{
+		{
+			name: "a plain scalar continued onto the next line",
+			yaml: step("      - run: echo one\n          && echo two"),
+			why:  "YAML joins the two with a space, so the script is `echo one && echo two`",
+		},
+		{
+			name: "a folded block scalar",
+			yaml: step("      - name: x\n        run: >\n          echo \"a\"\n          && echo \"b\""),
+			why:  "> folds exactly as a plain scalar does",
+		},
+		{
+			name: "a plain scalar continued over three lines",
+			yaml: step("      - run: test -f x\n          && echo found\n          || echo missing"),
+			why:  "folding is not a special case for two lines",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			code, out := actGate(t, "syntax", map[string]string{"fine.yml": tt.yaml})
+			require.Equal(t, 0, code,
+				"ACT002 must not fail a workflow Actions runs happily: %s\n%s", tt.why, out)
+		})
+	}
+}
+
+// TestACT002_DoesNotFoldALiteralBlock is the same rule from the other side.
+//
+// `|` keeps its newlines, so a continuation that only makes sense folded is a REAL syntax error
+// there — and folding everything would have hidden it. The two styles have to be told apart rather
+// than treated alike in whichever direction is convenient.
+func TestACT002_DoesNotFoldALiteralBlock(t *testing.T) {
+	t.Parallel()
+
+	code, out := actGate(t, "syntax", map[string]string{
+		"broken.yml": step("      - name: x\n        run: |\n          echo one\n          && echo two"),
+	})
+	require.Equal(t, 1, code,
+		"a literal block really does run these as two lines, and the second is a syntax error\n%s", out)
+	require.Contains(t, out, "does not parse")
+}
+
 // TestACT002_FiresWhenNothingWasExtracted — the vacancy check.
 //
 // A scanner that stopped recognising `run:` would report "no findings" over every workflow in the
@@ -205,7 +266,10 @@ func TestACT002_PassesAWorkflowThatParses(t *testing.T) {
 		"fine.yml": step("      - name: x\n        run: |\n          set -euo pipefail\n          cat <<EOF\n          a heredoc that ends\n          EOF\n      - run: make check"),
 	})
 	require.Equal(t, 0, code, "a workflow whose scripts parse must pass\n%s", out)
-	require.Equal(t, "2", strings.TrimSpace(out), "both spellings of run: must have been extracted")
+	require.Equal(t, "2", strings.TrimSpace(out),
+		"the count is what proves the scanner READ them: a block and a plain scalar are two "+
+			"scripts, and a scanner that had stopped matching one would report the other as a "+
+			"clean tree")
 }
 
 // step wraps step YAML in the smallest workflow that contains it.
