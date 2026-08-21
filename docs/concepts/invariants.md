@@ -107,7 +107,23 @@ rules that travel with the palette are the ones a colour picker breaks, so they 
 | `ADR003` | Every ADR contains `## Considered options` |
 | `DOC001` | Every error code in the closed enum has a documentation page |
 | `DOC002` | Every gate defined in `scripts/repo-gates.sh` is recorded in this file |
+| `DOC003` | Every reference to the reusable publish workflow is a pin — a tag or a 40-character SHA, never a branch — and there is exactly one tag across the documentation and the web pages |
 | `CMD001` | Every `make <target>` named in the docs resolves to a real Makefile target |
+
+`DOC003` is the one of these with a security argument rather than a tidiness one.
+`.github/workflows/publish-plugin.yml` is consumed by OTHER repositories through `workflow_call`: it
+runs a plugin author's release job, with that author's publish token. `@main` in an example we
+publish means their pipeline changes when this repository does — on their release day rather than on
+a day they chose to upgrade. It also requires ONE tag across
+[`docs/operations/publishing-from-ci.md`](../operations/publishing-from-ci.md) and the `/publish`
+page, because two pages quoting different refs is drift where neither page looks wrong on its own.
+A SHA pin is allowed and is stronger — a tag can be moved, a SHA cannot — but it must name its tag
+in a comment, since forty bare hex characters tell a reader nothing about which release they are.
+
+It lives in `scripts/docs-check.sh` and reads its sources from `$DOC003_SOURCES`, so
+`test/repo/docs_test.go` can point it at trees it must reject and **watch it fail** — a shell gate
+whose pattern stops matching reports "no findings" over files it never read, which is
+indistinguishable from a clean tree.
 
 ## Data invariants
 

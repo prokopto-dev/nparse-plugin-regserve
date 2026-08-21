@@ -6,6 +6,47 @@ pipeline lists a new version in the nParse+ plugin registry without anybody open
 It replaces the old flow — a PR against `prokopto-dev/nparseplus-plugins`, edited by hand, merged by
 a maintainer — with a call to a workflow this repository publishes.
 
+The same walkthrough, shorter and on the web, is at
+<https://nparseplugins.prokopto.dev/publish>.
+
+## Start here
+
+Six steps, in this order. The order is load-bearing in one place: a token is pinned to a plugin id,
+so the id has to exist before the token can be minted.
+
+1. **Start from the template.**
+   [`prokopto-dev/nparse-plugin-template`](https://github.com/prokopto-dev/nparse-plugin-template)
+   is a plugin that builds, with the manifest, the layout and a release workflow already in it. Use
+   it as a GitHub template repository. Writing one from scratch is fine too: what this registry
+   needs from a build is one artifact at a public `https` URL and a version string your plugin
+   declares.
+2. **Claim your plugin id.** Sign in at <https://nparseplugins.prokopto.dev/> with GitHub. Ids are
+   first-come, permanent and **never recycled** — an id names your plugin in every installed copy on
+   every user's machine. See the honest note below: there is no page for this step yet.
+3. **Mint a scoped token** on **/account**: `plugin:publish`, pinned to that id, nothing else.
+4. **Store it as a repository secret** in your plugin repository, as `REGSERVE_TOKEN`.
+5. **Tag a release.** Your workflow builds the artifact and uploads it to the GitHub Release.
+6. **Call the reusable workflow** as one more job. It publishes, or it records that a human needs to
+   look — see [Reading the result](#reading-the-result).
+
+**Expect your first release to wait for a human.** A new plugin id *always* goes to human review,
+whatever your trust level ([ADR-0007](../adr/0007-review-new-ids-trust-gates-updates.md)). The job
+succeeds with a warning and reports `state: pending`; the release is durably recorded and its
+version is claimed. That is the correct outcome, not a broken publish, and reading it as a failure
+is the mistake this page most wants to prevent.
+
+### Claiming an id has no page yet
+
+`POST /api/v1/plugins` is the claim, and it is **session-only** — no personal access token can claim
+an id, however scoped, because a deployment credential that could register new ids would grow its
+own reach every time it was used. The browser surface has no form for it, so today an author either
+asks a maintainer to claim the id or calls the endpoint carrying their own browser session cookie.
+
+This is a real gap and it is tracked as
+[issue #42](https://github.com/prokopto-dev/nparse-plugin-regserve/issues/42), not a step somebody
+forgot to write down. It is recorded here rather than glossed, because an author
+looking for a button that does not exist concludes the registry is broken.
+
 ## The short version
 
 ```yaml
@@ -44,7 +85,7 @@ jobs:
 
   publish:
     needs: build
-    uses: prokopto-dev/nparse-plugin-regserve/.github/workflows/publish-plugin.yml@<40-char-sha>
+    uses: prokopto-dev/nparse-plugin-regserve/.github/workflows/publish-plugin.yml@v0.3.0
     with:
       plugin-id: merchant-mode
       version: ${{ needs.build.outputs.version }}
@@ -58,12 +99,27 @@ jobs:
       registry-token: ${{ secrets.REGSERVE_TOKEN }}
 ```
 
-**Pin the `uses:` line to a 40-character commit SHA**, not to a branch. A reusable workflow runs
-*your* job with *your* secret; `@main` means whatever that branch says tomorrow gets your publish
-token. This repository pins every action it uses for the same reason (gate `PIN001`), and you should
-hold us to the same rule.
+### Pin the `uses:` line, and never to a branch
+
+`@v0.3.0` above is the current release tag, and the pin is the point of it. A reusable workflow runs
+*your* job with *your* secret, so `@main` means whatever that branch says tomorrow gets your publish
+token — an upgrade that arrives on your release day rather than one you chose on a day you were
+watching. This repository pins every action it uses for the same reason (gate `PIN001`), and you
+should hold us to the same rule.
+
+A **tag** is the readable pin and is what the website and this page quote. A **40-character commit
+SHA** is stronger, because a tag can be moved and a SHA cannot:
+
+```yaml
+    uses: prokopto-dev/nparse-plugin-regserve/.github/workflows/publish-plugin.yml@5b0d87f7666f20c0c188b7208ad2738bd55c10d7 # v0.3.0
+```
+
+Both are pins. Neither is `@main`, which is the only spelling that is wrong.
 
 ## Getting the token
+
+This is step 3 above, and it needs step 2 done first: a token is pinned to a plugin id, and the
+`/account` form offers only ids you already own.
 
 1. Sign in at <https://nparseplugins.prokopto.dev/> with the GitHub account that owns the plugin.
 2. On **/account**, mint a token:

@@ -37,6 +37,13 @@ const (
 	// mean, and should not move when one changes.
 	PathPluginListing = "/plugins/{id}"
 
+	// PathPublish is the author on-ramp: how somebody who wants to WRITE a plugin gets from the
+	// template repository to a listing. It is public and deliberately not under /account — a
+	// visitor with no account is exactly the reader it is for, and a page that asked them to sign
+	// in before telling them what signing in would be for is a page that answers the question
+	// after they have stopped asking it.
+	PathPublish = "/publish"
+
 	// tagDirectory groups the public pages in the OpenAPI document, away from both the account
 	// surface and the machine API.
 	tagDirectory = "directory"
@@ -178,6 +185,25 @@ func registerDirectory(api huma.API, deps DirectoryDeps) {
 		data := directoryData(ctx, deps, listing.Name)
 		data.Listing = &listing
 		return renderPage(ctx, "listing.html", data)
+	})
+
+	register(api, Public(), huma.Operation{
+		OperationID: "getPublishGuidePage",
+		Method:      http.MethodGet,
+		Path:        PathPublish,
+		Summary:     "How to publish a plugin",
+		Description: "An HTML page: the path from the plugin template to a listing — claim an id, " +
+			"mint a scoped token, store it as a repository secret, tag a release, and the " +
+			"reusable workflow publishes. Public, because the reader it is written for does not " +
+			"have an account yet.",
+		Tags:      []string{tagDirectory},
+		Errors:    []int{http.StatusInternalServerError},
+		Responses: htmlResponses(),
+	}, func(ctx context.Context, _ *struct{}) (*htmlOutput, error) {
+		// No catalogue read at all: the page is prose and the header. It is registered alongside
+		// the directory rather than on its own condition because an on-ramp on a build that cannot
+		// list anything would be an invitation into a registry with no index behind it.
+		return renderPage(ctx, "publish.html", directoryData(ctx, deps, "Publish a plugin"))
 	})
 }
 

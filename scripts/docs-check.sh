@@ -104,4 +104,66 @@ else
   report DOC002 "docs/concepts/invariants.md is missing; it is where every gate is registered"
 fi
 
+
+# --- DOC003 — the reusable workflow is referenced by a pin, never by a branch -------------------
+# `.github/workflows/publish-plugin.yml` is consumed by OTHER repositories through `workflow_call`.
+# It runs their job, with their publish token. Telling an author to write `@main` hands them an
+# upgrade that arrives on their release day rather than one they chose on a day they were watching,
+# so every reference this repository publishes has to be a pin.
+#
+# It also has to be ONE pin. The website and the adoption doc quoting different refs is how somebody
+# ends up publishing through a version nobody documented, and neither page would look wrong on its
+# own — which is exactly the drift a gate catches and a review does not.
+#
+# The sources are overridable so the gate can be pointed at fixtures and WATCHED FAILING. A shell
+# gate fails in the direction that reports success — a pattern that stops matching says "no
+# findings" over a file it never read — so test/repo/docs_test.go runs this against trees it must
+# reject. That is the same reason scripts/act-gates.sh takes a directory.
+REF_PREFIX='prokopto-dev/nparse-plugin-regserve/\.github/workflows/publish-plugin\.yml@'
+REF_SOURCES="${DOC003_SOURCES:-docs internal/api/webtmpl README.md}"
+refs=$(grep -rhoE "${REF_PREFIX}[A-Za-z0-9._/-]+" $REF_SOURCES 2>/dev/null \
+       | sed 's/.*@//' | sort -u)
+
+if [ -z "$refs" ]; then
+  vacant DOC003 "the reusable workflow is referenced by a pinned tag"
+else
+  unpinned=""
+  tags=""
+  for r in $refs; do
+    if printf '%s' "$r" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+      tags="$tags $r"
+    elif ! printf '%s' "$r" | grep -qE '^[0-9a-f]{40}$'; then
+      # Anything that is not a semver tag and not a 40-character SHA is a moving ref. `@main` is
+      # the one this exists for; `@v1` and `@release` fail for the same reason.
+      unpinned="$unpinned  @$r\n"
+    fi
+  done
+
+  tagcount=$(printf '%s\n' $tags | grep -c . || true)
+  uniquetags=$(printf '%s\n' $tags | sort -u | grep -c . || true)
+
+  # A bare 40 hex characters is unreadable: a reader cannot tell whether it is the release the page
+  # around it documents. The SHA form is offered as the stronger pin, so it has to name its tag.
+  shalines=$(grep -rhE "${REF_PREFIX}[0-9a-f]{40}" $REF_SOURCES 2>/dev/null || true)
+  unnamed=0
+  if [ -n "$shalines" ] && [ "$uniquetags" = "1" ]; then
+    only=$(printf '%s\n' $tags | sort -u)
+    unnamed=$(printf '%s\n' "$shalines" | grep -cvE "#[[:space:]]*${only}([^0-9.]|$)" || true)
+  fi
+
+  if [ -n "$unpinned" ]; then
+    report DOC003 "the reusable workflow is referenced by a moving ref; a pin is a tag or a SHA:"
+    printf "%b" "$unpinned"
+  elif [ "$tagcount" = "0" ]; then
+    report DOC003 "no tag reference to the reusable workflow; a SHA alone does not say which
+              release an author is pinned to"
+  elif [ "$uniquetags" != "1" ]; then
+    report DOC003 "the reusable workflow is quoted at $uniquetags different tags:$tags"
+  elif [ "$unnamed" != "0" ]; then
+    report DOC003 "$unnamed SHA pin(s) of the reusable workflow do not name the tag they are"
+  else
+    pass DOC003 "the reusable workflow is pinned, at one tag ($(printf '%s\n' $tags | sort -u))"
+  fi
+fi
+
 exit $fail

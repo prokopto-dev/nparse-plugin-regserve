@@ -76,6 +76,7 @@ registry with no app change at all.
 | `GET /plugins/{id}/index.json` | One plugin, same format — the shape `PluginMeta.update_url` expects |
 | `GET /` | The plugin directory a person reads, with a search. Public, server-rendered, no account |
 | `GET /plugins/{id}` | One plugin's page: what it is, its latest approved release, its notes. Public |
+| `GET /publish` | The author on-ramp: template, id, scoped token, tag, publish — and why the first release waits for a human. Public |
 | `GET /healthz` | Liveness. Touches nothing |
 | `GET /readyz` | Readiness, and it says *why* when it is not: the database answers and the catalogue still renders |
 
@@ -99,7 +100,8 @@ own, so they must not move when the product API versions
 - [`docs/api/errors.md`](docs/api/errors.md) — the closed error-code enum
 - [`docs/operations/deployment.md`](docs/operations/deployment.md) — the DigitalOcean + Traefik runbook
 - [`docs/operations/publishing-from-ci.md`](docs/operations/publishing-from-ci.md) — how a plugin
-  repository publishes on tag, with the reusable workflow it calls
+  repository publishes on tag, with the reusable workflow it calls. The short version of the same
+  walkthrough is served at [`/publish`](https://nparseplugins.prokopto.dev/publish)
 
 ## Working on it
 

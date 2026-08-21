@@ -12,6 +12,21 @@
   </p>
 </section>
 
+{{/* The other reason somebody is on this page. The directory answered "what plugins exist" and
+     nothing on the site answered "how do I make one", so a visitor who came to WRITE a plugin left
+     knowing exactly what they arrived knowing. It sits ABOVE the catalogue for the same reason the
+     install panel does: both are questions people arrive with, and the list below is what they
+     came through this page to reach rather than what they came to read. */}}
+<section class="onramp">
+  <h2>Write one</h2>
+  <p>
+    Start from the <a href="https://github.com/prokopto-dev/nparse-plugin-template">plugin
+    template</a>, claim an id, and let your release pipeline publish on tag.
+    <a href="/publish"><strong>How to publish a plugin</strong></a> walks the whole path — including
+    the part where a brand-new plugin id waits for a human, which is expected rather than broken.
+  </p>
+</section>
+
 <h2>Plugins</h2>
 
 <form method="get" action="/" role="search">
@@ -82,5 +97,10 @@
   artifacts live on GitHub Releases and the ownership records this registry was migrated from are
   GitHub handles, so a GitHub identity is the one credential that connects a publisher to the code
   they are publishing.
+</p>
+<p class="muted">
+  What that looks like from a plugin repository — the template to start from, the scoped token, the
+  one job you add to your release workflow, and what the first release actually does — is on
+  <a href="/publish">how to publish a plugin</a>.
 </p>
 {{end}}

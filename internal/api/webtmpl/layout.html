@@ -109,10 +109,12 @@
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   header :focus-visible { outline-color: var(--plate-accent); }
   /* The directory. The install panel is the first thing on the page because adding this registry
-     is the most likely reason somebody is reading it. */
-  .install { border: 1px solid var(--line); border-left: 4px solid var(--accent);
+     is the most likely reason somebody is reading it; the author on-ramp is the second, and gets
+     the same treatment because "how do I make one of these" deserves the same weight as "how do I
+     use one". The gold is a hairline down the edge — an accent, never a field. */
+  .install, .onramp { border: 1px solid var(--line); border-left: 4px solid var(--accent);
              border-radius: 4px; padding: .1rem 1rem 1rem; margin: 0 0 1.5rem; }
-  .install h2 { margin-top: 1rem; }
+  .install h2, .onramp h2 { margin-top: 1rem; }
   .install code { display: inline-block; padding: .3rem .5rem; border: 1px dashed var(--field);
                   border-radius: 4px; word-break: break-all; }
   /* A listing's facts table uses <th> as a ROW header, where the uppercase column-header styling
@@ -138,6 +140,16 @@
   pre.notes { white-space: pre-wrap; word-break: break-word; border: 1px solid var(--line);
               border-radius: 4px; padding: .75rem; margin: .5rem 0; max-width: 42rem;
               font-family: inherit; font-size: .95rem; }
+  /* The publish walkthrough is a NUMBERED list because the steps are ordered and the order is
+     load-bearing: a token cannot be pinned to an id that has not been claimed yet. */
+  ol.steps { padding-left: 1.4rem; }
+  ol.steps > li { margin: 0 0 1.25rem; max-width: 42rem; }
+  ol.steps p { margin: .4rem 0 0; }
+  /* A copyable YAML snippet SCROLLS rather than wraps. A wrapped line pasted into a workflow file
+     is a workflow file that does not parse, and the person pasting it finds out on release day. */
+  pre.snippet { overflow-x: auto; border: 1px solid var(--line); border-radius: 4px;
+                padding: .75rem; margin: .6rem 0 0; max-width: 42rem; font-size: .85rem;
+                font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   button[disabled] { opacity: .5; cursor: not-allowed; }
 </style>
 </head>
@@ -156,14 +168,21 @@
       <span class="mark" aria-hidden="true">{{template "nparseplus-mark.svg" .}}</span>
       <h1>nParse+<span class="sub">plugin registry</span></h1>
     </a>
-    {{if .Account}}
-      {{/* EVERY signed-in page carries the same three links, and "your account" is one of them on
-           purpose. It used to be that the header showed the display name as plain text, the review
-           queue had no back link of its own, and the front page could not tell a signed-in visitor
-           from an anonymous one — so a reviewer who clicked through to the queue had no way back
-           to their account at all without editing the URL. A name is an identity, not a
-           destination: the destinations are spelled out. */}}
-      <nav>
+    {{/* ONE nav on every page, signed in or not, and "publish a plugin" is its first item.
+         The registry could say what plugins exist and could not say how to make one: the front
+         page listed a catalogue and the author on-ramp existed only in a docs file nobody on the
+         site was pointed at. A destination reachable from every page is the cheapest fix, and it
+         is the same argument as the account link below — a link nobody can find is a page that
+         does not exist. */}}
+    <nav>
+      <a href="/publish">publish a plugin</a>
+      {{if .Account}}
+        {{/* EVERY signed-in page carries the same three links, and "your account" is one of them
+             on purpose. It used to be that the header showed the display name as plain text, the
+             review queue had no back link of its own, and the front page could not tell a
+             signed-in visitor from an anonymous one — so a reviewer who clicked through to the
+             queue had no way back to their account at all without editing the URL. A name is an
+             identity, not a destination: the destinations are spelled out. */}}
         <span class="who">{{.Account.DisplayName}}</span>
         <a href="/account">your account</a>
         {{if .IsReviewer}}<a href="/review">review queue</a>{{end}}
@@ -173,15 +192,13 @@
           <button type="submit" class="link">sign out</button>
         </form>
         {{end}}
-      </nav>
-    {{else if .Providers}}
-      {{/* Sign-in is a HEADER link now, not the front page. A visitor who wants to see what
-           plugins exist should not be asked who they are first — the catalogue is public, and
-           /index.json has always served it to anybody. */}}
-      <nav>
+      {{else if .Providers}}
+        {{/* Sign-in is a HEADER link now, not the front page. A visitor who wants to see what
+             plugins exist should not be asked who they are first — the catalogue is public, and
+             /index.json has always served it to anybody. */}}
         {{range .Providers}}<a href="/auth/{{.}}/login?next=/account">sign in with GitHub</a>{{end}}
-      </nav>
-    {{end}}
+      {{end}}
+    </nav>
   </div>
 </header>
 <main>

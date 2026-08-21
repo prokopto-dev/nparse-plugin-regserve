@@ -2302,6 +2302,52 @@
         "x-regserve-permission": "owner.manage"
       }
     },
+    "/publish": {
+      "get": {
+        "description": "An HTML page: the path from the plugin template to a listing — claim an id, mint a scoped token, store it as a repository secret, tag a release, and the reusable workflow publishes. Public, because the reader it is written for does not have an account yet.",
+        "operationId": "getPublishGuidePage",
+        "responses": {
+          "200": {
+            "content": {
+              "text/html; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "An HTML page for a browser. Not part of the machine API; the shape is not a contract and may change with the design.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Type": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [],
+        "summary": "How to publish a plugin",
+        "tags": [
+          "directory"
+        ],
+        "x-regserve-public": true
+      }
+    },
     "/readyz": {
       "get": {
         "description": "200 when the service can serve requests that touch the database, and 503 naming the reason when it cannot.",
