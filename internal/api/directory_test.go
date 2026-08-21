@@ -337,8 +337,9 @@ func TestDirectory_ASignedInVisitor_IsNotToldToSignIn(t *testing.T) {
 		r.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: "a-session"})
 	}).body)
 
-	require.Contains(t, body, `<a href="/account">prokopto-dev</a>`,
+	require.Contains(t, body, `<span class="who">prokopto-dev</span>`,
 		"the header names the account that is reading")
+	require.Contains(t, body, `<a href="/account">your account</a>`)
 	require.NotContains(t, body, "sign in with GitHub")
 	require.Equal(t, "a-session", authn.sawCreds.SessionCookie)
 	require.Empty(t, authn.sawCreds.BearerToken)
@@ -363,8 +364,9 @@ func TestDirectory_ATokenIsNotABrowser(t *testing.T) {
 		r.Header.Set("Authorization", "Bearer "+auth.TokenPrefix+"abcd1234_"+strings.Repeat("s", 43))
 	}).body)
 
-	require.NotContains(t, body, `<a href="/account">`,
+	require.NotContains(t, body, `class="who"`,
 		"a token must not put an account onto a page")
+	require.NotContains(t, body, `<a href="/account">your account</a>`)
 	require.Contains(t, body, "sign in with GitHub")
 	require.Empty(t, authn.sawCreds.SessionCookie)
 	require.Empty(t, authn.sawCreds.BearerToken,
