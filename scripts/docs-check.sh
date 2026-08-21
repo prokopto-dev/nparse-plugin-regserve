@@ -105,15 +105,23 @@ else
 fi
 
 
-# --- DOC003 — the reusable workflow is referenced by a pin, never by a branch -------------------
+# --- DOC003 — the reusable workflow is referenced by an immutable commit SHA -------------------
 # `.github/workflows/publish-plugin.yml` is consumed by OTHER repositories through `workflow_call`.
-# It runs their job, with their publish token. Telling an author to write `@main` hands them an
-# upgrade that arrives on their release day rather than one they chose on a day they were watching,
-# so every reference this repository publishes has to be a pin.
+# It runs their release job, with their publish token, so the ref an author copies out of our
+# documentation decides what gets to run next to that secret.
 #
-# It also has to be ONE pin. The website and the adoption doc quoting different refs is how somebody
-# ends up publishing through a version nobody documented, and neither page would look wrong on its
-# own — which is exactly the drift a gate catches and a review does not.
+# A TAG IS NOT A PIN. `git tag -f` plus a force-push moves `v0.3.0`, and every pipeline that copied
+# it runs different code on its next release, with no diff to review and nothing to notice. That is
+# `@main`'s property spelled slower, so the gate refuses both: only the 40-character commit SHA
+# cannot be moved. This is deliberately stricter than what the prose used to recommend, because a
+# page that calls a movable label a "pin" teaches the wrong lesson while passing its own gate.
+#
+# THE RELEASE TAG STILL HAS TO APPEAR, in a comment on the same line. Forty hex characters do not
+# say which release a reader is on, and a pin nobody can place is a pin nobody will ever update.
+#
+# It also has to be ONE commit. Two pages quoting different SHAs is drift where neither page looks
+# wrong on its own, and the author who reaches the older one publishes through a version nobody
+# documented.
 #
 # The sources are overridable so the gate can be pointed at fixtures and WATCHED FAILING. A shell
 # gate fails in the direction that reports success — a pattern that stops matching says "no
@@ -121,48 +129,37 @@ fi
 # reject. That is the same reason scripts/act-gates.sh takes a directory.
 REF_PREFIX='prokopto-dev/nparse-plugin-regserve/\.github/workflows/publish-plugin\.yml@'
 REF_SOURCES="${DOC003_SOURCES:-docs internal/api/webtmpl README.md}"
-refs=$(grep -rhoE "${REF_PREFIX}[A-Za-z0-9._/-]+" $REF_SOURCES 2>/dev/null \
-       | sed 's/.*@//' | sort -u)
+reflines=$(grep -rhE "${REF_PREFIX}[A-Za-z0-9._/-]+" $REF_SOURCES 2>/dev/null || true)
 
-if [ -z "$refs" ]; then
-  vacant DOC003 "the reusable workflow is referenced by a pinned tag"
+if [ -z "$reflines" ]; then
+  vacant DOC003 "the reusable workflow is referenced by an immutable commit SHA"
 else
-  unpinned=""
-  tags=""
+  refs=$(printf '%s\n' "$reflines" | grep -oE "${REF_PREFIX}[A-Za-z0-9._/-]+" \
+         | sed 's/.*@//' | sort -u)
+
+  movable=""
   for r in $refs; do
-    if printf '%s' "$r" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-      tags="$tags $r"
-    elif ! printf '%s' "$r" | grep -qE '^[0-9a-f]{40}$'; then
-      # Anything that is not a semver tag and not a 40-character SHA is a moving ref. `@main` is
-      # the one this exists for; `@v1` and `@release` fail for the same reason.
-      unpinned="$unpinned  @$r\n"
-    fi
+    # A branch, a tag, a `v1` alias and an abbreviated sha are all refs somebody can repoint at
+    # code the author never read. Only the full commit SHA is immutable.
+    printf '%s' "$r" | grep -qE '^[0-9a-f]{40}$' || movable="$movable  @$r\n"
   done
 
-  tagcount=$(printf '%s\n' $tags | grep -c . || true)
-  uniquetags=$(printf '%s\n' $tags | sort -u | grep -c . || true)
+  commits=$(printf '%s\n' $refs | grep -cE '^[0-9a-f]{40}$' || true)
+  named=$(printf '%s\n' "$reflines" | grep -cE '#[[:space:]]*v[0-9]+\.[0-9]+\.[0-9]+' || true)
+  total=$(printf '%s\n' "$reflines" | grep -c . || true)
 
-  # A bare 40 hex characters is unreadable: a reader cannot tell whether it is the release the page
-  # around it documents. The SHA form is offered as the stronger pin, so it has to name its tag.
-  shalines=$(grep -rhE "${REF_PREFIX}[0-9a-f]{40}" $REF_SOURCES 2>/dev/null || true)
-  unnamed=0
-  if [ -n "$shalines" ] && [ "$uniquetags" = "1" ]; then
-    only=$(printf '%s\n' $tags | sort -u)
-    unnamed=$(printf '%s\n' "$shalines" | grep -cvE "#[[:space:]]*${only}([^0-9.]|$)" || true)
-  fi
-
-  if [ -n "$unpinned" ]; then
-    report DOC003 "the reusable workflow is referenced by a moving ref; a pin is a tag or a SHA:"
-    printf "%b" "$unpinned"
-  elif [ "$tagcount" = "0" ]; then
-    report DOC003 "no tag reference to the reusable workflow; a SHA alone does not say which
-              release an author is pinned to"
-  elif [ "$uniquetags" != "1" ]; then
-    report DOC003 "the reusable workflow is quoted at $uniquetags different tags:$tags"
-  elif [ "$unnamed" != "0" ]; then
-    report DOC003 "$unnamed SHA pin(s) of the reusable workflow do not name the tag they are"
+  if [ -n "$movable" ]; then
+    report DOC003 "the reusable workflow is referenced by a movable ref; a tag can be retagged and \
+a branch is worse:"
+    printf "%b" "$movable"
+  elif [ "$commits" != "1" ]; then
+    report DOC003 "the reusable workflow is quoted at $commits different commits; there is one \
+pin or there is none"
+  elif [ "$named" != "$total" ]; then
+    report DOC003 "$((total - named)) reference(s) do not name the release they pin; forty hex \
+characters are not a version"
   else
-    pass DOC003 "the reusable workflow is pinned, at one tag ($(printf '%s\n' $tags | sort -u))"
+    pass DOC003 "the reusable workflow is pinned to one commit, named by its release"
   fi
 fi
 

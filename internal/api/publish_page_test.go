@@ -81,19 +81,29 @@ func TestPublishGuide_SaysThereIsNoFormForClaimingAnId(t *testing.T) {
 
 	require.Contains(t, body, "no form for this step yet")
 	require.Contains(t, body, "/issues/42", "the gap is tracked, not glossed")
+
+	// The claim takes the AUTHENTICATED CALLER's account id and the body has no on-behalf-of
+	// field, so "ask somebody to claim it for you" hands them the plugin — permanently, since ids
+	// are never reassigned. The page has to say that, or its workaround costs an author their id.
+	require.Contains(t, body, "Do not ask somebody else to claim it for you")
+	require.Contains(t, body, "becomes the owner")
 }
 
 // usesRef finds the ref of every reusable-workflow reference on a page.
 var usesRef = regexp.MustCompile(
 	`prokopto-dev/nparse-plugin-regserve/\.github/workflows/publish-plugin\.yml@([A-Za-z0-9._/-]+)`)
 
-// TestPublishGuide_PinsTheReusableWorkflow_RatherThanNamingABranch.
+// TestPublishGuide_PinsTheReusableWorkflow_ToAnImmutableCommit.
 //
 // The workflow is consumed through `workflow_call`: it runs the author's job with the author's
-// publish token. `@main` would mean their pipeline changes when this repository does, on their
-// release day. DOC003 gates the same rule over the files; this gates what a reader is actually
-// served, which is the only version of the rule that reaches anybody.
-func TestPublishGuide_PinsTheReusableWorkflow_RatherThanNamingABranch(t *testing.T) {
+// publish token, so the ref this page hands them decides what gets to run next to that secret.
+// A TAG DOES NOT QUALIFY — `git tag -f` and a force-push here would repoint it, and every pipeline
+// that copied it runs different code on its next release with no diff and nothing to notice. Only
+// the 40-character commit SHA cannot move.
+//
+// DOC003 gates the same rule over the files. This gates what a reader is actually SERVED, which is
+// the only version of the rule that reaches anybody.
+func TestPublishGuide_PinsTheReusableWorkflow_ToAnImmutableCommit(t *testing.T) {
 	t.Parallel()
 
 	body := string(browse(t, api.Config{Directory: directoryOf(testPlugin("alpha"))},
@@ -102,12 +112,16 @@ func TestPublishGuide_PinsTheReusableWorkflow_RatherThanNamingABranch(t *testing
 	refs := usesRef.FindAllStringSubmatch(body, -1)
 	require.NotEmpty(t, refs, "the page must show the uses: line; this gate is not vacant")
 
-	pin := regexp.MustCompile(`^(v[0-9]+\.[0-9]+\.[0-9]+|[0-9a-f]{40})$`)
+	commit := regexp.MustCompile(`^[0-9a-f]{40}$`)
 	for _, m := range refs {
-		require.Regexpf(t, pin, m[1],
-			"@%s is a moving ref: a reusable workflow runs the caller's job with the caller's "+
-				"secret, so what this page hands them has to be a pin", m[1])
+		require.Regexpf(t, commit, m[1],
+			"@%s is a movable ref: a reusable workflow runs the caller's job with the caller's "+
+				"secret, so what this page hands them has to be a commit nobody can repoint", m[1])
 	}
+
+	require.Contains(t, body, "# v0.3.0",
+		"the pin must name its release: forty hex characters do not say which version a "+
+			"reader's pipeline is on, and a pin nobody can place is never updated")
 }
 
 // TestPublishGuide_RendersTheGitHubExpressionSyntax_Intact.

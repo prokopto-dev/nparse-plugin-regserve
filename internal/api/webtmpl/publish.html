@@ -64,10 +64,18 @@
       <strong>There is no form for this step yet.</strong> Claiming is
       <code>POST /api/v1/plugins</code>, and it is session-only — no token can claim an id, however
       scoped, because a deployment credential that could register new ids would grow its own reach
-      every time it was used. Until the page exists, ask a maintainer to claim the id for you, or
-      call the endpoint with your browser session. Saying so is better than sending you looking for
-      a button that is not there — it is tracked as
+      every time it was used. Until the page exists, <strong>send that request yourself</strong>,
+      signed in and carrying your own session cookie. Saying so is better than sending you looking
+      for a button that is not there; it is tracked as
       <a href="https://github.com/prokopto-dev/nparse-plugin-regserve/issues/42">issue 42</a>.
+    </p>
+    <p class="muted">
+      <strong>Do not ask somebody else to claim it for you.</strong> The account whose session sends
+      the request becomes the owner — the claim takes the caller's own id and there is no
+      on-behalf-of field — and an id is permanent, so that is not something anybody can correct
+      afterwards. It has to be handed over instead: they add you as an owner, you mint your own
+      token, and only then do they remove themselves. That needs you to have signed in here at least
+      once anyway, so signing in and claiming it yourself is strictly less work.
     </p>
   </li>
 
@@ -110,7 +118,7 @@
          inside it is content, and indenting it to match the markup would indent the YAML. */}}
 <pre class="snippet">  publish:
     needs: build
-    uses: prokopto-dev/nparse-plugin-regserve/.github/workflows/publish-plugin.yml@v0.3.0
+    uses: prokopto-dev/nparse-plugin-regserve/.github/workflows/publish-plugin.yml@5b0d87f7666f20c0c188b7208ad2738bd55c10d7 # v0.3.0
     with:
       plugin-id: your-plugin-id
       version: $&#123;&#123; needs.build.outputs.version &#125;&#125;
@@ -141,17 +149,23 @@
   anonymous caller until the release is published, so a draft release gives the registry a 404.
 </p>
 
-<h2>Pin the workflow to a tag, never to a branch</h2>
+<h2>Pin the workflow to a commit, not to a tag and not to a branch</h2>
 <p>
-  The <code>uses:</code> line above ends in <code>@v0.3.0</code> on purpose.
-  <strong><code>@main</code> would mean your pipeline changes when this repository does</strong> —
-  and it runs inside your job, with your publish token. A pin makes an upgrade something you choose
-  on a day you are watching, rather than something that arrives on your release day.
+  The <code>uses:</code> line above ends in a 40-character commit SHA, with the release it belongs
+  to written beside it. That is not fussiness: a reusable workflow runs <em>inside your job, with
+  your publish token</em>, so the ref you copy from us decides what gets to run next to that secret.
+</p>
+<p>
+  <strong><code>@main</code> would mean your pipeline changes whenever this repository does.</strong>
+  And <strong><code>@v0.3.0</code> is not a pin either</strong> — a tag is a movable label, so one
+  <code>git tag -f</code> and a force-push here would change what every pipeline that copied it runs
+  on its next release, with no diff to review and nothing to notice. A commit SHA cannot be moved,
+  and that is the whole property worth buying.
 </p>
 <p class="muted">
-  A tag is the readable pin and the one this page quotes. A 40-character commit SHA is stronger
-  still, because a tag can be moved and a SHA cannot; the adoption doc shows that form. This
-  repository pins every action it uses for the same reason, and it is a fair rule to hold us to.
+  The comment is what makes it readable: <code># v0.3.0</code> says which release you are on when
+  forty hex characters do not, and a pin you cannot place is a pin you will never update. This
+  repository pins every action it uses the same way, and it is a fair rule to hold us to.
 </p>
 
 <h2>The rest of it</h2>

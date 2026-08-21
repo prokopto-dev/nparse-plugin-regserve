@@ -13,10 +13,14 @@ import (
 // DOC003, watched failing.
 //
 // `.github/workflows/publish-plugin.yml` is consumed by OTHER repositories through `workflow_call`:
-// it runs their release job, with their publish token. Every reference this repository publishes
-// therefore has to be a pin — `@main` hands an author an upgrade that arrives on their release day
-// — and there has to be exactly ONE of them, because the website and the adoption doc quoting
-// different refs is drift where neither page looks wrong on its own.
+// it runs their release job, with their publish token. So the ref this repository publishes decides
+// what runs next to somebody else's secret, and it has to be one that CANNOT MOVE.
+//
+// A tag is not one. `git tag -f` and a force-push repoint `v0.3.0`, and every pipeline that copied
+// it runs different code on its next release with no diff and no notification — `@main`'s property
+// spelled slower. The tag still has to appear in a comment, because forty hex characters do not say
+// which release a reader is on; and there has to be exactly ONE commit across every page, because
+// two pages quoting different SHAs is drift where neither looks wrong on its own.
 //
 // The gate is shell, and shell gates fail in the direction that reports success: a grep pattern
 // that stops matching prints "no findings" over files it never read, which is indistinguishable
@@ -63,8 +67,18 @@ func uses(ref string) string {
 	return "    uses: prokopto-dev/nparse-plugin-regserve/.github/workflows/publish-plugin.yml@" + ref
 }
 
-// TestDOC003_FiresOnEveryRefThatIsNotAPin — the mistake the gate exists for.
-func TestDOC003_FiresOnEveryRefThatIsNotAPin(t *testing.T) {
+// sha is a whole commit, and pinned is that commit with the release comment DOC003 requires.
+const (
+	sha    = "5b0d87f7666f20c0c188b7208ad2738bd55c10d7"
+	pinned = " # v0.3.0"
+)
+
+// TestDOC003_FiresOnEveryRefThatCanBeMoved — the mistake the gate exists for.
+//
+// The tag case is the one worth having: it is what this documentation used to publish, and it read
+// as careful. A movable label handed to somebody whose CI runs it with their publish token is not
+// a pin however carefully it is spelled.
+func TestDOC003_FiresOnEveryRefThatCanBeMoved(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -78,9 +92,15 @@ func TestDOC003_FiresOnEveryRefThatIsNotAPin(t *testing.T) {
 			why:  "`@main` means the caller's pipeline changes when this repository does",
 		},
 		{
+			name: "a release tag",
+			ref:  "v0.3.0",
+			why: "`git tag -f` and a force-push repoint it, and every pipeline that copied it " +
+				"runs new code on its next release with no diff and no notification",
+		},
+		{
 			name: "a major-version alias",
 			ref:  "v1",
-			why:  "a floating major tag moves, which is the same defect spelled shorter",
+			why:  "a floating major tag moves by design",
 		},
 		{
 			name: "a named ref that is not a version",
@@ -98,8 +118,8 @@ func TestDOC003_FiresOnEveryRefThatIsNotAPin(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			line := doc003(t, map[string]string{"publishing.md": uses(tc.ref)})
-			require.Containsf(t, line, "moving ref",
+			line := doc003(t, map[string]string{"publishing.md": uses(tc.ref) + pinned})
+			require.Containsf(t, line, "movable ref",
 				"DOC003 must refuse @%s: %s\ngot: %s", tc.ref, tc.why, line)
 		})
 	}
@@ -112,49 +132,46 @@ func TestDOC003_FiresOnEveryRefThatIsNotAPin(t *testing.T) {
 func TestDOC003_FiresOnTwoSpellingsOfThePin(t *testing.T) {
 	t.Parallel()
 
+	other := "0603b68f284eb39a687e75845d70d5a4e5d2f0be"
+
 	line := doc003(t, map[string]string{
-		"publishing.md": uses("v0.3.0"),
-		"web/page.html": uses("v0.2.0"),
+		"publishing.md": uses(sha) + pinned,
+		"web/page.html": uses(other) + " # v0.2.0",
 	})
-	require.Contains(t, line, "2 different tags",
-		"DOC003 must refuse two tags: an author reaching one page publishes through a version "+
-			"the other page does not document")
+	require.Contains(t, line, "2 different commits",
+		"DOC003 must refuse two commits: an author reaching one page publishes through a "+
+			"version the other page does not document")
 }
 
 // TestDOC003_FiresOnAShaThatDoesNotSayWhichReleaseItIs.
 //
-// The SHA form is offered as the STRONGER pin — a tag can be moved and a SHA cannot — so it has to
-// stay readable. Forty bare hex characters tell a reader nothing about whether the pin is the
-// release the page around it documents.
+// A commit SHA is the only immutable ref and it is also unreadable. Without the release beside it
+// a reader cannot tell whether their pipeline is on the version the page documents, and a pin
+// nobody can place is a pin nobody ever updates.
 func TestDOC003_FiresOnAShaThatDoesNotSayWhichReleaseItIs(t *testing.T) {
 	t.Parallel()
 
-	const sha = "5b0d87f7666f20c0c188b7208ad2738bd55c10d7"
+	naked := doc003(t, map[string]string{"publishing.md": uses(sha)})
+	require.Contains(t, naked, "do not name the release",
+		"DOC003 must refuse a commit pin with no release beside it")
 
-	naked := doc003(t, map[string]string{
-		"publishing.md": uses("v0.3.0") + "\n" + uses(sha),
-	})
-	require.Contains(t, naked, "do not name the tag",
-		"DOC003 must refuse a SHA pin with no tag beside it")
-
-	named := doc003(t, map[string]string{
-		"publishing.md": uses("v0.3.0") + "\n" + uses(sha) + " # v0.3.0",
-	})
-	require.Contains(t, named, "pinned, at one tag",
-		"a SHA that names its tag is the stronger pin and must pass")
+	named := doc003(t, map[string]string{"publishing.md": uses(sha) + pinned})
+	require.Contains(t, named, "pinned to one commit",
+		"a commit that names its release is the whole rule and must pass")
 }
 
-// TestDOC003_FiresOnAShaWithNoTagAnywhere — a repository that documents only a SHA.
+// TestDOC003_FiresWhenOnlySomeReferencesNameTheirRelease.
 //
-// It is a real pin and it is still a finding: nothing on the page says which release it is, so
-// there is no readable form for an author to check theirs against.
-func TestDOC003_FiresOnAShaWithNoTagAnywhere(t *testing.T) {
+// The page and the doc are edited separately, so "one of them carries the comment" is a state the
+// gate has to reach and refuse rather than count as covered.
+func TestDOC003_FiresWhenOnlySomeReferencesNameTheirRelease(t *testing.T) {
 	t.Parallel()
 
 	line := doc003(t, map[string]string{
-		"publishing.md": uses("5b0d87f7666f20c0c188b7208ad2738bd55c10d7"),
+		"publishing.md": uses(sha) + pinned,
+		"web/page.html": uses(sha),
 	})
-	require.Contains(t, line, "no tag reference")
+	require.Contains(t, line, "1 reference(s) do not name the release")
 }
 
 // TestDOC003_IsVacantRatherThanGreen_WhenNothingReferencesTheWorkflow.
@@ -179,5 +196,5 @@ func TestDOC003_PassesTheRepositoryItGuards(t *testing.T) {
 	cmd := exec.CommandContext(t.Context(), "bash", docsCheck())
 	out, err := cmd.CombinedOutput()
 	require.NoErrorf(t, err, "the documentation gates must pass:\n%s", out)
-	require.Contains(t, string(out), "the reusable workflow is pinned, at one tag")
+	require.Contains(t, string(out), "the reusable workflow is pinned to one commit")
 }

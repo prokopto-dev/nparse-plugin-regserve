@@ -22,7 +22,8 @@ so the id has to exist before the token can be minted.
    declares.
 2. **Claim your plugin id.** Sign in at <https://nparseplugins.prokopto.dev/> with GitHub. Ids are
    first-come, permanent and **never recycled** — an id names your plugin in every installed copy on
-   every user's machine. See the honest note below: there is no page for this step yet.
+   every user's machine. See the honest note below: there is no page for this step yet, and the
+   account that claims an id is the account that owns it.
 3. **Mint a scoped token** on **/account**: `plugin:publish`, pinned to that id, nothing else.
 4. **Store it as a repository secret** in your plugin repository, as `REGSERVE_TOKEN`.
 5. **Tag a release.** Your workflow builds the artifact and uploads it to the GitHub Release.
@@ -39,13 +40,27 @@ is the mistake this page most wants to prevent.
 
 `POST /api/v1/plugins` is the claim, and it is **session-only** — no personal access token can claim
 an id, however scoped, because a deployment credential that could register new ids would grow its
-own reach every time it was used. The browser surface has no form for it, so today an author either
-asks a maintainer to claim the id or calls the endpoint carrying their own browser session cookie.
+own reach every time it was used. The browser surface has **no form for it**, tracked as
+[issue #42](https://github.com/prokopto-dev/nparse-plugin-regserve/issues/42). It is recorded here
+rather than glossed, because an author looking for a button that does not exist concludes the
+registry is broken.
 
-This is a real gap and it is tracked as
-[issue #42](https://github.com/prokopto-dev/nparse-plugin-regserve/issues/42), not a step somebody
-forgot to write down. It is recorded here rather than glossed, because an author
-looking for a button that does not exist concludes the registry is broken.
+**Send that request yourself.** Sign in at <https://nparseplugins.prokopto.dev/>, then call the
+endpoint carrying your own `__Host-regserve_session` cookie.
+
+**Do not ask somebody else to claim it for you.** The account whose session sends the request
+becomes the owner: the handler passes the *authenticated caller's* account id to the claim, and the
+request body has no on-behalf-of field. Because ids are permanent and never reassigned, that is not
+something anybody can correct afterwards — it has to be **handed over** instead, which is the
+three-step dance ownership always is:
+
+1. they add you as an owner (which needs you to have signed in here at least once, so there is no
+   avoiding that part either);
+2. you mint your own token, pinned to the id;
+3. only then do they remove themselves — their tokens stop working the moment they stop being an
+   owner, because ownership is checked on every request rather than cascade-revoked.
+
+Signing in and claiming it yourself is strictly less work than any of that.
 
 ## The short version
 
@@ -85,7 +100,7 @@ jobs:
 
   publish:
     needs: build
-    uses: prokopto-dev/nparse-plugin-regserve/.github/workflows/publish-plugin.yml@v0.3.0
+    uses: prokopto-dev/nparse-plugin-regserve/.github/workflows/publish-plugin.yml@5b0d87f7666f20c0c188b7208ad2738bd55c10d7 # v0.3.0
     with:
       plugin-id: merchant-mode
       version: ${{ needs.build.outputs.version }}
@@ -99,22 +114,26 @@ jobs:
       registry-token: ${{ secrets.REGSERVE_TOKEN }}
 ```
 
-### Pin the `uses:` line, and never to a branch
+### Pin the `uses:` line to a commit, not to a tag and not to a branch
 
-`@v0.3.0` above is the current release tag, and the pin is the point of it. A reusable workflow runs
-*your* job with *your* secret, so `@main` means whatever that branch says tomorrow gets your publish
-token — an upgrade that arrives on your release day rather than one you chose on a day you were
-watching. This repository pins every action it uses for the same reason (gate `PIN001`), and you
-should hold us to the same rule.
+The ref above is a **40-character commit SHA** with `# v0.3.0` beside it, and both halves are doing
+work.
 
-A **tag** is the readable pin and is what the website and this page quote. A **40-character commit
-SHA** is stronger, because a tag can be moved and a SHA cannot:
+A reusable workflow runs *your* job with *your* secret, so the ref you copy from us decides what
+gets to run next to your publish token. `@main` would mean whatever that branch says tomorrow gets
+it. **`@v0.3.0` would not be a pin either:** a tag is a movable label, and one `git tag -f` and a
+force-push in this repository would change what every pipeline that copied it runs on its next
+release — no diff to review, nothing to notice. That is `@main`'s property, spelled slower. Only the
+commit SHA cannot move.
 
-```yaml
-    uses: prokopto-dev/nparse-plugin-regserve/.github/workflows/publish-plugin.yml@5b0d87f7666f20c0c188b7208ad2738bd55c10d7 # v0.3.0
-```
+The comment is not decoration. Forty hex characters do not say which release you are on, and a pin
+you cannot place is a pin you will never update. This repository pins every action it uses the same
+way (gate `PIN001`), and gate `DOC003` fails this page if a reference here is anything other than a
+commit SHA that names its release.
 
-Both are pins. Neither is `@main`, which is the only spelling that is wrong.
+**Upgrading is then a thing you choose.** Watch this repository's releases, read what changed, and
+move the SHA on a day you are looking at it — rather than discovering the new version on your own
+release day.
 
 ## Getting the token
 
