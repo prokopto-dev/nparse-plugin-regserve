@@ -93,7 +93,9 @@ personal access token outright.
 - A reusable workflow for plugin repositories that publishes on tag
 - `prokopto-dev/nparseplus-plugin-template` wired to it
 - The client update repointing `DEFAULT_REGISTRY_URL`
-- Admin surface for the review queue
+- ✅ Admin surface for the review queue — server-rendered pages from the same binary, session-only
+  and reviewer-gated, showing every quarantine reason that fired, both hashes when they disagree,
+  and the append-only audit trail
 
 ## Not scheduled
 

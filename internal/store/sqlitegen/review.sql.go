@@ -52,6 +52,215 @@ func (q *Queries) CountPendingReleases(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const getReleaseForReview = `-- name: GetReleaseForReview :one
+SELECT
+    r.id,
+    r.plugin_id,
+    p.name AS plugin_name,
+    r.version,
+    r.state,
+    r.source,
+    r.artifact_url,
+    r.artifact_sha256,
+    r.artifact_bytes,
+    r.sdk_specifier,
+    r.minimum_app_version,
+    r.notes,
+    r.submitted_by,
+    r.submitted_at,
+    r.verified_at,
+    r.reviewed_by,
+    r.reviewed_at,
+    r.review_note,
+    CAST(coalesce((SELECT prior.version FROM "release" prior
+        WHERE prior.plugin_id = r.plugin_id AND prior.state = 'approved' AND prior.id <> r.id
+        LIMIT 1), '') AS TEXT) AS live_version
+FROM "release" r
+JOIN plugin p ON p.id = r.plugin_id
+WHERE r.id = ?
+`
+
+type GetReleaseForReviewRow struct {
+	ID                string
+	PluginID          string
+	PluginName        string
+	Version           string
+	State             string
+	Source            string
+	ArtifactUrl       string
+	ArtifactSha256    *string
+	ArtifactBytes     *int64
+	SdkSpecifier      string
+	MinimumAppVersion *string
+	Notes             *string
+	SubmittedBy       *string
+	SubmittedAt       int64
+	VerifiedAt        *int64
+	ReviewedBy        *string
+	ReviewedAt        *int64
+	ReviewNote        *string
+	LiveVersion       string
+}
+
+// One release, whatever state it is in, with the plugin's name and what it would replace.
+//
+// NOT restricted to 'pending', deliberately. A reviewer who has just approved something is
+// redirected back to the page they acted on, and a page that 404ed the moment it was decided would
+// leave them unable to see what they did -- or to read the audit row that records it.
+//
+// live_version is what this release would replace, empty when the plugin has nothing approved.
+// Excluding the row itself matters: once THIS release is the approved one, an unfiltered subquery
+// would report the release as replacing itself.
+func (q *Queries) GetReleaseForReview(ctx context.Context, id string) (GetReleaseForReviewRow, error) {
+	row := q.db.QueryRowContext(ctx, getReleaseForReview, id)
+	var i GetReleaseForReviewRow
+	err := row.Scan(
+		&i.ID,
+		&i.PluginID,
+		&i.PluginName,
+		&i.Version,
+		&i.State,
+		&i.Source,
+		&i.ArtifactUrl,
+		&i.ArtifactSha256,
+		&i.ArtifactBytes,
+		&i.SdkSpecifier,
+		&i.MinimumAppVersion,
+		&i.Notes,
+		&i.SubmittedBy,
+		&i.SubmittedAt,
+		&i.VerifiedAt,
+		&i.ReviewedBy,
+		&i.ReviewedAt,
+		&i.ReviewNote,
+		&i.LiveVersion,
+	)
+	return i, err
+}
+
+const listAuditForPlugin = `-- name: ListAuditForPlugin :many
+SELECT
+    a.id,
+    a.recorded_at,
+    a.actor_kind,
+    a.actor_account_id,
+    a.action,
+    a.detail,
+    CAST(coalesce(acct.display_name, '') AS TEXT) AS actor_name
+FROM audit_log a
+LEFT JOIN account acct ON acct.id = a.actor_account_id
+WHERE a.subject_kind = 'plugin' AND a.subject_id = ?
+ORDER BY a.recorded_at, a.id
+`
+
+type ListAuditForPluginRow struct {
+	ID             string
+	RecordedAt     int64
+	ActorKind      string
+	ActorAccountID *string
+	Action         string
+	Detail         *string
+	ActorName      string
+}
+
+// Every audit row whose subject is this PLUGIN.
+//
+// A publish is recorded against the plugin, not the release -- an incident review asks "what has
+// happened to this plugin" -- so the row that says WHY a release is in the queue, carrying the
+// quarantine reasons and the submitted hash, is not reachable by the query above. The caller keeps
+// the rows whose detail names this release and drops the rest, rather than this filtering on the
+// shape of a JSON document from SQL.
+func (q *Queries) ListAuditForPlugin(ctx context.Context, subjectID *string) ([]ListAuditForPluginRow, error) {
+	rows, err := q.db.QueryContext(ctx, listAuditForPlugin, subjectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAuditForPluginRow{}
+	for rows.Next() {
+		var i ListAuditForPluginRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.RecordedAt,
+			&i.ActorKind,
+			&i.ActorAccountID,
+			&i.Action,
+			&i.Detail,
+			&i.ActorName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAuditForRelease = `-- name: ListAuditForRelease :many
+SELECT
+    a.id,
+    a.recorded_at,
+    a.actor_kind,
+    a.actor_account_id,
+    a.action,
+    a.detail,
+    CAST(coalesce(acct.display_name, '') AS TEXT) AS actor_name
+FROM audit_log a
+LEFT JOIN account acct ON acct.id = a.actor_account_id
+WHERE a.subject_kind = 'release' AND a.subject_id = ?
+ORDER BY a.recorded_at, a.id
+`
+
+type ListAuditForReleaseRow struct {
+	ID             string
+	RecordedAt     int64
+	ActorKind      string
+	ActorAccountID *string
+	Action         string
+	Detail         *string
+	ActorName      string
+}
+
+// Every audit row whose SUBJECT is this release: the approvals, rejections and re-verifications.
+//
+// The account is joined so a reviewer reads a name rather than a ULID. LEFT JOIN because a system
+// action names no account, and an INNER JOIN would silently drop exactly the rows nobody performed.
+func (q *Queries) ListAuditForRelease(ctx context.Context, subjectID *string) ([]ListAuditForReleaseRow, error) {
+	rows, err := q.db.QueryContext(ctx, listAuditForRelease, subjectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAuditForReleaseRow{}
+	for rows.Next() {
+		var i ListAuditForReleaseRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.RecordedAt,
+			&i.ActorKind,
+			&i.ActorAccountID,
+			&i.Action,
+			&i.Detail,
+			&i.ActorName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listHandlesForAccount = `-- name: ListHandlesForAccount :many
 SELECT provider_kind, handle FROM identity WHERE account_id = ? ORDER BY linked_at, id
 `

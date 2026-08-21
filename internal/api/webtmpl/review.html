@@ -1,0 +1,57 @@
+{{define "content"}}
+<h2>Waiting for review</h2>
+
+{{if not .Queue}}
+  <p class="muted">Nothing is waiting. Every release that has been submitted has been decided.</p>
+{{else}}
+  <p class="muted">
+    {{len .Queue}} release{{if ne (len .Queue) 1}}s{{end}}, oldest first — a queue worked from the
+    top is a queue whose bottom is never reached.
+  </p>
+
+  <table>
+    <thead>
+      <tr><th>Plugin</th><th>Version</th><th>Submitted</th><th>Artifact</th><th>Why</th></tr>
+    </thead>
+    <tbody>
+    {{range .Queue}}
+      <tr>
+        <td>
+          <a href="/review/releases/{{.ReleaseID}}"><code>{{.PluginID}}</code></a><br>
+          <span class="muted">{{.PluginName}}</span>
+        </td>
+        <td>{{.Version}}</td>
+        <td>
+          {{.SubmittedAt.Format "2006-01-02 15:04"}}
+          {{if .SubmittedBy}}<br><span class="muted">by {{.SubmittedBy}}</span>{{end}}
+        </td>
+        <td>
+          {{if .Verified}}
+            hashed
+          {{else}}
+            <strong class="warn">never checked</strong>
+          {{end}}
+        </td>
+        <td>
+          {{if .FirstRelease}}<strong>first release of this id</strong><br>{{end}}
+          <span class="muted">{{.Note}}</span>
+        </td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+
+  <p class="muted">
+    <strong>“never checked”</strong> means this server could not download the artifact, so nothing
+    hashed its bytes. Such a release cannot be approved — the database refuses a listing with no
+    hash — so it has to be re-verified or rejected.
+  </p>
+{{end}}
+
+<p class="muted">
+  Reviewers are named in this deployment’s <code>REGSERVE_REVIEWERS</code>, not in a database row:
+  the authority to decide what every client downloads comes from control of the deployment, exactly
+  as it came from control of the repository when this was a merge button. There is no way to grant
+  it from inside the service.
+</p>
+{{end}}

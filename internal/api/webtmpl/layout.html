@@ -43,6 +43,15 @@
   .notice.problem { border-left-color: var(--warn); }
   .secret { display: block; padding: .75rem; margin: .5rem 0; border: 1px dashed var(--line);
             border-radius: 4px; word-break: break-all; }
+  .warn { color: var(--warn); }
+  /* An audit detail and a sha256 are long and must not push the page sideways. */
+  .detail, .mono { word-break: break-all; }
+  /* Release notes are plain text and are shown as plain text: preserved newlines, no markup, and
+     wrapped rather than scrolled, because a reviewer reads them rather than scanning them. */
+  pre.notes { white-space: pre-wrap; word-break: break-word; border: 1px solid var(--line);
+              border-radius: 4px; padding: .75rem; margin: .5rem 0; max-width: 42rem;
+              font-family: inherit; font-size: .95rem; }
+  button[disabled] { opacity: .5; cursor: not-allowed; }
 </style>
 </head>
 <body>
@@ -50,6 +59,7 @@
   <h1><a href="/" style="color:inherit;text-decoration:none">nParse+ plugin registry</a></h1>
   {{if .Account}}
     <span class="muted">
+      {{if .IsReviewer}}<a href="/review">review queue</a> ·{{end}}
       {{.Account.DisplayName}}
       <form method="post" action="/auth/logout" style="display:inline;margin:0">
         <input type="hidden" name="{{.CSRFField}}" value="{{.CSRFToken}}">
