@@ -1,0 +1,453 @@
+# Publish a plugin release to the nParse+ plugin registry.
+#
+# A `workflow_call` workflow a PLUGIN repository invokes on tag. It is the thing that replaces the
+# pull request against prokopto-dev/nparseplus-plugins: build, upload the artifact to a GitHub
+# Release, call this, and the listing updates without a human in the loop — or lands in review with
+# the reason recorded, which is a different outcome and is reported as one.
+#
+# See docs/operations/publishing-from-ci.md for how a plugin author adopts it, including how they
+# obtain and store the token.
+#
+# THREE RULES THIS FILE KEEPS, and each is a way it could go quietly wrong:
+#
+#  1. THE SECRET NEVER REACHES A PLACE IT CAN BE LOGGED. It is passed to curl through a config file
+#     on stdin rather than on the command line, so it is not in the runner's process table; it is
+#     never echoed, never interpolated into a `run:` block, and `set -x` appears nowhere. The
+#     8-character PUBLIC PREFIX is printed, because that is what it is for: it is how a leaked
+#     token is found in a log, and the log has never held the secret.
+#
+#  2. EVERY INPUT REACHES THE SHELL THROUGH `env:`, never through `${{ }}` inside a `run:` block.
+#     An expression interpolated into a script is executed by it, and half of these values come
+#     from a tag name. This is the one injection this workflow could have.
+#
+#  3. IT REPORTS HONESTLY. A release that lands in review is NOT a failed publish and this does not
+#     fail the job for one — but it does not read like a completed publish either. The whole
+#     project is designed against a confident mistake, and "your release is live" when it is
+#     waiting for a human is exactly that mistake in one sentence.
+
+name: Publish to the nParse+ plugin registry
+
+on:
+  workflow_call:
+    inputs:
+      plugin-id:
+        description: >-
+          The plugin's permanent id in the registry, as it appears in the index — for example
+          `merchant-mode`. Ids are first-come and never recycled; this is not the repository name
+          unless they happen to match.
+        required: true
+        type: string
+
+      version:
+        description: >-
+          The release's version, EXACTLY as the plugin declares it. This is not derived from the
+          tag: a tag is usually `v1.2.0` and a version is usually `1.2.0`, and guessing which you
+          meant is not something this workflow should do silently. The adoption doc shows the
+          three-line job that strips the prefix in your repository, where you can see it.
+        required: true
+        type: string
+
+      artifact-url:
+        description: >-
+          An https URL the release artifact can be downloaded from — normally the GitHub Release
+          asset you have just uploaded. It is TRANSPORT ONLY: the registry downloads it and
+          computes the hash itself, and that hash is what it publishes.
+        required: true
+        type: string
+
+      artifact-sha256:
+        description: >-
+          The sha256 your build produced, as 64 lowercase hex characters. Optional, and worth
+          supplying: it is an independent claim about the bytes you built, which the registry
+          compares against the bytes it downloads. Left empty, this workflow downloads the URL and
+          hashes that instead — a weaker check, because both ends are then looking at the published
+          file rather than at your build, and the summary says so rather than pretending otherwise.
+        required: false
+        default: ''
+        type: string
+
+      sdk-specifier:
+        description: >-
+          The nParse+ SDK versions this release supports, as a PEP 440 specifier. The registry
+          carries it; the client evaluates it.
+        required: false
+        default: '>=1.0,<2'
+        type: string
+
+      minimum-app-version:
+        description: >-
+          The lowest nParse+ version this release runs on. Empty means no constraint, which is a
+          different statement from a low number and is sent as one.
+        required: false
+        default: ''
+        type: string
+
+      notes:
+        description: >-
+          Plain-text patch notes for a human to read in the client. Not Markdown and not HTML
+          (ADR-0013): asterisks arrive as asterisks. At most 2048 bytes.
+
+          THEY COME FROM HERE AND NOT FROM THE GITHUB RELEASE BODY, deliberately. A release body is
+          Markdown, and it is editable after the fact — so notes read from one would be markup this
+          registry promises is not markup, and would silently stop matching what was published the
+          first time somebody fixed a typo.
+        required: false
+        default: ''
+        type: string
+
+      registry-url:
+        description: The registry's base URL. Override only to publish to a test instance.
+        required: false
+        default: 'https://nparseplugins.prokopto.dev'
+        type: string
+
+      idempotency-key:
+        description: >-
+          Overrides the key this workflow derives. The default is
+          `gha:<owner/repo>:<plugin-id>:<version>`, which is stable across re-runs — so re-running
+          a release job returns the ORIGINAL result rather than submitting a second release. Set
+          this only if you have a better idea of what makes two publishes the same request.
+        required: false
+        default: ''
+        type: string
+
+    secrets:
+      registry-token:
+        description: >-
+          A personal access token carrying `plugin:publish`, pinned to this plugin. Mint it at
+          /account on the registry, store it as a repository secret, and pin it: a token that can
+          publish to one plugin is a token whose leak is contained to this repository.
+        required: true
+
+    outputs:
+      state:
+        description: >-
+          `approved` if the release is live in the index, `pending` if it is waiting for a human.
+          Both are successful calls.
+        value: ${{ jobs.publish.outputs.state }}
+      release-id:
+        description: The release's permanent id in the registry.
+        value: ${{ jobs.publish.outputs.release-id }}
+      verified:
+        description: >-
+          Whether the registry downloaded the artifact and hashed it. `false` means the bytes were
+          never checked — the release is recorded and waiting, and it is not a publish.
+        value: ${{ jobs.publish.outputs.verified }}
+      quarantine:
+        description: Every rule that sent this release to review, newline-separated. Empty if it went live.
+        value: ${{ jobs.publish.outputs.quarantine }}
+      replayed:
+        description: >-
+          `true` when this idempotency key had been seen before and the registry returned the
+          original result instead of submitting a second release.
+        value: ${{ jobs.publish.outputs.replayed }}
+
+# Nothing here reads the repository or writes to it. The job talks to one https endpoint with a
+# credential of its own, so the automatic GITHUB_TOKEN is given no permissions at all rather than
+# inheriting whatever the caller happens to grant.
+permissions: {}
+
+jobs:
+  publish:
+    name: Publish ${{ inputs.plugin-id }} ${{ inputs.version }}
+    runs-on: ubuntu-24.04
+    # Generous, but bounded. The registry's own artifact fetch takes up to 45 seconds and this may
+    # download the artifact once itself; a job with no ceiling is a job that hangs for six hours.
+    timeout-minutes: 15
+
+    outputs:
+      state: ${{ steps.publish.outputs.state }}
+      release-id: ${{ steps.publish.outputs.release-id }}
+      verified: ${{ steps.publish.outputs.verified }}
+      quarantine: ${{ steps.publish.outputs.quarantine }}
+      replayed: ${{ steps.publish.outputs.replayed }}
+
+    steps:
+      # No actions/checkout: this job needs no source. Every `uses:` in this repository is pinned to
+      # a 40-character SHA (gate PIN001), and the cheapest way to keep that true is to use none.
+      - name: Check the inputs before spending a request on them
+        env:
+          PLUGIN_ID: ${{ inputs.plugin-id }}
+          VERSION: ${{ inputs.version }}
+          ARTIFACT_URL: ${{ inputs.artifact-url }}
+          ARTIFACT_SHA256: ${{ inputs.artifact-sha256 }}
+          NOTES: ${{ inputs.notes }}
+          REGISTRY_URL: ${{ inputs.registry-url }}
+          REGISTRY_TOKEN: ${{ secrets.registry-token }}
+        run: |
+          set -euo pipefail
+
+          fail() { printf '::error::%s\n' "$1"; exit 1; }
+
+          # The id pattern is the registry's own (internal/core/pluginid.go). Checked here so a
+          # typo costs a second rather than a round trip and a 400.
+          [[ "$PLUGIN_ID" =~ ^[a-z][a-z0-9_-]{1,39}$ ]] \
+            || fail "plugin-id must match ^[a-z][a-z0-9_-]{1,39}\$ — got: $PLUGIN_ID"
+
+          [ -n "$VERSION" ] || fail "version is empty"
+
+          case "$ARTIFACT_URL" in
+            https://*) ;;
+            *) fail "artifact-url must be https — got: $ARTIFACT_URL" ;;
+          esac
+
+          # https, with no exception. curl is invoked with --proto '=https' below, so an http URL
+          # would be refused there anyway — and a check that accepted what the next step rejects is
+          # worse than no check, because the message would be about the wrong thing.
+          case "$REGISTRY_URL" in
+            https://*) ;;
+            *) fail "registry-url must be https — got: $REGISTRY_URL" ;;
+          esac
+
+          if [ -n "$ARTIFACT_SHA256" ]; then
+            [[ "$ARTIFACT_SHA256" =~ ^[0-9a-f]{64}$ ]] \
+              || fail "artifact-sha256 must be 64 LOWERCASE hex characters"
+          fi
+
+          # BYTES, not characters: the cap protects a byte budget on a wire (ADR-0013). The
+          # registry refuses an oversized note rather than shortening it, so catching it here is
+          # the difference between a clear message and a failed release at the end of a release.
+          notes_bytes=$(printf '%s' "$NOTES" | LC_ALL=C wc -c | tr -d ' ')
+          [ "$notes_bytes" -le 2048 ] \
+            || fail "notes are $notes_bytes bytes; the cap is 2048 (ADR-0013), and the registry refuses rather than truncating"
+
+          # The token's SHAPE, never its value. A malformed secret produces a confusing curl error
+          # three steps later, and the fix for it is not one anybody guesses from the outside.
+          case "$REGISTRY_TOKEN" in
+            nprs_pat_*) ;;
+            '') fail "the registry-token secret is empty; see docs/operations/publishing-from-ci.md" ;;
+            *) fail "the registry-token secret is not a registry token (it must start with nprs_pat_)" ;;
+          esac
+
+      - name: Resolve the artifact digest
+        id: digest
+        env:
+          ARTIFACT_URL: ${{ inputs.artifact-url }}
+          ARTIFACT_SHA256: ${{ inputs.artifact-sha256 }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "$ARTIFACT_SHA256" ]; then
+            printf 'sha256=%s\n' "$ARTIFACT_SHA256" >> "$GITHUB_OUTPUT"
+            printf 'source=your build\n' >> "$GITHUB_OUTPUT"
+            printf 'the digest was supplied by the caller: %s\n' "$ARTIFACT_SHA256"
+            exit 0
+          fi
+
+          # No digest was supplied, so one is derived from the published bytes. This is the WEAKER
+          # of the two paths and the log says so: the registry will compare its own download
+          # against another download of the same file, which catches a URL that changed between the
+          # two fetches and does NOT catch a release asset that never matched what was built.
+          printf '::warning::no artifact-sha256 was supplied, so it is being computed from %s. That is a weaker claim than one from your build: pass artifact-sha256 to have the registry check the published bytes against what you produced.\n' "$ARTIFACT_URL"
+
+          curl --silent --show-error --location --proto '=https' --proto-redir '=https' \
+               --max-redirs 5 --max-time 300 --retry 2 --retry-connrefused \
+               --output artifact.bin "$ARTIFACT_URL"
+
+          sha=$(sha256sum artifact.bin | cut -d' ' -f1)
+          printf 'sha256=%s\n' "$sha" >> "$GITHUB_OUTPUT"
+          printf 'source=this workflow, from the published artifact\n' >> "$GITHUB_OUTPUT"
+          printf 'computed %s over %s bytes\n' "$sha" "$(wc -c < artifact.bin | tr -d ' ')"
+
+      - name: Publish the release
+        id: publish
+        env:
+          PLUGIN_ID: ${{ inputs.plugin-id }}
+          VERSION: ${{ inputs.version }}
+          ARTIFACT_URL: ${{ inputs.artifact-url }}
+          ARTIFACT_SHA256: ${{ steps.digest.outputs.sha256 }}
+          DIGEST_SOURCE: ${{ steps.digest.outputs.source }}
+          SDK_SPECIFIER: ${{ inputs.sdk-specifier }}
+          MINIMUM_APP_VERSION: ${{ inputs.minimum-app-version }}
+          NOTES: ${{ inputs.notes }}
+          REGISTRY_URL: ${{ inputs.registry-url }}
+          IDEMPOTENCY_KEY: ${{ inputs.idempotency-key }}
+          CALLER: ${{ github.repository }}
+          REGISTRY_TOKEN: ${{ secrets.registry-token }}
+        run: |
+          set -euo pipefail
+
+          # The key is DERIVED AND STABLE, not random. Workflows get re-run — from the Actions tab,
+          # by a flaky runner, by somebody clicking twice — and the registry must answer a re-run
+          # with the original result rather than minting a second pending release for a version
+          # that can only ever be used once. A random key would make every re-run a new submission
+          # and every second one a 409.
+          key="$IDEMPOTENCY_KEY"
+          if [ -z "$key" ]; then
+            key="gha:$CALLER:$PLUGIN_ID:$VERSION"
+          fi
+
+          # jq builds the body, so a note containing a quote, a newline or a backslash is encoded
+          # rather than breaking the document. Absent optional fields are OMITTED rather than sent
+          # empty: `minimum_app_version` empty and absent both mean no constraint, and sending a
+          # key we do not mean is how a field acquires a second meaning.
+          jq -n \
+            --arg version "$VERSION" \
+            --arg artifact_url "$ARTIFACT_URL" \
+            --arg artifact_sha256 "$ARTIFACT_SHA256" \
+            --arg sdk_specifier "$SDK_SPECIFIER" \
+            --arg minimum_app_version "$MINIMUM_APP_VERSION" \
+            --arg notes "$NOTES" \
+            '{version: $version, artifact_url: $artifact_url, artifact_sha256: $artifact_sha256, sdk_specifier: $sdk_specifier}
+             + (if $minimum_app_version == "" then {} else {minimum_app_version: $minimum_app_version} end)
+             + (if $notes == "" then {} else {notes: $notes} end)' \
+            > body.json
+
+          # THE PUBLIC PREFIX AND NOTHING ELSE. `nprs_pat_<8-character prefix>_<secret>` — the
+          # third underscore-separated field is the public half, and printing it is how a token
+          # found in this log is identified later. The secret is not printed, is not in the
+          # command line, and is not in this file.
+          prefix=$(printf '%s' "$REGISTRY_TOKEN" | cut -d_ -f3)
+          printf 'publishing %s %s to %s with token %s…\n' \
+            "$PLUGIN_ID" "$VERSION" "$REGISTRY_URL" "$prefix"
+          printf 'idempotency key: %s\n' "$key"
+          printf 'submitted sha256: %s (from %s)\n' "$ARTIFACT_SHA256" "$DIGEST_SOURCE"
+
+          # The credential goes to curl through a config file on STDIN, so it never appears in the
+          # process table of a machine somebody else's job may also be running on. Retries are safe
+          # here precisely because of the key above: a retried POST is the same request, and the
+          # registry answers the second one with the first one's result.
+          endpoint="${REGISTRY_URL%/}/api/v1/plugins/$PLUGIN_ID/releases"
+          status=$(
+            printf 'header = "Authorization: Bearer %s"\n' "$REGISTRY_TOKEN" |
+            curl --config - \
+                 --silent --show-error --proto '=https' --proto-redir '=https' \
+                 --request POST \
+                 --header "Idempotency-Key: $key" \
+                 --header 'Content-Type: application/json' \
+                 --header 'Accept: application/json' \
+                 --data-binary @body.json \
+                 --max-time 180 --retry 2 --retry-connrefused \
+                 --output response.json \
+                 --write-out '%{http_code}' \
+                 "$endpoint"
+          ) || {
+            # curl itself failed: DNS, TLS, a timeout, a connection refused. Nothing was recorded
+            # at the other end that we know of — but "we do not know" is the honest reading, and
+            # the idempotency key above is what makes running this again safe rather than a second
+            # submission.
+            printf '::error::could not reach the registry at %s. Nothing was published. Re-running this job is safe: it sends the same idempotency key (%s), so a submission that did land will be reported rather than repeated.\n' \
+              "$REGISTRY_URL" "$key"
+            exit 1
+          }
+
+          summary() { cat >> "$GITHUB_STEP_SUMMARY"; }
+
+          if [ "$status" != "201" ]; then
+            # A refusal. The problem document's own sentence is printed rather than a paraphrase:
+            # this registry writes them for the person reading them, and rewriting one here would
+            # be a second, worse, explanation of somebody else's rule.
+            code=$(jq -r '.code // "unknown"' response.json 2>/dev/null || echo unknown)
+            detail=$(jq -r '.detail // .title // "no detail"' response.json 2>/dev/null || echo "no detail")
+
+            summary <<EOF
+          ### ❌ $PLUGIN_ID $VERSION was not published
+
+          The registry answered **HTTP $status** (\`$code\`):
+
+          > $detail
+
+          This request submitted nothing. Whether you can retry with the same version depends on the
+          reason above: a version is used once per plugin, **ever**, so "already submitted" is not a
+          state a retry gets you out of.
+          EOF
+
+            printf '::error::the registry refused this publish (HTTP %s, %s): %s\n' "$status" "$code" "$detail"
+            exit 1
+          fi
+
+          state=$(jq -r '.state' response.json)
+          release_id=$(jq -r '.release_id' response.json)
+          verified=$(jq -r '.verified' response.json)
+          replayed=$(jq -r '.replayed' response.json)
+          computed=$(jq -r '.artifact_sha256 // ""' response.json)
+          review=$(jq -r '.review // ""' response.json)
+          quarantine=$(jq -r '.quarantine // [] | join("\n")' response.json)
+
+          {
+            printf 'state=%s\n' "$state"
+            printf 'release-id=%s\n' "$release_id"
+            printf 'verified=%s\n' "$verified"
+            printf 'replayed=%s\n' "$replayed"
+            # Multi-line values need a delimiter, and the delimiter must be one the value cannot
+            # contain — a quarantine reason is a sentence and could otherwise close its own block.
+            printf 'quarantine<<QUARANTINE_EOF\n%s\nQUARANTINE_EOF\n' "$quarantine"
+          } >> "$GITHUB_OUTPUT"
+
+          # --- what actually happened, said plainly ---------------------------------------------
+          #
+          # THREE OUTCOMES, and the difference between the second and the third is the whole point
+          # of this block. "Live", "waiting for a human", and "waiting AND its bytes were never
+          # checked" are three different things to the person who just tagged a release, and a
+          # workflow that printed a green tick for all three would be teaching them not to read it.
+
+          if [ "$replayed" = "true" ]; then
+            printf '::notice::this idempotency key had been seen before, so the registry returned the original result. No second release was submitted.\n'
+          fi
+
+          if [ "$state" = "approved" ]; then
+            summary <<EOF
+          ### ✅ $PLUGIN_ID $VERSION is live
+
+          | | |
+          |---|---|
+          | Release | \`$release_id\` |
+          | Published sha256 | \`$computed\` |
+          | Submitted sha256 | \`$ARTIFACT_SHA256\` (from $DIGEST_SOURCE) |
+          | Replayed | $replayed |
+
+          The published hash is the one **the registry computed from bytes it downloaded itself**.
+          The digest you submitted was compared against it and discarded (ADR-0008).
+
+          It is in [the index](${REGISTRY_URL%/}/plugins/$PLUGIN_ID/index.json) now.
+          EOF
+            printf '::notice::%s %s is live in the registry (release %s)\n' "$PLUGIN_ID" "$VERSION" "$release_id"
+            exit 0
+          fi
+
+          # Pending. NOT a failure — the release is durably recorded and a human decides — and not
+          # a success either. The annotation is a warning for exactly that reason: it is visible
+          # without turning a correct outcome into a red run somebody learns to re-run blindly.
+          # The reasons list when there is one, and the registry's own sentence when there is not.
+          # `review` is the note stored on the release, which for a quarantined one is a rendering
+          # of the very reasons above — printing both would say everything twice, and a reader who
+          # sees the same thing said twice starts skimming.
+          if [ -n "$quarantine" ]; then
+            waiting_md=$(printf '%s\n' "$quarantine" | sed 's/^/- /')
+          else
+            waiting_md="$review"
+          fi
+
+          if [ "$verified" = "true" ]; then
+            checked="The registry downloaded the artifact and hashed it: \`$computed\`."
+          else
+            checked="**The registry could not download the artifact, so its bytes were never checked.** It cannot be approved until a reviewer re-verifies it or you publish a URL that answers."
+          fi
+
+          summary <<EOF
+          ### ⏳ $PLUGIN_ID $VERSION was accepted and is waiting for review
+
+          This is **not** a failed publish: the release is recorded, its version is claimed, and a
+          reviewer decides. It is **not** a completed publish either — it is not in the index yet.
+
+          | | |
+          |---|---|
+          | Release | \`$release_id\` |
+          | State | \`$state\` |
+          | Artifact verified | $verified |
+          | Replayed | $replayed |
+
+          $checked
+
+          **Why it is waiting**
+
+          $waiting_md
+          EOF
+
+          printf '::warning::%s %s was accepted and is WAITING FOR REVIEW (release %s, verified=%s). It is not in the index yet.\n' \
+            "$PLUGIN_ID" "$VERSION" "$release_id" "$verified"
+          if [ -n "$quarantine" ]; then
+            printf '%s\n' "$quarantine" | while IFS= read -r reason; do
+              printf '::warning::waiting because: %s\n' "$reason"
+            done
+          fi

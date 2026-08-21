@@ -30,6 +30,83 @@ else
   vacant PIN001 "workflows pinned to SHAs"
 fi
 
+# --- ACT001 — no workflow interpolates an expression into a shell script -----------------------
+# `${{ ... }}` inside a `run:` block is not a variable: GitHub substitutes the VALUE into the
+# script text before bash ever sees it, so a value containing `$(...)` or a newline is executed.
+# Half the values in a publish workflow come from a tag name, and one of them in this repository is
+# a deployment secret.
+#
+# The fix is always the same and always available: put it in `env:` and reference `"$VAR"`, where
+# bash treats it as data. So this gate has NO exceptions — not for a boolean from `contains()`, not
+# for a tag list this repository computed itself. An exception list is a thing somebody appends to
+# at 2am, and the appended entry is the one that matters.
+#
+# The block boundary is INDENTATION, the same rule the YAML parser uses: a `run:` block ends at the
+# first non-blank line indented no further than the `run:` key itself.
+if compgen -G ".github/workflows/*.yml" >/dev/null; then
+  bad=$(awk '
+    function indent(s) { match(s, /^[ \t]*/); return RLENGTH }
+    /^[ \t]*run: *[|>]/ { inrun = 1; ri = indent($0); next }
+    inrun {
+      if ($0 ~ /^[ \t]*$/) next
+      if (indent($0) <= ri) { inrun = 0; next }
+      if ($0 ~ /\$\{\{/) printf "  %s:%d: %s\n", FILENAME, FNR, $0
+    }' .github/workflows/*.yml)
+  if [ -n "$bad" ]; then
+    report ACT001 "a workflow interpolates an expression into a shell script:"
+    printf '%s\n' "$bad"
+    printf '  Pass it through `env:` and reference it as "$VAR" instead.\n'
+  else
+    pass ACT001 "no workflow interpolates an expression into a shell script"
+  fi
+else
+  vacant ACT001 "workflows keep expressions out of shell scripts"
+fi
+
+# --- ACT002 — every workflow shell script parses --------------------------------------------
+# A workflow's shell is not compiled, not linted and not run until a tag is pushed, so an
+# unterminated heredoc or an unbalanced quote is a syntax error that ships. `bash -n` parses
+# without executing, which is exactly the check that is missing.
+#
+# It matters most for the publish workflow, whose scripts a plugin repository invokes on ITS
+# release day: a syntax error there is somebody else's failed release, discovered by them.
+if compgen -G ".github/workflows/*.yml" >/dev/null; then
+  blocks=$(mktemp -d)
+  awk -v out="$blocks" '
+    function indent(s) { match(s, /^[ \t]*/); return RLENGTH }
+    /^[ \t]*run: *\|/ {
+      n++; inrun = 1; ri = indent($0); strip = -1
+      base = FILENAME; sub(/.*\//, "", base)
+      file = sprintf("%s/%s-%d.sh", out, base, FNR)
+      next
+    }
+    inrun {
+      if ($0 ~ /^[ \t]*$/) { print "" > file; next }
+      if (indent($0) <= ri) { inrun = 0; next }
+      if (strip < 0) strip = indent($0)
+      print substr($0, strip + 1) > file
+    }' .github/workflows/*.yml
+
+  if ! compgen -G "$blocks/*.sh" >/dev/null; then
+    vacant ACT002 "workflow shell scripts parse"
+  else
+    bad=""
+    for f in "$blocks"/*.sh; do
+      # `run:` defaults to bash on ubuntu runners, and every block in this repository is bash.
+      out=$(bash -n "$f" 2>&1) || bad="$bad  $(basename "$f"): $out\n"
+    done
+    if [ -n "$bad" ]; then
+      report ACT002 "a workflow shell script does not parse (file names are <workflow>-<line>.sh):"
+      printf "%b" "$bad"
+    else
+      pass ACT002 "$(find "$blocks" -name '*.sh' | wc -l | tr -d ' ') workflow shell script(s) parse"
+    fi
+  fi
+  rm -rf "$blocks"
+else
+  vacant ACT002 "workflow shell scripts parse"
+fi
+
 # --- Go architectural gates live in test/repo/arch_test.go -------------------------------------
 # CLOCK001, SQL001, NET001, ROUTE001 and SCHEMA002 parse the tree with go/ast rather than grepping
 # it. Two failures drove that: a grep matches the rule's own name inside the comment explaining the
