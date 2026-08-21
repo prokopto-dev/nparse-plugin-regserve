@@ -53,7 +53,7 @@ from it is vendored here at `internal/registry/testdata/index-v1.schema.json`.
 | `internal/artifact/` | Artifact download and re-hash. Never extracts, never executes |
 | `internal/registry/` | schema-v1 index rendering. The wire format lives here and nowhere else |
 | `internal/plugin/`, `ownership/` | Domain services. `ownership` answers who may change a listing, checked per request (ADR-0005), and refuses to leave a plugin with no owners |
-| `internal/api/webtmpl/` | The account surface's `html/template` pages, embedded. No JavaScript build, no separate deploy target. `template.HTML` appears nowhere |
+| `internal/api/webtmpl/` | Every `html/template` page, embedded: the PUBLIC plugin directory at `/` and a listing's own page, plus the account and review surfaces. No JavaScript build, no separate deploy target, and `template.HTML` appears nowhere. `assets/` holds the nParse+ mark, vendored verbatim and INCLUDED as a template rather than restated — see its README. The palette is measured from upstream and gated by `BRAND001`/`BRAND002` |
 | `internal/store/` | The only holder of `*sql.DB`: two pools, `store.Tx`, migrations. `sqlitegen/` is generated and never hand-edited; `storetest/` builds real databases for tests |
 | `internal/core/` | Typed ids (`PluginID`, `ULID`), `Micros`, and `Secret` |
 | `internal/clock/` | The only `time.Now` |

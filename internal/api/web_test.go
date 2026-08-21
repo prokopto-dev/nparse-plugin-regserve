@@ -194,17 +194,10 @@ func (h *webHarness) request(t *testing.T, method, path string, form url.Values)
 	return response{status: resp.StatusCode, header: resp.Header.Clone(), body: raw}
 }
 
-func TestHomePage_IsPublicAndOffersASignIn(t *testing.T) {
-	t.Parallel()
-
-	h := newWebHarness(t, func(h *webHarness) { h.authn.err = auth.ErrNoCredential })
-	resp := h.get(t, "/")
-
-	require.Equal(t, http.StatusOK, resp.status)
-	require.Equal(t, "text/html; charset=utf-8", resp.header.Get("Content-Type"))
-	require.Contains(t, string(resp.body), "/auth/github/login")
-	require.Contains(t, string(resp.body), "Sign in with GitHub")
-}
+// The home page moved. `/` is the PUBLIC plugin directory now, registered from the catalogue
+// rather than from the sign-in machinery, and sign-in is a link in the header — so what used to be
+// tested here is in directory_test.go: TestDirectory_IsPublic_AndListsEveryPlugin and
+// TestDirectory_SignIn_IsAHeaderLinkAndOnlyWhenConfigured.
 
 // TestHeader_EverySignedInPage_OffersTheWayBack — you can always get to your account.
 //

@@ -1,0 +1,69 @@
+{{define "content"}}
+{{with .Listing}}
+<p class="muted"><a href="/">← every plugin</a></p>
+
+<h2>{{.Name}}</h2>
+<p class="mono muted">{{.ID}}</p>
+{{if .Description}}<p>{{.Description}}</p>{{end}}
+
+<table class="facts">
+  <tbody>
+    <tr>
+      <th>Latest version</th>
+      <td class="mono">{{.Latest.Version}}</td>
+    </tr>
+    <tr>
+      <th>Author</th>
+      <td>{{if .Author}}{{.Author}}{{else}}<span class="muted">not stated</span>{{end}}</td>
+    </tr>
+    <tr>
+      <th>Homepage</th>
+      <td>
+        {{if .Homepage}}<a href="{{.Homepage}}" rel="noopener nofollow ugc">{{.Homepage}}</a>
+        {{else}}<span class="muted">not stated</span>{{end}}
+      </td>
+    </tr>
+    <tr>
+      {{/* The client's own words for these are in the JSON; a page for humans says what they
+           mean. The SDK constraint is a PEP 440 specifier this registry carries and the client
+           evaluates. */}}
+      <th>Needs SDK</th>
+      <td class="mono">{{.Latest.RequiresSDK}}</td>
+    </tr>
+    <tr>
+      <th>Needs nParse+</th>
+      <td>
+        {{if .Latest.MinAppVersion}}<span class="mono">{{.Latest.MinAppVersion}}</span> or newer
+        {{else}}<span class="muted">any version that reads this registry</span>{{end}}
+      </td>
+    </tr>
+    <tr>
+      <th>Download</th>
+      <td><a class="detail" href="{{.Latest.URL}}" rel="noopener nofollow">{{.Latest.URL}}</a></td>
+    </tr>
+    <tr>
+      {{/* Published because it is the point: the client verifies the archive against this before
+           extracting it, and this server computed it from the bytes it fetched rather than
+           believing what the publisher submitted. */}}
+      <th>sha256</th>
+      <td class="mono detail">{{.Latest.SHA256}}</td>
+    </tr>
+  </tbody>
+</table>
+
+{{if .Latest.ReleaseNotes}}
+<h2>Release notes</h2>
+{{/* Plain text, preserved newlines, no markup — ADR-0013. The author wrote text; it is shown as
+     text, and html/template is what keeps it that way. */}}
+<pre class="notes">{{.Latest.ReleaseNotes}}</pre>
+{{end}}
+
+<h2>Updating from here</h2>
+<p>
+  This plugin's own feed is
+  <a href="/plugins/{{.ID}}/index.json"><code>/plugins/{{.ID}}/index.json</code></a> — the same
+  schema-v1 document as the full index, scoped to this listing. It is what a plugin's
+  <code>update_url</code> points at, and it needs no account either.
+</p>
+{{end}}
+{{end}}
