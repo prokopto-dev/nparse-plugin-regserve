@@ -88,6 +88,8 @@ personal access token outright.
 
 ## Phase 4 — the ecosystem
 
+- ✅ `release.notes` surfaced on `latest` as `release_notes` — additive, `omitempty`, so a listing
+  with no notes renders byte-identically to what the live registry served before it
 - A reusable workflow for plugin repositories that publishes on tag
 - `prokopto-dev/nparseplus-plugin-template` wired to it
 - The client update repointing `DEFAULT_REGISTRY_URL`

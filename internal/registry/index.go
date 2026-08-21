@@ -78,6 +78,35 @@ type Release struct {
 	// because the client's model declares the field nullable and an absent key and an explicit
 	// null are different things to a reader even where pydantic treats them alike.
 	MinAppVersion *string `json:"min_app_version"`
+
+	// ReleaseNotes is the author's plain-text patch notes (ADR-0013), and it is the one field here
+	// that carries `omitempty`. That is load-bearing rather than tidy.
+	//
+	// This is an ADDITIVE change to a format already being parsed by installs in the field. A
+	// listing with no notes must therefore marshal to the bytes it marshalled to yesterday, key
+	// for key and byte for byte — so the only difference on the wire is notes that actually
+	// exist, and every plugin that has none is untouched. `omitempty` is what makes that true;
+	// the field is also LAST in the struct, because encoding/json emits in declaration order and
+	// inserting it anywhere else would reorder the keys of every existing listing.
+	//
+	// It is a string and not a pointer, unlike MinAppVersion, because "no notes" and "empty
+	// notes" are not different statements: there is nothing for a reader to distinguish, and an
+	// explicit `"release_notes":null` would be a new key on every listing — the exact thing the
+	// paragraph above rules out.
+	//
+	// THE NAME IS NOT THE COLUMN'S. The column is `release.notes`; canonical §7 forbids naming a
+	// column after a wire field, because sqlc writes column names into Go string literals and one
+	// spelled `release_notes` would put a wire-format name in a second package and fail SCHEMA002.
+	//
+	// NOTHING HERE VALIDATES THE TEXT, and that is deliberate rather than an omission. The
+	// 2048-byte cap is a CHECK on the column (`release_notes_within_the_index_budget`), so every
+	// writer goes through it — including a hand-run UPDATE during an incident. What the CHECK
+	// cannot say is what the bytes ARE, so the content rules (valid UTF-8, no C0 or C1 control
+	// character except newline and tab, normalised line endings) live in exactly one function,
+	// `release.ValidateReleaseNotes`, and BOTH doors into the column go through it: the publish
+	// path and the seed importer. A second copy here would be a second set of rules to keep in
+	// step, and the copy that drifts is always the one nobody is looking at.
+	ReleaseNotes string `json:"release_notes,omitempty"`
 }
 
 // Plugin is one listing in the index.

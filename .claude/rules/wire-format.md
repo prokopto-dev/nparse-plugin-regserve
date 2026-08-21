@@ -12,8 +12,8 @@ paths: ["internal/registry/**", "internal/api/index.go", "internal/plugin/**"]
   tells the user to update. Bumping it strands every release that has ever shipped.
 - **Adding a field is safe** (the client ignores unknown keys). Renaming or removing one is not.
 - **Only `internal/registry` may know the field names.** Gate `SCHEMA002` (in `test/repo/arch_test.go`)
-  fails a string literal containing `schema_version`, `requires_sdk` or `min_app_version` anywhere
-  else.
+  fails a string literal containing `schema_version`, `requires_sdk`, `min_app_version` or
+  `release_notes` anywhere else. The last of those is why the COLUMN is `release.notes`.
 - **Never edit `internal/registry/testdata/index-v1.schema.json`.** It is generated upstream by
   `tools/gen_registry_schema.py` in `nparse-plus`. If `SCHEMA001` fails, the renderer drifted from
   the client — fix the renderer.

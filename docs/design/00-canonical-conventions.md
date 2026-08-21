@@ -14,7 +14,10 @@ model in `nparseplus.core.plugins.registry`; the schema generated from it is ven
 
 - `schema_version` is `1`. A client that sees a higher number refuses the whole index and tells the
   user to update. Bumping it strands every release that has ever shipped.
-- Adding a field is safe (the client ignores unknown keys). Renaming or removing one is not.
+- Adding a field is safe (the client ignores unknown keys). Renaming or removing one is not. One
+  field has been added this way so far: `latest.release_notes`, plain text and `omitempty`, so a
+  listing without notes renders to the bytes it rendered to before the field existed
+  ([ADR-0013](../adr/0013-release-notes-are-plain-text-with-a-hard-cap.md)).
 - Only `latest` goes on the wire — one release per plugin, no history, no downgrade path.
 - Budgets belong to the client, not to us: **< 5 MiB** body, **15 s** to first byte through last,
   at most **5 redirect hops, every one `https`**.

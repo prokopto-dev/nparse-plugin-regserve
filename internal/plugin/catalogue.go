@@ -139,8 +139,21 @@ func listingFrom(row sqlitegen.ListListingsRow) (registry.Plugin, error) {
 			// Nil stays nil: the field is string-or-null on the wire, and an absent constraint is
 			// not the same statement as an empty one.
 			MinAppVersion: row.MinimumAppVersion,
+			// NULL becomes the empty string, which the renderer omits from the document entirely.
+			// The opposite of MinimumAppVersion above, and for the opposite reason: nobody can
+			// tell "no notes" from "empty notes", so a key saying so on every listing without one
+			// would be a change to every document we already serve in exchange for nothing.
+			ReleaseNotes: deref(row.Notes),
 		},
 	}, nil
+}
+
+// deref reads an optional column as a string, treating NULL and empty alike.
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 var (
