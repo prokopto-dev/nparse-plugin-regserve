@@ -122,6 +122,13 @@ func runServe(ctx context.Context, addr, dbPath, seedPath string) error {
 	clk := clock.System{}
 	cfg := api.Config{Version: version, Commit: commit, BuildDate: buildDate, Clock: clk}
 
+	// Read here as well as in configureIdentity, because the two need it under different
+	// conditions: sign-in cannot work without it and refuses to start, while the directory only
+	// wants it to show a visitor the URL to paste into their client. An instance with no OAuth
+	// application configured still serves the catalogue, and should still be able to say where it
+	// is. Empty means the page shows the path instead of inventing a host.
+	cfg.PublicURL = strings.TrimSpace(os.Getenv(envPublicURL))
+
 	// The seed is read and validated BEFORE the database is touched, whether or not it will be
 	// needed. LoadSeed validates through the same path the server serves with, so the alternative
 	// to failing here is a container that comes up healthy and, on the day the database is empty,
@@ -154,6 +161,10 @@ func runServe(ctx context.Context, addr, dbPath, seedPath string) error {
 			return err
 		}
 		cfg.Catalogue = cat
+		// The same object, wired twice: the public directory and the index must never be able to
+		// disagree about what is listed, and the cheapest way to guarantee that is for there to be
+		// one of them.
+		cfg.Directory = cat
 		ready.cat = cat
 
 		// The publish path. Wired whenever there is a database and INDEPENDENTLY of whether

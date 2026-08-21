@@ -74,8 +74,16 @@ registry with no app change at all.
 |---|---|
 | `GET /index.json` | The catalogue, schema v1. What a client reads |
 | `GET /plugins/{id}/index.json` | One plugin, same format — the shape `PluginMeta.update_url` expects |
+| `GET /` | The plugin directory a person reads, with a search. Public, server-rendered, no account |
+| `GET /plugins/{id}` | One plugin's page: what it is, its latest approved release, its notes. Public |
 | `GET /healthz` | Liveness. Touches nothing |
 | `GET /readyz` | Readiness, and it says *why* when it is not: the database answers and the catalogue still renders |
+
+The first two are for machines and the next two are the same catalogue for people, rendered from
+the same rows by the same binary. **Neither pair needs an account**: a visitor who wants to see
+what plugins exist should not have to sign in to learn what `GET /index.json` would have told
+their client anyway. Signing in is a link in the header, and is needed to publish or to manage a
+token.
 
 The index endpoints sit outside `/api/v1` on purpose: their shape is pinned by a parser we do not
 own, so they must not move when the product API versions

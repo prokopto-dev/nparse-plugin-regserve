@@ -78,7 +78,7 @@ func authMiddleware(
 			return
 		}
 		if access.public {
-			next(ctx)
+			next(withBrowserSession(ctx, authn))
 			return
 		}
 
@@ -216,6 +216,43 @@ func allowReviewer(
 }
 
 // credentialsFrom reads whatever the request presented. It never logs either value.
+// withBrowserSession attaches the principal a PUBLIC request's session cookie resolves to, if
+// there is one, and otherwise changes nothing.
+//
+// It exists so that a public page can be honest about who is reading it. Without it, the directory
+// would greet a signed-in visitor with a "sign in" link, which is the confident mistake this
+// repository is written against: a page that states something false about the reader's own state.
+//
+// THREE PROPERTIES, EACH DELIBERATE.
+//
+//   - IT NEVER REFUSES. A public operation was already allowed before this ran, and no failure
+//     here changes that: a revoked session, an expired one, a database that will not answer, all
+//     produce an anonymous page rather than an error. Attaching decoration must not be able to
+//     take a route away.
+//   - IT COSTS NOTHING WITHOUT A COOKIE. The lookup happens only for a request carrying the
+//     session cookie, so /index.json, /healthz and every client poll are untouched: they carry
+//     no cookie and never reach the store.
+//   - IT IGNORES THE AUTHORIZATION HEADER. A personal access token must not authenticate a browser
+//     surface, and this is a browser surface: only the session cookie is offered to the resolver,
+//     so a token cannot put an account's name on a page however it is scoped.
+func withBrowserSession(ctx huma.Context, authn Authenticator) huma.Context {
+	if authn == nil {
+		return ctx
+	}
+	cookie, err := huma.ReadCookie(ctx, auth.SessionCookieName)
+	if err != nil || cookie.Value == "" {
+		return ctx
+	}
+
+	principal, err := authn.Resolve(ctx.Context(), auth.Credentials{SessionCookie: cookie.Value})
+	if err != nil || principal.AccountID == "" {
+		// Not logged at error: an expired cookie on a public page is an ordinary Tuesday, and a
+		// log line per visit would bury the ones that matter.
+		return ctx
+	}
+	return huma.WithValue(ctx, principalKey{}, principal)
+}
+
 func credentialsFrom(ctx huma.Context) auth.Credentials {
 	var creds auth.Credentials
 	if c, err := huma.ReadCookie(ctx, auth.SessionCookieName); err == nil {

@@ -207,7 +207,7 @@ func TestBRAND003_TheMark_IsInlinedFromTheVendoredFile(t *testing.T) {
 	require.NotContains(t, string(layout), "<circle",
 		"the mark's own markup must not be pasted into the layout")
 
-	rendered, err := renderPage(t.Context(), "home.html", pageData{Title: "Home"})
+	rendered, err := renderPage(t.Context(), "directory.html", pageData{Title: "Plugins"})
 	require.NoError(t, err)
 	body := string(rendered.Body)
 	require.Contains(t, body, `viewBox="0 0 256 256"`, "the mark is inlined into the page")
