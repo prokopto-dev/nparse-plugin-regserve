@@ -106,12 +106,18 @@ type publishReleaseResult struct {
 // registerReleases wires the publish endpoint.
 func registerReleases(api huma.API, publisher Publisher) {
 	register(api,
+		// The permission is `plugin.publish`, SPELLED AS THE CATALOGUE SPELLS IT. It said
+		// `release.publish` for one release: a permission that exists nowhere in
+		// internal/authz, so authz.Satisfies could not find it and every scoped token was
+		// answered 403 — publishing, the point of this service, was closed to CI. PERM001 now
+		// fails a declaration that names a permission the catalogue does not define.
+		//
 		// A token needs `plugin:publish`, AND its pin is compared against the `id` path parameter
 		// before the handler runs. OnPlugin is what makes the pin enforceable: ADR-0005's
 		// containment argument is that a credential in one repository's CI can do exactly one
 		// thing to exactly one plugin, and that is only true if something compares the two.
 		// PERM001 fails a token-callable operation under /plugins/{...} that omits it.
-		Requires("release.publish", "plugin:publish").OnPlugin("id"),
+		Requires("plugin.publish", "plugin:publish").OnPlugin("id"),
 		huma.Operation{
 			// NEVER RENAMED. It is the generated SDK's method name, so a rename breaks callers in
 			// their language rather than ours (canonical §6, gate OAPI001).

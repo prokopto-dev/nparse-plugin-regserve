@@ -71,8 +71,10 @@ func TestPERM001_EveryOperation_DeclaresItsAccess(t *testing.T) {
 		t.Run(o.String(), func(t *testing.T) {
 			t.Parallel()
 			require.Empty(t, accessFindings(o, schemes),
-				"PERM001: %s does not declare its access. Register it through the helper in "+
-					"internal/api/routes.go with an Access — Public(), Requires() or Floor()", o)
+				"PERM001: %s does not declare its access, or declares a permission or scope "+
+					"internal/authz does not define. Register it through the helper in "+
+					"internal/api/routes.go with an Access — Public(), Requires() or Floor() — "+
+					"naming keys from the catalogue in internal/authz/catalogue.go", o)
 		})
 	}
 }
@@ -94,6 +96,12 @@ func TestPERM001_FiresOnADeliberatelyBrokenOperation(t *testing.T) {
 		op   huma.Operation
 		// path defaults to a non-plugin route; the plugin-pin case overrides it.
 		path string
+
+		// want is a substring the findings must contain, for a row where "it produced SOME
+		// finding" is too weak a proof. Several of these shapes are wrong in more than one way,
+		// and a row that passed on an unrelated finding would say nothing about the check it was
+		// written for — which is how a gate ends up green over a hole.
+		want string
 	}{
 		{
 			name: "declares nothing at all",
@@ -205,6 +213,89 @@ func TestPERM001_FiresOnADeliberatelyBrokenOperation(t *testing.T) {
 				},
 			},
 		},
+		{
+			// THE ONE THAT SHIPPED, verbatim. This is exactly what POST
+			// /api/v1/plugins/{id}/releases declared in v0.2.0: a permission spelled correctly,
+			// paired with the right scope, naming nothing the catalogue has ever held. Every
+			// other check in this gate passed it, authz.Satisfies returned false for every
+			// token, and publishing was 403 for every plugin that adopted the release workflow.
+			name: "a permission the catalogue does not define",
+			op: huma.Operation{
+				OperationID: "publishRelease",
+				Security: []map[string][]string{
+					{api.SchemePAT: {"plugin:publish"}}, {api.SchemeSession: {}},
+				},
+				Extensions: map[string]any{
+					api.ExtPermission:  "release.publish",
+					api.ExtPluginParam: "id",
+				},
+			},
+			path: "/api/v1/plugins/{id}/releases",
+			want: "catalogue does not define",
+		},
+		{
+			// The same defect from the other side: a scope nobody can mint. auth.Tokens rejects
+			// an unknown scope at mint time, so the document would be advertising a credential
+			// that cannot be created.
+			name: "a scope the catalogue does not define",
+			op: huma.Operation{
+				OperationID: "newRoute",
+				Security: []map[string][]string{
+					{api.SchemePAT: {"plugin:deploy"}}, {api.SchemeSession: {}},
+				},
+				Extensions: map[string]any{
+					api.ExtPermission:  "plugin.publish",
+					api.ExtPluginParam: "id",
+				},
+			},
+			path: "/api/v1/plugins/{id}/releases",
+			want: "which the catalogue does not define",
+		},
+		{
+			// Both halves exist; they do not meet. A token minted exactly as this document asks
+			// would be refused by authz.Satisfies, which is the same 403 the typo produced.
+			name: "a scope that does not satisfy the permission it is offered for",
+			op: huma.Operation{
+				OperationID: "newRoute",
+				Security: []map[string][]string{
+					{api.SchemePAT: {"plugin:read"}}, {api.SchemeSession: {}},
+				},
+				Extensions: map[string]any{
+					api.ExtPermission:  "plugin.publish",
+					api.ExtPluginParam: "id",
+				},
+			},
+			path: "/api/v1/plugins/{id}/releases",
+			want: "none of which satisfies",
+		},
+		{
+			// The catalogue says owner.manage is session-only forever. An operation that offers
+			// it to a token is the escalation the floor exists to prevent, and the catalogue is
+			// where that fact is written down.
+			name: "a permission the catalogue makes floor, declared without the floor",
+			op: huma.Operation{
+				OperationID: "newRoute",
+				Security: []map[string][]string{
+					{api.SchemePAT: {"plugin:publish"}}, {api.SchemeSession: {}},
+				},
+				Extensions: map[string]any{api.ExtPermission: "owner.manage"},
+			},
+			want: "capability-floor, without",
+		},
+		{
+			// And the reverse. The permissions page would tell a plugin author that
+			// `plugin:publish` grants this while the middleware refuses every token — a page that
+			// lies is worse than no page, because a workflow author trusts it.
+			name: "the floor declared for a permission the catalogue gives scopes",
+			op: huma.Operation{
+				OperationID: "newRoute",
+				Security:    sessionOnly,
+				Extensions: map[string]any{
+					api.ExtPermission: "plugin.publish", api.ExtPATForbidden: true,
+				},
+			},
+			want: "which the catalogue gives scopes",
+		},
 	}
 
 	for _, tt := range tests {
@@ -215,9 +306,15 @@ func TestPERM001_FiresOnADeliberatelyBrokenOperation(t *testing.T) {
 				path = "/api/v1/new"
 			}
 			o := operation{path: path, method: "POST", op: &tt.op}
-			require.NotEmpty(t, accessFindings(o, schemes),
+			findings := accessFindings(o, schemes)
+			require.NotEmpty(t, findings,
 				"PERM001 must reject this operation; it accepted it, so the gate is not checking "+
 					"what it claims to")
+			if tt.want != "" {
+				require.Contains(t, strings.Join(findings, "\n"), tt.want,
+					"PERM001 rejected this operation for a different reason than the one this row "+
+						"was written to prove; the check it is about may no longer run")
+			}
 		})
 	}
 }
@@ -302,6 +399,8 @@ func accessFindings(o operation, schemes map[string]bool) []string {
 
 	_, floor := o.op.Extensions[api.ExtPATForbidden]
 
+	found = append(found, catalogueResolutionFindings(o, name, floor)...)
+
 	// A REVIEWER OPERATION MUST ALSO BE CAPABILITY-FLOOR.
 	//
 	// "Only a configured reviewer may do this" and "no token may do this" are both true of
@@ -349,6 +448,79 @@ func accessFindings(o operation, schemes map[string]bool) []string {
 		}
 	}
 	return found
+}
+
+// catalogueResolutionFindings returns everything an operation declares that internal/authz does
+// not define.
+//
+// SPELLING WAS GATED; RESOLUTION WAS NOT, and the difference shipped. `POST
+// /api/v1/plugins/{id}/releases` declared `release.publish` — a permission the catalogue has never
+// held — for a whole release. It is spelled `<resource>.<action>`, so the check above was happy;
+// authz.Satisfies looked it up, missed, and returned false, so EVERY scoped token was answered
+// 403 and publishing from CI, which is the point of this service, was closed. Nothing was red.
+//
+// The failure direction is the safe one — a permission nobody can hold is a denial and not an
+// escalation — but "fails closed" is not "works", and a gate that only reads the shape of a
+// string cannot tell the difference between a permission and a plausible-looking typo. This
+// reads the catalogue, which canonical §5 makes the one source, and asks whether the thing the
+// route names is in it.
+//
+// It checks the FLOOR AGREES too. Whether a token may ever reach a permission is a property of
+// the permission, recorded in the catalogue and rendered onto the published page: an operation
+// that declares the floor for a permission the catalogue gives scopes tells a plugin author to
+// mint a token that will always be refused, and one that omits the floor for a permission the
+// catalogue makes session-only advertises a token path that authz.Satisfies closes. Both are the
+// document and the enforcement disagreeing, which is the thing law 6 exists to make impossible.
+func catalogueResolutionFindings(o operation, name string, floor bool) []string {
+	var found []string
+	add := func(format string, args ...any) { found = append(found, fmt.Sprintf(format, args...)) }
+
+	entry, known := authz.Lookup(authz.Permission(name))
+	switch {
+	case !known:
+		add("declares %q, which internal/authz's catalogue does not define; authz.Satisfies "+
+			"cannot find it, so every token that calls this operation is refused", name)
+		// Nothing below can say anything true about a permission that does not exist.
+		return found
+	case entry.Floor && !floor:
+		add("declares %q, which the catalogue makes capability-floor, without %s; a scoped "+
+			"token would be advertised a path the middleware refuses", name, api.ExtPATForbidden)
+	case !entry.Floor && floor:
+		add("declares %s for %q, which the catalogue gives scopes; the permissions page would "+
+			"name a scope that grants it while the server refuses every token", api.ExtPATForbidden,
+			name)
+	}
+
+	for _, req := range o.op.Security {
+		scopes, isPAT := req[api.SchemePAT]
+		for _, s := range scopes {
+			if !authz.KnownScope(authz.Scope(s)) {
+				add("names scope %q, which the catalogue does not define; no token can be minted "+
+					"with it, because a mint request naming an unknown scope is rejected", s)
+			}
+		}
+
+		// The scopes in the document are what a workflow author mints against, and the middleware
+		// answers with authz.Satisfies over the scopes the token actually carries. If none of the
+		// advertised ones satisfies the permission, the document describes a credential that
+		// cannot work — the same fail-closed shape as an unknown permission, arrived at from the
+		// other side.
+		if isPAT && !floor && !authz.Satisfies(authz.Permission(name), asScopes(scopes)) {
+			add("offers the %q scheme with %v, none of which satisfies %q", api.SchemePAT,
+				scopes, name)
+		}
+	}
+	return found
+}
+
+// asScopes is the document's strings as the catalogue's type. The conversion is where the two
+// vocabularies meet, so it happens once rather than at every call site.
+func asScopes(in []string) []authz.Scope {
+	out := make([]authz.Scope, 0, len(in))
+	for _, s := range in {
+		out = append(out, authz.Scope(s))
+	}
+	return out
 }
 
 // TestPERM001_RouteRegistration_GoesThroughTheAccessDeclaringHelper — the other half.
