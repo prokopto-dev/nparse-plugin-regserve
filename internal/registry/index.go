@@ -98,11 +98,14 @@ type Release struct {
 	// column after a wire field, because sqlc writes column names into Go string literals and one
 	// spelled `release_notes` would put a wire-format name in a second package and fail SCHEMA002.
 	//
-	// NOTHING HERE CHECKS THE 2048-BYTE CAP, and that is deliberate rather than an omission: the
-	// cap is a CHECK on the column (`release_notes_within_the_index_budget`), so every writer goes
-	// through it — the publish path, the seed import, and a hand-run UPDATE during an incident
-	// alike. A second constant here would be a second cap to keep in step, and the one that is
-	// easy to forget is the one that is not enforced by the database.
+	// NOTHING HERE VALIDATES THE TEXT, and that is deliberate rather than an omission. The
+	// 2048-byte cap is a CHECK on the column (`release_notes_within_the_index_budget`), so every
+	// writer goes through it — including a hand-run UPDATE during an incident. What the CHECK
+	// cannot say is what the bytes ARE, so the content rules (valid UTF-8, no C0 or C1 control
+	// character except newline and tab, normalised line endings) live in exactly one function,
+	// `release.ValidateReleaseNotes`, and BOTH doors into the column go through it: the publish
+	// path and the seed importer. A second copy here would be a second set of rules to keep in
+	// step, and the copy that drifts is always the one nobody is looking at.
 	ReleaseNotes string `json:"release_notes,omitempty"`
 }
 

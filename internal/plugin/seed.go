@@ -9,6 +9,7 @@ import (
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/clock"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/core"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/registry"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/release"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/store"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/store/sqlitegen"
 )
@@ -179,6 +180,24 @@ func insertImported(
 		return fmt.Errorf("mint a release id for %s: %w", p.ID, err)
 	}
 
+	// THE SEED IS UNTRUSTED INPUT, and its notes go through the SAME validator a publish request's
+	// do (ADR-0013). Nothing else in the pipeline would catch them: the column's CHECK bounds the
+	// LENGTH and says nothing about content, `registry.ParseIndex` validates the wire shape and not
+	// the text, and the result is served to a desktop client — so a seed carrying an ANSI escape
+	// would be stored by this one path and rendered by every other.
+	//
+	// It REFUSES rather than cleaning up, exactly as the publish path does, and the refusal is
+	// fatal at boot with the file and the plugin named. Dropping the notes and importing the rest
+	// would be a listing quietly missing something it was captured with.
+	//
+	// The normalised value is what is stored: the validator turns CRLF and bare CR into LF and
+	// trims the outer whitespace, so the same notes imported from a file written on Windows and
+	// one written on Linux are the same bytes in the index.
+	notes, err := release.ValidateReleaseNotes(p.Latest.ReleaseNotes)
+	if err != nil {
+		return fmt.Errorf("release notes for %s: %w", p.ID, err)
+	}
+
 	sha := p.Latest.SHA256
 	note := importReviewNote
 	if err := q.InsertRelease(ctx, sqlitegen.InsertReleaseParams{
@@ -198,7 +217,7 @@ func insertImported(
 		//
 		// NULL for a listing with none, never "": the column is nullable and the CHECK reads it
 		// that way, and an empty string would be a written-down statement that there are no notes.
-		Notes:       optional(p.Latest.ReleaseNotes),
+		Notes:       optional(notes),
 		SubmittedAt: now.Int64(),
 		ReviewNote:  &note,
 	}); err != nil {
