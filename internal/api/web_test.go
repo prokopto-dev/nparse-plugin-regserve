@@ -194,16 +194,58 @@ func (h *webHarness) request(t *testing.T, method, path string, form url.Values)
 	return response{status: resp.StatusCode, header: resp.Header.Clone(), body: raw}
 }
 
-func TestHomePage_IsPublicAndOffersASignIn(t *testing.T) {
+// The home page moved. `/` is the PUBLIC plugin directory now, registered from the catalogue
+// rather than from the sign-in machinery, and sign-in is a link in the header — so what used to be
+// tested here is in directory_test.go: TestDirectory_IsPublic_AndListsEveryPlugin and
+// TestDirectory_SignIn_IsAHeaderLinkAndOnlyWhenConfigured.
+
+// TestHeader_EverySignedInPage_OffersTheWayBack — you can always get to your account.
+//
+// This is a REGRESSION test for a dead end that shipped. The header used to render the display
+// name as plain text; the review queue has no back link of its own; and `/` could not tell a
+// signed-in visitor from an anonymous one, so it offered them a sign-in link. A reviewer who
+// clicked "review queue" was then stuck there unless they knew to type /account into the URL bar.
+//
+// Each page is asked separately rather than the layout being inspected once, because the layout is
+// only half of it: a page that builds its pageData without an Account renders no nav at all, and
+// that is exactly how one page ends up different from the others.
+func TestHeader_EverySignedInPage_OffersTheWayBack(t *testing.T) {
 	t.Parallel()
 
-	h := newWebHarness(t, func(h *webHarness) { h.authn.err = auth.ErrNoCredential })
-	resp := h.get(t, "/")
+	// A HARNESS PER SUBTEST, built inside the closure. The harnesses share one http.Client and one
+	// fakeAuthn, both of which record what they saw, so two parallel subtests driving the same one
+	// is a data race — which is what `go test -race -shuffle=on` said the first time this ran.
+	pages := []struct {
+		name string
+		body func(t *testing.T) string
+	}{
+		{name: "the account page", body: func(t *testing.T) string {
+			return string(newReviewHarness(t).do(t, http.MethodGet, "/account", nil).body)
+		}},
+		{name: "the review queue", body: func(t *testing.T) string {
+			return string(newReviewHarness(t).do(t, http.MethodGet, "/review", nil).body)
+		}},
+		{name: "a release under review", body: func(t *testing.T) string {
+			path := "/review/releases/" + testReleaseID
+			return string(newReviewHarness(t).do(t, http.MethodGet, path, nil).body)
+		}},
+		{name: "a plugin's settings", body: func(t *testing.T) string {
+			return string(newWebHarness(t).get(t, "/plugins/merchant-mode/settings").body)
+		}},
+	}
+	for _, page := range pages {
+		t.Run(page.name, func(t *testing.T) {
+			t.Parallel()
 
-	require.Equal(t, http.StatusOK, resp.status)
-	require.Equal(t, "text/html; charset=utf-8", resp.header.Get("Content-Type"))
-	require.Contains(t, string(resp.body), "/auth/github/login")
-	require.Contains(t, string(resp.body), "Sign in with GitHub")
+			body := page.body(t)
+			require.Contains(t, body, `<a href="/account">your account</a>`,
+				"%s must offer a way back to the account page", page.name)
+			require.Contains(t, body, "sign out",
+				"%s must offer a way out", page.name)
+			require.NotContains(t, body, "sign in with GitHub",
+				"%s is a signed-in page and must not tell the reader to sign in", page.name)
+		})
+	}
 }
 
 // TestAccountPage_IsCapabilityFloorAndPrivate — a browser surface is not a token surface.

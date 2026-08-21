@@ -18,6 +18,7 @@ import (
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/core"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/identity"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/ownership"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/registry"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/review"
 )
 
@@ -37,6 +38,9 @@ import (
 // Every authenticated page here is Floor(...): a PAT must not authenticate a browser surface, and
 // each of these pages exists to perform an operation the floor already covers.
 const (
+	// PathHome is the directory, and is registered in directory.go rather than here: it is a
+	// PUBLIC page now, wired from the catalogue rather than from the sign-in machinery. The
+	// constant stays in this list because the layout every page shares links to it.
 	PathHome           = "/"
 	PathAccountPage    = "/account"
 	PathMintToken      = "/account/tokens"
@@ -52,7 +56,7 @@ const tagAccount = "account"
 // a page that begins with a comment can be sniffed as text/plain.
 const contentTypeHTML = "text/html; charset=utf-8"
 
-//go:embed webtmpl/*.html
+//go:embed webtmpl/*.html webtmpl/assets/*.svg
 var webFiles embed.FS
 
 // pages is parsed once, at package init, because a template that fails to parse should take the
@@ -62,7 +66,13 @@ var webFiles embed.FS
 // a script — and that is what makes a plugin id or a display name coming from a provider safe to
 // render. Nothing here reaches for template.HTML to make something render; if a value needs it,
 // the answer is that the value is wrong.
-var pages = template.Must(template.ParseFS(webFiles, "webtmpl/*.html"))
+//
+// The vendored mark is parsed alongside the pages, and that is what lets layout.html inline it
+// with `{{template "nparseplus-mark.svg" .}}`: a template's own body is literal markup, so the SVG
+// is emitted verbatim without template.HTML and without a hand-copied second version of it in the
+// layout. html/template elides the file's long provenance comment on the way out, so the page
+// carries the markup and the reasoning stays on disk where somebody editing it will read it.
+var pages = template.Must(template.ParseFS(webFiles, "webtmpl/*.html", "webtmpl/assets/*.svg"))
 
 // WebDeps is what the account surface needs. Consumer-declared, like every other dependency in
 // this package.
@@ -123,6 +133,22 @@ type pageData struct {
 	Queue   []review.Waiting
 	Release *review.Detail
 
+	// The public directory's fields. Query is the SEARCH TEXT the visitor typed, echoed back into
+	// the box so a result page can be read and refined rather than retyped — the one value on any
+	// of these pages that comes from a caller and is rendered back to them. html/template escapes
+	// it by position, which is why that is safe to do here and would not be safe as a Notice: a
+	// notice is prose this package writes, and a value that becomes prose is a value that becomes
+	// whatever was submitted.
+	Query   string
+	Found   *Browsed
+	Listing *registry.Plugin
+
+	// IndexPath is always this service's index route; IndexURL is the absolute form, and is empty
+	// on an instance that was never told its own public URL. The page shows whichever it has and
+	// never assembles one from the request's Host header, which the caller controls.
+	IndexPath string
+	IndexURL  string
+
 	// IsReviewer decides whether the layout offers a link to the queue. It is DECORATION and not
 	// authorisation: the middleware refuses a non-reviewer at every review route whatever this
 	// says, and a page that hid the link would still be a page that could not be reached. Its job
@@ -146,7 +172,6 @@ type htmlOutput struct {
 }
 
 func registerWeb(api huma.API, deps WebDeps) {
-	registerHomePage(api, deps)
 	registerAccountPage(api, deps)
 	registerTokenForms(api, deps)
 	registerPluginPages(api, deps)
@@ -157,28 +182,6 @@ func registerWeb(api huma.API, deps WebDeps) {
 	if deps.Queue != nil && deps.Reviewers != nil {
 		registerReviewPages(api, deps)
 	}
-}
-
-func registerHomePage(api huma.API, deps WebDeps) {
-	register(api, Public(), huma.Operation{
-		OperationID: "getHomePage",
-		Method:      http.MethodGet,
-		Path:        PathHome,
-		Summary:     "The sign-in page",
-		Description: "An HTML page. Anonymous visitors see a sign-in link; a signed-in one is " +
-			"pointed at their account.",
-		Tags:      []string{tagAccount},
-		Responses: htmlResponses(),
-	}, func(ctx context.Context, _ *struct{}) (*htmlOutput, error) {
-		data := pageData{Title: "Sign in", Providers: deps.Providers.Kinds()}
-		// The home page is PUBLIC, so there may be no principal — and if there is one, it is worth
-		// showing, because a signed-in person landing on a sign-in page assumes they are not.
-		if p, ok := PrincipalFrom(ctx); ok {
-			data.Account = &p
-			data.CSRFField, data.CSRFToken = auth.CSRFFieldName, deps.Sessions.CSRFToken(p)
-		}
-		return renderPage(ctx, "home.html", data)
-	})
 }
 
 func registerAccountPage(api huma.API, deps WebDeps) {

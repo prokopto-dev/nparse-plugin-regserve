@@ -5,19 +5,82 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Title}} — nParse+ plugin registry</title>
 <style>
-  :root { color-scheme: light dark; --fg: #16161d; --bg: #fbfbfd; --muted: #5b5b6b;
-          --line: #d8d8e0; --accent: #2f5fd0; --warn: #8a4b00; }
+  /* THE PALETTE IS MEASURED, NOT CHOSEN.
+     Every value below is a real nParse+ colour: `src/nparseplus/ui/skins.py` upstream, by way of
+     `data/assets/icon.svg` (vendored beside this file) and `docs/assets/extra.css`, which is the
+     same palette keyed for that project's docs site. Two rules travel with it.
+
+     ONE — THE HEADER IS THE PLATE, NEVER THE GOLD. The app puts gold on accents and engraving,
+     not on large fields. A full-width gold bar is off-brand and hard to read against; the plate is
+     the field and the gold is what sits on it. Gate BRAND002 fails a gold value in any
+     `background`.
+
+     TWO — THE CONTRAST WORK IS ALREADY DONE, AND ONE VALUE CANNOT DO IT. The ledger gold #8a7549
+     lands at 4.45:1 on white, under AA for link-sized text. #7d6a42 is the nearest value that
+     clears it (5.23:1) and is the one colour here NOT lifted from skins.py — the reason is
+     contrast, not taste. On the near-black glass the accent is the velious gold #e2c882 (11.53:1),
+     because a value dark enough for white is invisible on black. Gate BRAND001 recomputes every
+     pair in this block and fails under AA, so a "nicer" hex is a red test rather than a review
+     comment. */
+  :root {
+    color-scheme: light dark;
+
+    --bg: #ffffff;          /* the docs site's light ground; every ratio below is measured on it */
+    --fg: #14100a;          /* velious plate, darker stop — a warm near-black, 18.95:1 */
+    --muted: #6b5a3a;       /* VELIOUS.plate_border, 6.67:1 — stone #968c7b is 3.32:1 and is not
+                               a text colour on white, whatever it looks like */
+    --line: #e6dfd0;        /* stone: a hairline, never a text colour */
+    --field: #6b5a3a;       /* a control's edge, which WCAG holds to 3:1 rather than 4.5:1 */
+    --accent: #7d6a42;      /* see rule two */
+    --warn: #8a4b00;
+
+    /* The plate. It does NOT change between schemes: the header is the same slab of stone in both,
+       which is what makes the mark sit on it rather than in front of it. */
+    --plate: #241e14;
+    --plate-hi: #3a3122;    /* the plate's light stop; the gradient is the mark's own */
+    --plate-fg: #e6dfd0;    /* stone on plate, 12.46:1 */
+    --plate-muted: #968c7b; /* 4.98:1 on the plate — AA, and only just, so nothing smaller here */
+    --plate-line: #6b5a3a;
+    --plate-accent: #e2c882; /* velious gold, 10.09:1 on the plate */
+  }
   @media (prefers-color-scheme: dark) {
-    :root { --fg: #e8e8ef; --bg: #14141a; --muted: #9a9aab; --line: #2e2e3a;
-            --accent: #8fb0ff; --warn: #e0a45c; }
+    :root {
+      --bg: #0f1116;        /* near-black glass */
+      --fg: #e6dfd0;        /* stone, 14.24:1 */
+      --muted: #968c7b;     /* 5.70:1 here, where it is a text colour, unlike on white */
+      --line: #3a3122;
+      --field: #968c7b;     /* #6b5a3a is 2.83:1 on glass — under the 3:1 a control edge needs */
+      --accent: #e2c882;    /* 11.53:1 */
+      --warn: #e0a45c;
+    }
   }
   * { box-sizing: border-box; }
-  body { margin: 0; padding: 0 1rem 4rem; color: var(--fg); background: var(--bg);
+  body { margin: 0; padding: 0 0 4rem; color: var(--fg); background: var(--bg);
          font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
-  main, header { max-width: 52rem; margin: 0 auto; }
-  header { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem;
-           padding: 1.25rem 0; border-bottom: 1px solid var(--line); margin-bottom: 2rem; }
-  h1 { font-size: 1.35rem; margin: 0; }
+  main { max-width: 52rem; margin: 0 auto; padding: 0 1rem; }
+
+  /* The header bleeds full width and its contents do not: the plate is a band across the page,
+     like the frame around the mark, rather than a box floating inside the text column. */
+  header { background: linear-gradient(180deg, var(--plate-hi), var(--plate));
+           border-bottom: 1px solid var(--plate-line); margin-bottom: 2rem;
+           color: var(--plate-fg); }
+  header .bar { max-width: 52rem; margin: 0 auto; padding: .8rem 1rem;
+                display: flex; justify-content: space-between; align-items: center;
+                gap: 1rem; flex-wrap: wrap; }
+  header a { color: var(--plate-accent); }
+  header .muted, header .who { color: var(--plate-muted); }
+  header nav { display: flex; align-items: baseline; flex-wrap: wrap; gap: .25rem .85rem;
+               font-size: .9rem; }
+  .brand { display: flex; align-items: center; gap: .6rem; text-decoration: none;
+           color: var(--plate-fg); }
+  /* The mark is 256x256 in its own coordinates; the attributes on the vendored file say so and are
+     left alone. This is what sizes it, so the file stays a copy of somebody else's artifact. */
+  .brand .mark { display: flex; flex: none; }
+  .brand svg { width: 2rem; height: 2rem; display: block; }
+  .brand h1 { font-size: 1.15rem; margin: 0; font-weight: 600; letter-spacing: .01em; }
+  .brand .sub { display: block; font-size: .75rem; font-weight: 400; letter-spacing: .06em;
+                text-transform: uppercase; color: var(--plate-muted); }
+
   h2 { font-size: 1.1rem; margin: 2.5rem 0 .75rem; }
   a { color: var(--accent); }
   p, li { max-width: 42rem; }
@@ -32,16 +95,40 @@
   fieldset { border: 1px solid var(--line); border-radius: 6px; padding: 1rem; margin: 0 0 1rem; }
   legend { padding: 0 .4rem; font-weight: 600; font-size: .9rem; }
   label { display: block; margin: .6rem 0 .2rem; font-size: .9rem; }
-  input[type=text], select { padding: .4rem .5rem; border: 1px solid var(--line); border-radius: 4px;
+  input[type=text], input[type=search], select {
+         padding: .4rem .5rem; border: 1px solid var(--field); border-radius: 4px;
          background: var(--bg); color: var(--fg); min-width: 18rem; max-width: 100%; }
-  button { padding: .45rem .9rem; border: 1px solid var(--line); border-radius: 4px; cursor: pointer;
-           background: var(--fg); color: var(--bg); font: inherit; font-size: .9rem; }
+  button { padding: .45rem .9rem; border: 1px solid var(--plate-line); border-radius: 4px;
+           cursor: pointer; background: var(--plate); color: var(--plate-fg); font: inherit;
+           font-size: .9rem; }
   button.link { background: none; color: var(--accent); border-color: transparent;
                 padding: .1rem .2rem; text-decoration: underline; }
+  header button.link { color: var(--plate-accent); }
+  /* Gold, on a hairline, is where the engraving goes — and a keyboard user needs to see the focus
+     ring more than a mouse user needs it hidden. */
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  header :focus-visible { outline-color: var(--plate-accent); }
+  /* The directory. The install panel is the first thing on the page because adding this registry
+     is the most likely reason somebody is reading it. */
+  .install { border: 1px solid var(--line); border-left: 4px solid var(--accent);
+             border-radius: 4px; padding: .1rem 1rem 1rem; margin: 0 0 1.5rem; }
+  .install h2 { margin-top: 1rem; }
+  .install code { display: inline-block; padding: .3rem .5rem; border: 1px dashed var(--field);
+                  border-radius: 4px; word-break: break-all; }
+  /* A listing's facts table uses <th> as a ROW header, where the uppercase column-header styling
+     reads as shouting rather than as a label. */
+  table.facts th { text-transform: none; letter-spacing: normal; font-size: .95rem;
+                   width: 11rem; color: var(--muted); }
+  form[role=search] { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+  form[role=search] label { flex-basis: 100%; margin: 0; }
+  .clear { font-size: .9rem; }
+  .count { color: var(--muted); }
+  .desc { margin-top: .25rem; max-width: 34rem; }
+  .hidden-rows { font-size: .9rem; }
   .notice { border: 1px solid var(--line); border-left: 4px solid var(--accent);
             padding: .75rem 1rem; border-radius: 4px; margin: 1rem 0; }
   .notice.problem { border-left-color: var(--warn); }
-  .secret { display: block; padding: .75rem; margin: .5rem 0; border: 1px dashed var(--line);
+  .secret { display: block; padding: .75rem; margin: .5rem 0; border: 1px dashed var(--field);
             border-radius: 4px; word-break: break-all; }
   .warn { color: var(--warn); }
   /* An audit detail and a sha256 are long and must not push the page sideways. */
@@ -56,17 +143,46 @@
 </head>
 <body>
 <header>
-  <h1><a href="/" style="color:inherit;text-decoration:none">nParse+ plugin registry</a></h1>
-  {{if .Account}}
-    <span class="muted">
-      {{if .IsReviewer}}<a href="/review">review queue</a> ·{{end}}
-      {{.Account.DisplayName}}
-      <form method="post" action="/auth/logout" style="display:inline;margin:0">
-        <input type="hidden" name="{{.CSRFField}}" value="{{.CSRFToken}}">
-        <button type="submit" class="link">sign out</button>
-      </form>
-    </span>
-  {{end}}
+  <div class="bar">
+    <a class="brand" href="/">
+      {{/* The vendored mark, emitted verbatim: it is a template whose body is literal markup, so
+           no template.HTML is involved and there is no second copy of the SVG to keep in step.
+           See webtmpl/assets/README.md.
+
+           aria-hidden sits on this WRAPPER rather than on the svg, because the vendored file is
+           not ours to edit. Without it a screen reader announces the mark's own <title> and then
+           the wordmark beside it: "nParse+ nParse+ plugin registry". The mark is decoration next
+           to text that already says the same thing. */}}
+      <span class="mark" aria-hidden="true">{{template "nparseplus-mark.svg" .}}</span>
+      <h1>nParse+<span class="sub">plugin registry</span></h1>
+    </a>
+    {{if .Account}}
+      {{/* EVERY signed-in page carries the same three links, and "your account" is one of them on
+           purpose. It used to be that the header showed the display name as plain text, the review
+           queue had no back link of its own, and the front page could not tell a signed-in visitor
+           from an anonymous one — so a reviewer who clicked through to the queue had no way back
+           to their account at all without editing the URL. A name is an identity, not a
+           destination: the destinations are spelled out. */}}
+      <nav>
+        <span class="who">{{.Account.DisplayName}}</span>
+        <a href="/account">your account</a>
+        {{if .IsReviewer}}<a href="/review">review queue</a>{{end}}
+        {{if .CSRFToken}}
+        <form method="post" action="/auth/logout" style="display:inline;margin:0">
+          <input type="hidden" name="{{.CSRFField}}" value="{{.CSRFToken}}">
+          <button type="submit" class="link">sign out</button>
+        </form>
+        {{end}}
+      </nav>
+    {{else if .Providers}}
+      {{/* Sign-in is a HEADER link now, not the front page. A visitor who wants to see what
+           plugins exist should not be asked who they are first — the catalogue is public, and
+           /index.json has always served it to anybody. */}}
+      <nav>
+        {{range .Providers}}<a href="/auth/{{.}}/login?next=/account">sign in with GitHub</a>{{end}}
+      </nav>
+    {{end}}
+  </div>
 </header>
 <main>
 {{if .Problem}}<div class="notice problem">{{.Problem}}</div>{{end}}

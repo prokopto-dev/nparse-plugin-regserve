@@ -80,6 +80,69 @@ func (c *Catalogue) Listing(ctx context.Context, id core.PluginID) (registry.Plu
 	return p, nil
 }
 
+// Browse answers the public directory: the listings matching query, and the counts of what is not
+// among them.
+//
+// An empty query is "show everything" rather than an error, and it is not a special case in the
+// SQL either — the needle is matched with instr(), which returns 1 for an empty needle, so one
+// statement serves both. A page whose "list everything" and "search" paths were different queries would be a page
+// where one of them could quietly start disagreeing with the other.
+//
+// THE COUNTS ARE PART OF THE ANSWER. A listing this service declines to show has to be countable
+// somewhere a visitor can see it: a directory that is shorter than the catalogue with nothing
+// saying why is indistinguishable from a registry that lost a plugin.
+func (c *Catalogue) Browse(ctx context.Context, query string) (api.Browsed, error) {
+	rows, err := c.db.Read().SearchListings(ctx, foldASCII(query))
+	if err != nil {
+		return api.Browsed{}, fmt.Errorf("search the catalogue: %w", err)
+	}
+
+	out := make([]registry.Plugin, 0, len(rows))
+	for _, row := range rows {
+		p, err := listingFrom(sqlitegen.ListListingsRow(row))
+		if err != nil {
+			// The whole page fails rather than the one row being dropped, exactly as Listings
+			// does: a directory quietly one plugin short is the failure this service is designed
+			// against, and it is worse here than in the index because a human reads this one and
+			// has nothing to compare it against.
+			slog.ErrorContext(ctx, "the directory cannot be rendered",
+				"plugin_id", row.ID, "error", err)
+			return api.Browsed{}, err
+		}
+		out = append(out, p)
+	}
+
+	counts, err := c.db.Read().CountCatalogue(ctx)
+	if err != nil {
+		return api.Browsed{}, fmt.Errorf("count the catalogue: %w", err)
+	}
+
+	return api.Browsed{
+		Plugins:  out,
+		Listed:   int(counts.Listed),
+		Awaiting: int(counts.Awaiting),
+		Delisted: int(counts.Delisted),
+	}, nil
+}
+
+// foldASCII lower-cases A-Z and nothing else.
+//
+// NOT strings.ToLower, and the difference is the whole point. The query it feeds compares against
+// SQLite's lower(), which folds ASCII only: with no ICU extension "Ä" stays "Ä" in the column.
+// strings.ToLower is Unicode-aware, so it would fold the SEARCH TEXT to "ä" and then look for it
+// in a column that still holds "Ä" — a search that silently stops matching the row it is looking
+// at. Folding the same alphabet SQLite folds keeps the two ends in agreement, and the cost is
+// stated rather than hidden: a query in a non-ASCII alphabet matches case-sensitively.
+func foldASCII(s string) string {
+	b := []byte(s)
+	for i := range b {
+		if b[i] >= 'A' && b[i] <= 'Z' {
+			b[i] += 'a' - 'A'
+		}
+	}
+	return string(b)
+}
+
 // Ready reports whether the catalogue can be served, and says why when it cannot.
 //
 // It re-reads and re-renders rather than answering from a flag set at boot. A readiness probe that
@@ -158,5 +221,6 @@ func deref(s *string) string {
 
 var (
 	_ api.Catalogue    = (*Catalogue)(nil)
+	_ api.Directory    = (*Catalogue)(nil)
 	_ api.ReadyChecker = (*Catalogue)(nil)
 )

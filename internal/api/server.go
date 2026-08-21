@@ -13,6 +13,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
@@ -90,6 +91,22 @@ type Config struct {
 	// at all, rather than registered and returning 500 — a route that exists but cannot work is
 	// worse than an honest 404.
 	Catalogue Catalogue
+
+	// Directory backs the public browsing pages: the plugin list at `/` and a plugin's own page.
+	// It is the Catalogue plus a search, and in every real build it IS the catalogue — the same
+	// object, wired twice, so the directory and the index can never be looking at different rows.
+	//
+	// Nil means those pages are not registered, on the same principle as a nil Catalogue: a
+	// directory that cannot read the catalogue would be an empty page that looks like an empty
+	// registry, which is worse than an honest 404.
+	Directory Directory
+
+	// PublicURL is the absolute base this service is reached at, when the operator has said what
+	// it is. It is used for ONE thing: showing a visitor the URL to paste into nParse+. It is
+	// never used to build a link the page follows, and the page falls back to the path when it is
+	// empty — assembling a URL from the request's Host header would be taking a caller's word for
+	// where they are, on the one line of the page that tells somebody what to trust.
+	PublicURL string
 
 	// Readiness backs /readyz. Nil means the endpoint is not registered.
 	//
@@ -187,6 +204,19 @@ func New(cfg Config) http.Handler {
 	if cfg.Catalogue != nil {
 		registerIndex(api, cfg.Catalogue)
 	}
+
+	// The public directory is wired from the catalogue and NOT from the sign-in machinery, which
+	// is the whole point of it: a visitor should be able to see what plugins exist without an
+	// account, exactly as `GET /index.json` lets their client see it without a credential.
+	if cfg.Directory != nil {
+		registerDirectory(api, DirectoryDeps{
+			Listings:  cfg.Directory,
+			Providers: cfg.Providers,
+			Sessions:  cfg.Sessions,
+			Reviewers: cfg.Reviewers,
+			IndexURL:  indexURL(cfg.PublicURL),
+		})
+	}
 	if cfg.Publisher != nil {
 		registerReleases(api, cfg.Publisher)
 	}
@@ -225,6 +255,19 @@ func New(cfg Config) http.Handler {
 	// covers only the routes that matched is a request id nobody can quote in a bug report — and a
 	// token refused only on the routes that matched is a token accepted on the ones that did not.
 	return middleware.RequestID(middleware.SecureHeaders(RefuseTokenInQuery(mux)))
+}
+
+// indexURL renders the absolute index URL from the configured public base, or nothing.
+//
+// Nothing rather than a guess: a page that told somebody to add `http://localhost:8080/index.json`
+// to their client because that is what the last request's Host header said would be handing out a
+// wrong answer with a straight face.
+func indexURL(publicURL string) string {
+	base := strings.TrimSpace(publicURL)
+	if base == "" {
+		return ""
+	}
+	return strings.TrimSuffix(base, "/") + PathIndex
 }
 
 // newHumaAPI builds the Huma API, and every line of the config is load-bearing.

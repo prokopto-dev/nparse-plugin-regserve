@@ -9,6 +9,41 @@ import (
 	"context"
 )
 
+const countCatalogue = `-- name: CountCatalogue :one
+SELECT
+    (SELECT count(*)
+     FROM plugin p
+     JOIN "release" r ON r.plugin_id = p.id AND r.state = 'approved'
+     WHERE p.delisted_at IS NULL) AS listed,
+    (SELECT count(*)
+     FROM plugin p
+     WHERE p.delisted_at IS NULL
+       AND NOT EXISTS (
+           SELECT 1 FROM "release" r WHERE r.plugin_id = p.id AND r.state = 'approved'
+       )) AS awaiting,
+    (SELECT count(*) FROM plugin WHERE delisted_at IS NOT NULL) AS delisted
+`
+
+type CountCatalogueRow struct {
+	Listed   int64
+	Awaiting int64
+	Delisted int64
+}
+
+// What the directory shows, and what it does not.
+//
+// A listing that vanishes without explanation is indistinguishable from a bug, so the page counts
+// the rows it drops rather than quietly serving a shorter list: `listed` is what a visitor sees,
+// `awaiting` is claimed ids with nothing approved behind them yet, and `delisted` is ids that are
+// kept forever and never recycled. One statement rather than three round trips, and no ids in it:
+// a count is not an enumeration.
+func (q *Queries) CountCatalogue(ctx context.Context) (CountCatalogueRow, error) {
+	row := q.db.QueryRowContext(ctx, countCatalogue)
+	var i CountCatalogueRow
+	err := row.Scan(&i.Listed, &i.Awaiting, &i.Delisted)
+	return i, err
+}
+
 const countCatalogueImports = `-- name: CountCatalogueImports :one
 SELECT count(*) FROM audit_log
 WHERE subject_kind = 'catalogue' AND action = 'catalogue.import'
@@ -296,6 +331,99 @@ func (q *Queries) ListPluginsWithNoApprovedRelease(ctx context.Context) ([]strin
 			return nil, err
 		}
 		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const searchListings = `-- name: SearchListings :many
+SELECT
+    p.id,
+    p.name,
+    p.description,
+    p.author,
+    p.homepage,
+    r.version,
+    r.artifact_url,
+    r.artifact_sha256,
+    r.sdk_specifier,
+    r.minimum_app_version,
+    r.notes
+FROM plugin p
+JOIN "release" r ON r.plugin_id = p.id AND r.state = 'approved'
+WHERE p.delisted_at IS NULL
+  AND (instr(lower(p.id), ?1) > 0
+       OR instr(lower(p.name), ?1) > 0
+       OR instr(lower(p.description), ?1) > 0
+       OR instr(lower(p.author), ?1) > 0)
+ORDER BY p.id
+`
+
+type SearchListingsRow struct {
+	ID                string
+	Name              string
+	Description       string
+	Author            string
+	Homepage          string
+	Version           string
+	ArtifactUrl       string
+	ArtifactSha256    *string
+	SdkSpecifier      string
+	MinimumAppVersion *string
+	Notes             *string
+}
+
+// The public directory's query. It is a SEPARATE statement from ListListings on purpose: the
+// index's query must never grow a parameter a web page controls, because the index is the document
+// a released client parses and its rows are decided by the schema, not by a querystring.
+//
+// Matching is instr() over lower(), not LIKE. Two reasons, and neither is style: instr's needle
+// is LITERAL, so there are no wildcards to escape and a visitor typing % or _ searches for those
+// characters rather than for everything; and sqlc v1.31.1's SQLite grammar does not parse LIKE's
+// ESCAPE clause, so the alternative was an unescaped LIKE, which is the bug.
+//
+// SQLite's lower() folds ASCII ONLY. The Go side folds the query the same way, with A-Z and
+// nothing else, so the two agree by construction: a query with non-ASCII letters matches
+// case-sensitively, which is a stated limitation rather than a surprise. Plugin ids are ASCII by
+// construction (core.PluginID), so ids are unaffected.
+//
+// instr(x, ”) is 1, so an empty query matches every row. That is why there is no CASE and no
+// second parameter for "did they search at all": "show me everything" is the same statement as
+// "match anything", and one code path cannot disagree with itself.
+//
+// There is NO FTS5 table here: the catalogue is tens of rows, and a virtual table plus a migration
+// plus the triggers to keep it in step is a lot of machinery for a scan that costs microseconds.
+// See issue #40 for the row count at which that stops being true.
+func (q *Queries) SearchListings(ctx context.Context, needle string) ([]SearchListingsRow, error) {
+	rows, err := q.db.QueryContext(ctx, searchListings, needle)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SearchListingsRow{}
+	for rows.Next() {
+		var i SearchListingsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Description,
+			&i.Author,
+			&i.Homepage,
+			&i.Version,
+			&i.ArtifactUrl,
+			&i.ArtifactSha256,
+			&i.SdkSpecifier,
+			&i.MinimumAppVersion,
+			&i.Notes,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err

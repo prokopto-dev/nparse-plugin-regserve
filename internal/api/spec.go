@@ -34,6 +34,7 @@ func Spec() *huma.OpenAPI {
 	// exposes, not what one deployment is currently able to answer.
 	registerHealth(api, unavailable{})
 	registerIndex(api, unavailable{})
+	registerDirectory(api, DirectoryDeps{Listings: unavailable{}, Providers: identity.NewRegistry()})
 	registerAuth(api, unavailable{}, unavailable{}, identity.NewRegistry())
 	registerReleases(api, unavailablePublisher{})
 	registerPlugins(api, unavailableOwnership{})
@@ -80,6 +81,10 @@ func (unavailable) Listings(context.Context) ([]registry.Plugin, error) {
 
 func (unavailable) Listing(context.Context, core.PluginID) (registry.Plugin, error) {
 	return registry.Plugin{}, errSpecOnly
+}
+
+func (unavailable) Browse(context.Context, string) (Browsed, error) {
+	return Browsed{}, errSpecOnly
 }
 
 func (unavailable) Ready(context.Context) error { return errSpecOnly }

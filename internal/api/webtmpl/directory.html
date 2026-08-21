@@ -1,0 +1,86 @@
+{{define "content"}}
+<section class="install">
+  <h2>Add this registry to nParse+</h2>
+  <p>
+    Paste this into <strong>Settings → Plugins → Registries</strong>. It is the same document
+    every nParse+ install reads, and it needs no account:
+    <code class="mono">{{if .IndexURL}}{{.IndexURL}}{{else}}{{.IndexPath}}{{end}}</code>
+  </p>
+  <p class="muted">
+    Or <a href="{{.IndexPath}}">read the index</a> yourself — it is JSON, it is public, and
+    everything below is rendered from it.
+  </p>
+</section>
+
+<h2>Plugins</h2>
+
+<form method="get" action="/" role="search">
+  <label for="q">Search by name, id, author or description</label>
+  <input type="search" id="q" name="q" value="{{.Query}}" autocomplete="off"
+         placeholder="a name, an id, an author…">
+  <button type="submit">Search</button>
+  {{if .Query}}<a href="/" class="clear">show everything</a>{{end}}
+</form>
+
+{{with .Found}}
+  <p class="count">
+    {{if $.Query}}
+      {{if .Plugins}}
+        {{len .Plugins}} of {{.Listed}} listed plugin{{if ne .Listed 1}}s{{end}}
+        match “{{$.Query}}”.
+      {{else}}
+        Nothing matched “{{$.Query}}”. All {{.Listed}} listed
+        plugin{{if ne .Listed 1}}s{{end}} are shown by an empty search.
+      {{end}}
+    {{else if .Plugins}}
+      {{.Listed}} plugin{{if ne .Listed 1}}s{{end}} listed.
+    {{else}}
+      Nothing is listed yet. A plugin appears here once a release of it has been approved.
+    {{end}}
+  </p>
+
+  {{if .Plugins}}
+  <table>
+    <thead><tr><th>Plugin</th><th>Latest</th><th>Author</th></tr></thead>
+    <tbody>
+      {{range .Plugins}}
+      <tr>
+        <td>
+          <a href="/plugins/{{.ID}}"><strong>{{.Name}}</strong></a>
+          <div class="muted mono">{{.ID}}</div>
+          {{if .Description}}<div class="desc">{{.Description}}</div>{{end}}
+        </td>
+        <td class="mono">{{.Latest.Version}}</td>
+        <td>{{if .Author}}{{.Author}}{{else}}<span class="muted">not stated</span>{{end}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{end}}
+
+  {{/* A listing that vanishes without explanation is indistinguishable from a bug, so the rows
+       this page does not show are counted where somebody can see them. Counts only: an id is not
+       named here, because a delisted id nobody may claim is not a list to publish. */}}
+  {{if or .Awaiting .Delisted}}
+  <p class="muted hidden-rows">
+    {{if .Awaiting}}
+      {{.Awaiting}} claimed id{{if ne .Awaiting 1}}s are{{else}} is{{end}} not shown: no release
+      of {{if ne .Awaiting 1}}them{{else}}it{{end}} has been approved yet.
+    {{end}}
+    {{if .Delisted}}
+      {{.Delisted}} delisted id{{if ne .Delisted 1}}s are{{else}} is{{end}} not shown; the
+      id{{if ne .Delisted 1}}s stay{{else}} stays{{end}} claimed and
+      {{if ne .Delisted 1}}are{{else}}is{{end}} never recycled.
+    {{end}}
+  </p>
+  {{end}}
+{{end}}
+
+<h2>Publishing</h2>
+<p class="muted">
+  Anybody can browse this registry. Publishing needs an account, and GitHub is the only way in:
+  artifacts live on GitHub Releases and the ownership records this registry was migrated from are
+  GitHub handles, so a GitHub identity is the one credential that connects a publisher to the code
+  they are publishing.
+</p>
+{{end}}
