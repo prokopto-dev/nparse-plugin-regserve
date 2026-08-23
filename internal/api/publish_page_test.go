@@ -237,6 +237,7 @@ func TestPublishGuide_TellsAReaderOnlyWhatThisBuildCanDo(t *testing.T) {
 			cfg:  signInOnly,
 			wants: []string{
 				"Ids cannot be claimed on this instance",
+				"enable claiming",
 				`On <a href="/account">your account</a>`,
 			},
 			wantsNot: []string{
@@ -266,12 +267,18 @@ func TestPublishGuide_TellsAReaderOnlyWhatThisBuildCanDo(t *testing.T) {
 				"Ids cannot be claimed on this instance",
 				"no account page on this instance",
 				"whoever operates the registry",
+				// The recovery has to be one the operator can perform. An id nobody has claimed
+				// has no plugin row, and the ownership import skips ids it does not already carry
+				// rather than inventing them, so "ask them to grant it to you" is advice that
+				// cannot be followed for exactly the reader this page is written for.
+				"enable claiming",
 			},
 			wantsNot: []string{
 				`href="/account"`,
 				"/auth/github/login",
 				"Claim a plugin id",
 				"POST /api/v1/plugins",
+				"claim the id and grant it to you",
 			},
 		},
 	}

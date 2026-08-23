@@ -84,9 +84,12 @@
       </p>
     {{else}}
       <p class="warn">
-        <strong>Ids cannot be claimed on this instance.</strong> Ownership here is set by whoever
-        operates the registry — ask them to claim the id and grant it to you. Publishing to an id
-        you do not hold is answered <code>404</code>, whatever your token carries.
+        <strong>Ids cannot be claimed on this instance.</strong> Ask whoever operates the registry
+        to <strong>enable claiming</strong> — that is the step, and asking them to grant you the id
+        instead does not work for a new one: an id nobody has claimed has no row to grant, and the
+        ownership import deliberately skips ids it does not already carry rather than inventing
+        them. An id that <em>already</em> exists is theirs to grant. Publishing to an id you do not
+        hold is answered <code>404</code>, whatever your token carries.
       </p>
     {{end}}
     {{if .CanClaim}}

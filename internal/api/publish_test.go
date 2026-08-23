@@ -231,8 +231,17 @@ func TestPublishRelease_APublisherOnlyInstance_DoesNotSendAnybodyToAnAbsentAccou
 	require.Contains(t, p.Detail, "no such plugin, or you do not hold it")
 	require.Contains(t, p.Detail, "no way to claim an id on this registry",
 		"an instance that cannot claim says so rather than going quiet")
-	require.Contains(t, p.Detail, "whoever operates it",
-		"and names who actually grants ownership here")
+
+	// AND NAMES A RECOVERY THE OPERATOR CAN ACTUALLY PERFORM. This said "ask them to grant you
+	// the id", which is not a thing anybody can do for the reader it was written for: an id
+	// nobody has claimed has no plugin row, and the ownership import skips ids it does not
+	// already carry rather than inventing them (ownership.SeedOutcome.UnknownPlugins). Advice
+	// that cannot be followed is the same dead end in a politer sentence.
+	require.Contains(t, p.Detail, "enable claiming",
+		"the only path to a new id here runs through the operator enabling a claim door")
+	require.Contains(t, p.Detail, "whoever operates it")
+	require.NotContains(t, p.Detail, "Ask them to grant you the id",
+		"an unclaimed id has no row to grant, so that instruction cannot be followed")
 
 	// AND STILL IDENTICAL FOR BOTH IDS. The advice varies with the deployment, which every caller
 	// can see anyway; it must never vary with the plugin being asked about.

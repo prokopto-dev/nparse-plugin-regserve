@@ -316,11 +316,19 @@ func claimAdvice(form, endpoint bool, publicURL string) string {
 			"already claimed it, check that you are still an owner."
 
 	default:
-		// Neither door. It does NOT say the endpoint is absent — it says there is no way to
-		// claim, which is the fact that matters and the only one true in every shape of this
-		// case, including a Claimer wired on a build nobody can sign in to.
-		return preamble + "There is no way to claim an id on this registry: ownership here is " +
-			"set by whoever operates it. Ask them to grant you the id, then publish again."
+		// NEITHER DOOR, and the recovery it names has to be one the operator can actually
+		// perform. "Ask them to grant you the id" is not, for the reader this whole change is
+		// for: an id nobody has claimed has NO PLUGIN ROW, and the ownership import refuses to
+		// invent one — ownership.SeedOutcome.UnknownPlugins names such ids and skips them,
+		// because a grant on an id the registry does not carry is a claim nobody can check. The
+		// catalogue seed is one-time into an empty database, and there is no operator claim
+		// route. So the only path to a NEW id here runs through enabling claiming first.
+		//
+		// It does not say the endpoint is absent, only that there is no way to claim — the one
+		// phrasing true in every shape of this case.
+		return preamble + "There is no way to claim an id on this registry: ask whoever operates " +
+			"it to enable claiming. Until they do, an id nobody has claimed cannot be registered " +
+			"here by anybody, including them; an id that already exists is theirs to grant."
 	}
 }
 
