@@ -311,73 +311,76 @@ func TestPublish_Authority_IsOwnershipAtRequestTime(t *testing.T) {
 	}
 }
 
-// TestPublish_AnUnclaimedID_IsToldSo_AndAClaimedOneIsStillNotToldWhoHoldsIt.
+// TestPublish_ARefusedPublish_DoesNotSayWhetherTheIDExists.
 //
-// THE TWO REFUSALS HAVE TO DIFFER, and only in the direction that is safe.
+// THE DOMAIN DRAWS NO DISTINCTION, and this is the gate on that.
 //
-// A real author's release workflow was answered "no such plugin, or you do not hold it" on every
-// run of every tag, because they had minted a token and wired CI and never learned that claiming
-// the id is a separate act no token can perform. The sentence was correct and told them nothing
-// they could act on, so the publish path stayed shut with no error anywhere that said why.
+// An id nobody has claimed, an id somebody else holds, and an id that has been delisted are three
+// different facts about the registry and ONE error out of this package. If they were three errors,
+// the route would have three answers to choose between, and the answer for "somebody else holds
+// it" would then prove exactly that — which is the enumeration the ambiguity exists to prevent,
+// since ids are permanent and a squatter only needs to know which names are spoken for.
 //
-// What must NOT change is the other half. An id somebody else holds still gets the ambiguous
-// answer, to the byte: ids are permanent and never recycled, so "that one exists and is not
-// yours" is exactly what tells a squatter which names are worth waiting for. This test asserts
-// both halves in one run, because a change that softened the second would pass the first alone.
-func TestPublish_AnUnclaimedID_IsToldSo_AndAClaimedOneIsStillNotToldWhoHoldsIt(t *testing.T) {
+// A draft of this test asserted the opposite: that an unclaimed id reported itself as unclaimed,
+// so an author who had skipped the claim step would be told. The step still has to be named — it
+// is, in internal/api, in a sentence that is the same for every id and therefore classifies none.
+func TestPublish_ARefusedPublish_DoesNotSayWhetherTheIDExists(t *testing.T) {
 	t.Parallel()
 
-	w := newWorld(t, []byte("PK\x03\x04 bytes"))
+	tests := []struct {
+		name     string
+		pluginID func(w *world) string
+		account  func(w *world) string
+		setUp    func(t *testing.T, w *world)
+	}{
+		{
+			name:     "an id nobody has claimed",
+			pluginID: func(*world) string { return "floating-combat-text" },
+			account:  func(w *world) string { return w.owner },
+		},
+		{
+			name:     "an id somebody else holds",
+			pluginID: func(w *world) string { return w.plugin },
+			account:  func(w *world) string { return w.stranger },
+		},
+		{
+			// Delisting clears the LISTING and keeps the CLAIM — the row survives for ever,
+			// because an id is never recycled. A third state, and the same answer.
+			name:     "an id that has been delisted",
+			pluginID: func(w *world) string { return w.plugin },
+			account:  func(w *world) string { return w.stranger },
+			setUp:    func(t *testing.T, w *world) { w.delist(t, w.plugin) },
+		},
+	}
 
-	// An id NOBODY has claimed, submitted by an account that is otherwise able to publish.
-	unclaimed := w.submit(t, func(raw *release.RawSubmission) {
-		raw.PluginID = "floating-combat-text"
-	})
-	_, err := w.pub.Publish(t.Context(), release.Request{
-		Submission:     unclaimed,
-		AccountID:      w.owner,
-		IdempotencyKey: "key-unclaimed",
-	})
-	require.ErrorIs(t, err, release.ErrPluginUnclaimed,
-		"an id with no claim row is a missing STEP, not a refusal, and must say so")
-	require.NotErrorIs(t, err, release.ErrNotPublishable,
-		"the two are told apart by the route, so they must not satisfy each other's errors.Is")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	// The same request, from an account that does not hold a plugin somebody else DOES hold.
-	claimed := w.submit(t, nil)
-	_, err = w.pub.Publish(t.Context(), release.Request{
-		Submission:     claimed,
-		AccountID:      w.stranger,
-		IdempotencyKey: "key-not-mine",
-	})
-	require.ErrorIs(t, err, release.ErrNotPublishable)
-	require.NotErrorIs(t, err, release.ErrPluginUnclaimed,
-		"a claimed id must never be described as available; that is the squatting oracle")
+			w := newWorld(t, []byte("PK\x03\x04 bytes"))
+			if tc.setUp != nil {
+				tc.setUp(t, w)
+			}
 
-	require.Zero(t, w.releaseCount(t), "a refused publish wrote a row")
-	require.Zero(t, w.fetchCount(),
-		"neither refusal downloaded anything: authority is checked before the artifact is fetched")
-}
+			sub := w.submit(t, func(raw *release.RawSubmission) { raw.PluginID = tc.pluginID(w) })
+			_, err := w.pub.Publish(t.Context(), release.Request{
+				Submission:     sub,
+				AccountID:      tc.account(w),
+				IdempotencyKey: "key-refused",
+			})
 
-// TestPublish_ADelistedPlugin_IsNotReportedAsUnclaimed.
-//
-// Delisting clears the LISTING and keeps the CLAIM — an id is never recycled, so a delisted
-// plugin's row survives for ever. Reporting one as unclaimed would send its author off to claim an
-// id that is already theirs and can never be re-claimed by anybody, and the 409 they would get
-// back is the least confusing part of that journey.
-func TestPublish_ADelistedPlugin_IsNotReportedAsUnclaimed(t *testing.T) {
-	t.Parallel()
+			// The SAME error, and its message compared as a whole rather than with errors.Is
+			// alone: a wrapped sentinel carrying "...: that id is unclaimed" would satisfy
+			// errors.Is and still be the leak.
+			require.ErrorIs(t, err, release.ErrNotPublishable)
+			require.Equal(t, "no such plugin, or you do not hold it", err.Error(),
+				"a refusal that varies with the id is a refusal that classifies ids")
 
-	w := newWorld(t, []byte("PK\x03\x04 bytes"))
-	w.delist(t, w.plugin)
-
-	_, err := w.pub.Publish(t.Context(), release.Request{
-		Submission:     w.submit(t, nil),
-		AccountID:      w.stranger,
-		IdempotencyKey: "key-delisted",
-	})
-	require.ErrorIs(t, err, release.ErrNotPublishable)
-	require.NotErrorIs(t, err, release.ErrPluginUnclaimed)
+			require.Zero(t, w.releaseCount(t), "a refused publish wrote a row")
+			require.Zero(t, w.fetchCount(),
+				"authority is checked before the artifact is fetched, in every one of these")
+		})
+	}
 }
 
 // TestPublish_AnOwnerRemovedDuringTheFetch_DoesNotGetOneMoreRelease.

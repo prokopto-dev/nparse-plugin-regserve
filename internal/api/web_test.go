@@ -735,13 +735,36 @@ func TestAccountPage_OffersAWayToClaimAnID(t *testing.T) {
 			"and minting a token while owning no plugin is a credential that cannot publish")
 	})
 
-	t.Run("while a build with no claimer offers no form and serves no route", func(t *testing.T) {
+	t.Run("while a build with no claimer sends nobody looking for a form", func(t *testing.T) {
 		t.Parallel()
 
-		h := newWebHarness(t, func(h *webHarness) { h.noClaimer = true })
+		// AND OWNING NOTHING, which is the state the guidance renders in. An earlier version of
+		// this test used the default fixture, which holds a plugin — so the empty state never
+		// rendered, and the copy telling a reader to "claim an id below" on a build with no form
+		// below went unnoticed. A gate that cannot reach the strings it is guarding is not a gate.
+		h := newWebHarness(t, func(h *webHarness) {
+			h.noClaimer = true
+			h.ownership.mine = nil
+		})
+		body := string(h.get(t, "/account").body)
 
-		require.NotContains(t, string(h.get(t, "/account").body), `action="/account/plugins"`,
+		require.NotContains(t, body, `action="/account/plugins"`,
 			"a form posting to a route this build does not serve is an on-ramp ending in a 404")
+		for _, directive := range []string{
+			"Claim an id below", "Claim your id first", "Claim an id above",
+		} {
+			require.NotContainsf(t, body, directive,
+				"%q sends the reader to a form this build does not serve", directive)
+		}
+
+		// And says so, rather than going quiet: an empty page with no explanation is
+		// indistinguishable from a broken one, which is the failure this whole page is about.
+		require.Contains(t, body, "cannot register new plugin ids")
+
+		// What stays true whatever is wired: a token could never have claimed an id anyway.
+		require.Contains(t, body, "claim a plugin id",
+			"the token explainer is a fact about tokens, not about this deployment")
+
 		require.Equal(t, http.StatusNotFound, h.post(t, "/account/plugins", url.Values{
 			auth.CSRFFieldName: {h.csrf()},
 			"id":               {"floating-combat-text"},

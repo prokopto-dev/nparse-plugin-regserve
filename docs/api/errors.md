@@ -35,18 +35,22 @@ difference is not a client's business, and distinguishing them lets someone enum
 malformed plugin id also lands here rather than on `invalid_request`, for the same reason — it
 cannot name a real plugin, and reporting *why* it was rejected invites probing.
 
-**One distinction is drawn, in `detail` only.** Publishing to an id that **nobody has claimed** says
-so and names the claim step; publishing to an id **somebody else holds** keeps the ambiguous
-sentence, unchanged. The status and the code are the same in both cases — this is prose for a human,
-not a member to switch on.
+**Publishing draws no distinction either, and this is the one to be careful about.** A publish
+refused for want of a grant returns the *same* document whether the id is unclaimed or held by
+somebody else. It must: if the two differed, the generic answer would then *prove* the id is
+somebody’s, and anybody with an unpinned `plugin:publish` token could classify a wordlist. Ids
+are permanent and never recycled, so that list is exactly what a squatter wants.
 
-The asymmetry is deliberate in both directions. *Who* holds an id is the secret, and it stays one:
-that is what a wordlist plus a permanent id would otherwise hand a squatter. Whether an id is
-claimed **at all** is already answerable to any signed-in account — `POST /api/v1/plugins` is `409`
-for a taken id and `201` for a free one — and the public directory prints how many claimed ids are
-unlisted. Saying it in the refusal leaks nothing new and closes a real dead end: claiming is
-session-only, so an author driving a release pipeline has no way to discover the step from the one
-surface they can see.
+`POST /api/v1/plugins` is **not** an equivalent oracle for free ids, and it is worth saying why,
+because the argument is tempting and wrong: that endpoint’s "not taken" answer is a `201` that
+**claims the id, permanently**, with an audit row. Nobody probes a wordlist with a request that
+takes ownership of every hit. The public directory publishes only the *count* of
+claimed-but-unlisted ids, never which.
+
+What the refusal **does** say, unconditionally, is that claiming is a separate session-only step no
+token can perform, and where to do it. That is a fact about the registry rather than about the id in
+the path — the same sentence for every caller and every id — which is what makes it safe to say and
+still enough to unblock an author whose pipeline is answered `404` on every tag.
 
 ## invalid_request
 

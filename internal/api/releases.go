@@ -220,35 +220,36 @@ func badSubmission(err error) error {
 
 // publishProblem maps a publish failure onto a problem document.
 //
-// claimAt is where an id is claimed, already rendered by claimHere.
+// claimAt is where an id is claimed, already rendered by claimHere. pluginID reaches the LOG and
+// never a refusal: a message that named the id back would be a message that varied with the id,
+// which is the shape the case below exists to avoid.
 func publishProblem(ctx context.Context, pluginID, claimAt string, err error) error {
 	switch {
-	case errors.Is(err, release.ErrPluginUnclaimed):
-		// STILL 404, and still `not_found`. The status and the code are unchanged because the
-		// situation is unchanged — there is no such plugin here — and both are public API a
-		// client switches on. What changes is `detail`, which is the member documented as prose
-		// for a human, and which the reusable publish workflow prints verbatim into the author's
-		// Actions log. So an author who skipped the claim step reads the missing step in the
-		// place they were already looking, and no client's error handling moves.
-		//
-		// Why this may say more than the case below does: the secret is WHO HOLDS AN ID, and it
-		// is still kept. Whether an id is claimed at all is already answerable to any signed-in
-		// account — POST /api/v1/plugins is 409 for a taken id and 201 for a free one — and the
-		// public directory prints how many claimed ids are unlisted. See release.ErrPluginUnclaimed.
-		return NewProblem(http.StatusNotFound, CodeNotFound,
-			"nobody has claimed the plugin id "+pluginID+" on this registry, and publishing does "+
-				"not claim one. Claiming is a separate step and no token can perform it, however "+
-				"scoped: sign in at "+claimAt+" and claim the id there, then run this publish "+
-				"again. Ids are first-come and permanent, so claim the one your plugin declares.")
-
 	case errors.Is(err, release.ErrNotPublishable):
-		// 404 and not 403, and AMBIGUOUS ON PURPOSE. Telling somebody "that plugin exists and is
-		// not yours" enumerates claimed ids for anybody with a wordlist — and because ids are
-		// permanent and never recycled, it also tells a squatter which names are worth waiting
-		// for. This sentence is UNCHANGED, to the byte, and a test asserts that it is: the case
-		// above narrowed which situations reach here, and narrowing it must not have softened it.
+		// ONE ANSWER FOR "the id does not exist" AND "it is not yours", and it must stay one.
+		//
+		// A refusal that varied between the two would let anybody holding an unpinned
+		// `plugin:publish` token classify a wordlist: the specific answer would mean free, and
+		// this general one would then PROVE the id is somebody else's — which is precisely the
+		// set that must not be enumerable, since ids are permanent and never recycled. A draft of
+		// this change did exactly that, on the reasoning that POST /api/v1/plugins already tells a
+		// signed-in caller whether an id is taken. It does not usefully: its "not taken" answer is
+		// a 201 that CLAIMS THE ID, permanently, with an audit row. That side effect is what makes
+		// the claim endpoint useless as a probe, and it is why this one must not be a substitute.
+		//
+		// THE GUIDANCE BELOW IS UNCONDITIONAL, and that is what makes it safe. Every word of it is
+		// true of the registry rather than of this id: claiming is a separate act, no token can
+		// perform it, and here is where it is done. The author who could not publish did not need
+		// to be told that HIS id was free — he needed to be told the step existed at all, and that
+		// is the same sentence whoever asks and whichever id they ask about.
+		//
+		// Gate: TestPublishRelease_TheRefusal_CannotClassifyAnID compares the two responses byte
+		// for byte over real HTTP, so a future branch that splits them again is a red test.
 		return NewProblem(http.StatusNotFound, CodeNotFound,
-			"no such plugin, or you do not hold it")
+			"no such plugin, or you do not hold it. Publishing never claims an id, and no token "+
+				"can claim one however scoped — claiming is session-only. If you have not "+
+				"claimed this id, sign in at "+claimAt+" and claim it there, then publish again; "+
+				"if you have, check that you are still an owner.")
 
 	case errors.Is(err, release.ErrGitHubIdentityRequired):
 		return NewProblem(http.StatusForbidden, CodeGitHubIdentityRequired,

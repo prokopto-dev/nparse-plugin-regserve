@@ -22,11 +22,26 @@
   {{/* THE EMPTY STATE IS WHERE A FIRST-TIME AUTHOR LANDS, and it used to explain only the
        migration from owners.json — which told somebody who had never been in that file to go and
        report a problem, when what they needed was the form below. The migration note is still
-       true and is still here; it is no longer the whole answer. */}}
-  <p class="muted">
-    You do not own any plugins yet. <strong>Claim an id below</strong> — that is the step that
-    makes a plugin yours, and it is the one a publish token cannot do for you.
-  </p>
+       true and is still here; it is no longer the whole answer.
+
+       GATED ON .CanClaim, like the form itself. An instance wired without a Claimer serves no
+       claim form and no POST /api/v1/plugins, and copy that sent somebody looking for a form that
+       is not there would rebuild the dead end this page exists to remove — in the one
+       configuration nobody would think to check. */}}
+  {{if .CanClaim}}
+    <p class="muted">
+      You do not own any plugins yet. <strong>Claim an id below</strong> — that is the step that
+      makes a plugin yours, and it is the one a publish token cannot do for you.
+    </p>
+  {{else}}
+    <p class="warn">
+      You do not own any plugins yet, and
+      <strong>this instance cannot register new plugin ids</strong>: it is running without the
+      service that claims them, so there is no form here and <code>POST /api/v1/plugins</code> is
+      not served either. That is this deployment's configuration and not something to work around
+      from this page — ask whoever runs it.
+    </p>
+  {{end}}
   <p class="muted">
     Ownership of the plugins carried over from the static registry was migrated from
     <code>owners.json</code>. If one of those is yours and is not here, that is worth reporting
@@ -62,8 +77,8 @@
     <input type="text" id="claim_author" name="author" maxlength="120">
 
     <label for="claim_homepage">Homepage</label>
-    <input type="url" id="claim_homepage" name="homepage" placeholder="https://github.com/you/your-plugin"
-           maxlength="500">
+    <input type="url" id="claim_homepage" name="homepage" maxlength="500"
+           placeholder="https://github.com/you/your-plugin">
 
     <p><button type="submit">Claim this id</button></p>
     <p class="muted">
@@ -100,11 +115,19 @@
   {{/* A token minted here would be valid, correctly scoped, and able to publish to nothing: the
        server answers 404 on every publish, because ownership is checked per request and this
        account holds no plugin. That is exactly the dead end this page shipped with — a credential
-       handed over without a word about the missing step. Saying it costs one sentence. */}}
+       handed over without a word about the missing step. Saying it costs one sentence.
+
+       The FIX for it depends on whether this instance can claim at all, so the sentence that
+       names one is gated the same way the form is. */}}
   <p class="warn">
-    <strong>You own no plugins yet, so a token minted now could publish nothing.</strong> Claim
-    your id first: a publish to an id you do not hold is answered "no such plugin", whatever the
-    token carries.
+    <strong>You own no plugins yet, so a token minted now could publish nothing.</strong>
+    A publish to an id you do not hold is answered "no such plugin", whatever the token carries.
+    {{if .CanClaim}}
+      Claim your id first, above.
+    {{else}}
+      Ids cannot be claimed on this instance, so there is nothing a token minted here could
+      publish to until somebody grants you a plugin.
+    {{end}}
   </p>
 {{end}}
 
@@ -154,8 +177,8 @@
     </select>
     {{if not .Plugins}}
       <p class="muted">
-        There is nothing to pin to yet — "any plugin you own" is currently no plugins. Claim an id
-        above first.
+        There is nothing to pin to yet — "any plugin you own" is currently no plugins.
+        {{if .CanClaim}}Claim an id above first.{{end}}
       </p>
     {{end}}
 

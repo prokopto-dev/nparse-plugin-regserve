@@ -103,79 +103,74 @@ func TestPublishRelease_ARealTokenScopedToPublish_IsAdmittedAndTheReleaseIsRecor
 	})
 }
 
-// TestPublishRelease_AnUnclaimedID_IsAnsweredWithTheMissingStep.
+// TestPublishRelease_TheRefusal_CannotClassifyAnID.
 //
-// THE DEAD END THIS EXISTS TO CLOSE, over real HTTP with a real token.
+// THE GATE ON THE ANTI-ENUMERATION GUARANTEE, over real HTTP with a real token.
 //
-// A real external author wired the release workflow, minted a `plugin:publish` token, tagged a
-// version, and was answered `404 {"code":"not_found","detail":"no such plugin, or you do not hold
-// it"}` on every run. Nothing was wrong with the token. He had never claimed the id, and claiming
-// is session-only, so there was no step his pipeline could have taken and no sentence anywhere
-// telling him one was missing.
+// A publish refused for want of a grant must be the SAME RESPONSE whether the id is unclaimed or
+// held by somebody else. If the two differed, an unpinned `plugin:publish` token would classify a
+// wordlist for free: one answer would mean available, and the other would then PROVE the id is
+// somebody's — which is the set that must stay hidden, because ids are permanent and never
+// recycled and a squatter only needs the list.
 //
-// The two halves are asserted TOGETHER and in one run, because the fix is a distinction and a
-// distinction needs both sides. An id nobody holds names the step; an id somebody ELSE holds gets
-// the ambiguous refusal unchanged, to the byte — that one is the secret, since ids are permanent
-// and "that one exists and is not yours" is what tells a squatter which names to wait for.
+// This is not hypothetical caution. The first version of this change made the unclaimed case say
+// so, on the reasoning that POST /api/v1/plugins already answers "taken or not" to any signed-in
+// caller. It does not usefully: that endpoint's "not taken" answer is a 201 that CLAIMS the id,
+// permanently, with an audit row per attempt — a probe nobody can run twice. Review caught it. The
+// comparison below is byte for byte so that the same argument cannot win twice.
 //
-// Both responses are logged, so `go test -v` prints the pair a reviewer can compare.
-func TestPublishRelease_AnUnclaimedID_IsAnsweredWithTheMissingStep(t *testing.T) {
+// The on-ramp is still served, by the other half of the assertion: the one shared sentence names
+// the claim step and where to do it, which is what the author who could not publish actually
+// needed. It is safe precisely because it is unconditional — it is a fact about the registry, not
+// about the id in the path.
+func TestPublishRelease_TheRefusal_CannotClassifyAnID(t *testing.T) {
 	t.Parallel()
 
 	w := newPublishWorld(t)
 
-	// UNPINNED, and that is the author's real credential: "any plugin you own", by an account that
-	// owns none of the ids below. A pinned token would be refused by the middleware before the
-	// handler ran, which is a different — and correct — refusal about a different thing.
+	// UNPINNED, which is the credential the attack needs and also the author's real one: "any
+	// plugin you own", by an account that owns neither id below. A pinned token is refused by the
+	// middleware before the handler runs, which is a different refusal about a different thing.
 	unclaimed := w.publishTo(t, "floating-combat-text", w.unpinnedToken, "1.9.2", "run-unclaimed")
 	claimed := w.publishTo(t, w.somebodyElses, w.unpinnedToken, "1.0.0", "run-not-mine")
 
-	t.Logf("unclaimed id      -> HTTP %d %s", unclaimed.status, unclaimed.body)
+	t.Logf("unclaimed id       -> HTTP %d %s", unclaimed.status, unclaimed.body)
 	t.Logf("claimed by another -> HTTP %d %s", claimed.status, claimed.body)
 
-	t.Run("an unclaimed id names the step, the endpoint and where to do it", func(t *testing.T) {
-		require.Equal(t, http.StatusNotFound, unclaimed.status,
-			"still 404: there is still no such plugin here, and the status is public API")
+	t.Run("the two are indistinguishable", func(t *testing.T) {
+		require.Equal(t, http.StatusNotFound, unclaimed.status)
+		require.Equal(t, http.StatusNotFound, claimed.status)
 
+		// The WHOLE document, not a field of it. A difference anywhere in the body is a difference
+		// a script can read, and picking fields to compare is how the next one gets missed.
+		require.Equal(t, string(claimed.body), string(unclaimed.body),
+			"the publish refusal must not say which of the two situations it is")
+	})
+
+	t.Run("and it still names the step an author has never heard of", func(t *testing.T) {
 		p := problemOf(t, unclaimed)
 		require.Equal(t, api.CodeNotFound, p.Code,
 			"the code is a closed enum a client switches on; only the prose moves")
-		require.Contains(t, p.Detail, "floating-combat-text")
-		require.Contains(t, p.Detail, "claim",
-			"the refusal has to name the act the author has never heard of")
-		require.Contains(t, p.Detail, "no token can perform it",
-			"and say why their token was never going to work")
+
+		require.Contains(t, p.Detail, "no such plugin, or you do not hold it",
+			"the original sentence still opens it")
+		require.Contains(t, p.Detail, "claiming is session-only")
+		require.Contains(t, p.Detail, "no token")
 		require.Contains(t, p.Detail, "https://nparseplugins.prokopto.dev/account",
 			"and where to do it, absolute, from the configured public URL")
-	})
 
-	t.Run("while an id somebody else holds is answered exactly as before", func(t *testing.T) {
-		require.Equal(t, http.StatusNotFound, claimed.status)
-
-		p := problemOf(t, claimed)
-		require.Equal(t, api.CodeNotFound, p.Code)
-
-		// VERBATIM. Not "contains", not "mentions" — this sentence is the anti-enumeration answer
-		// and softening it is the way this change could do harm.
-		require.Equal(t, "no such plugin, or you do not hold it", p.Detail)
-		require.NotContains(t, p.Detail, "claim",
-			"a claimed id must never be described as available; that is the squatting oracle")
-	})
-
-	t.Run("and the two are actually different answers", func(t *testing.T) {
-		// The assertion that makes the two above mean something. A build that had regressed to one
-		// sentence for both would satisfy every "contains" check on one of them and this on
-		// neither.
-		require.NotEqual(t, problemOf(t, unclaimed).Detail, problemOf(t, claimed).Detail)
+		// Nothing in it is about THIS id. A message that named the id back would be a message
+		// that varied with the id, which is the whole thing being guarded against.
+		require.NotContains(t, p.Detail, "floating-combat-text")
 	})
 }
 
-// TestPublishRelease_TheUnclaimedRefusal_FallsBackToAPathWithNoPublicURL.
+// TestPublishRelease_TheRefusal_FallsBackToAPathWithNoPublicURL.
 //
 // An instance that was never told its own public URL must not invent one from the request's Host
 // header — that value is chosen by the caller, and this sentence is printed verbatim into somebody
-// else's release pipeline. A path is less useful and it is not a lie.
-func TestPublishRelease_TheUnclaimedRefusal_FallsBackToAPathWithNoPublicURL(t *testing.T) {
+// else's release pipeline by the reusable workflow. A path is less useful and it is not a lie.
+func TestPublishRelease_TheRefusal_FallsBackToAPathWithNoPublicURL(t *testing.T) {
 	t.Parallel()
 
 	w := newPublishWorld(t, func(cfg *api.Config) { cfg.PublicURL = "" })

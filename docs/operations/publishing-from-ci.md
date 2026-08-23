@@ -51,37 +51,26 @@ act and both need a browser session:
 - the **Claim a plugin id** form on [/account](https://nparseplugins.prokopto.dev/account);
 - `POST /api/v1/plugins`, carrying your own `__Host-regserve_session` cookie.
 
-If you skip it, your publish job is answered **404** and the message names the step:
+If you skip it, your publish job is answered **404**, and the message names the step:
 
 ```json
 {
   "code": "not_found",
-  "detail": "nobody has claimed the plugin id floating-combat-text on this registry, and publishing
-             does not claim one. Claiming is a separate step and no token can perform it, however
-             scoped: sign in at https://nparseplugins.prokopto.dev/account and claim the id there,
-             then run this publish again. Ids are first-come and permanent, so claim the one your
-             plugin declares."
+  "detail": "no such plugin, or you do not hold it. Publishing never claims an id, and no token
+             can claim one however scoped — claiming is session-only. If you have not claimed this
+             id, sign in at https://nparseplugins.prokopto.dev/account and claim it there, then
+             publish again; if you have, check that you are still an owner."
 }
 ```
 
-An id **somebody else** holds gets a deliberately vaguer answer — `no such plugin, or you do not
-hold it` — and that ambiguity is not an oversight. Ids are permanent and never recycled, so
-confirming that a particular id exists and is not yours tells a squatter exactly which names are
-worth waiting for.
+**That is the same answer for an id nobody has claimed and an id somebody else holds**, and
+deliberately so. The registry will not tell you which, from this endpoint, however you ask: ids
+are permanent and never recycled, so a refusal that distinguished the two would let anyone with a
+publish token sweep a wordlist for unclaimed names. The guidance above is unconditional — it is
+true of the registry rather than of your id — which is why it can be said at all.
 
-**Do not ask somebody else to claim it for you.** The account whose session sends the request
-becomes the owner: the handler passes the *authenticated caller's* account id to the claim, and the
-request body has no on-behalf-of field. Because ids are permanent and never reassigned, that is not
-something anybody can correct afterwards — it has to be **handed over** instead, which is the
-three-step dance ownership always is:
-
-1. they add you as an owner (which needs you to have signed in here at least once, so there is no
-   avoiding that part either);
-2. you mint your own token, pinned to the id;
-3. only then do they remove themselves — their tokens stop working the moment they stop being an
-   owner, because ownership is checked on every request rather than cascade-revoked.
-
-Signing in and claiming it yourself is strictly less work than any of that.
+If you are not sure which of the two you are in, the claim form tells you: claiming an id somebody
+else holds is a `409`, and it still does not say who.
 
 ## The short version
 

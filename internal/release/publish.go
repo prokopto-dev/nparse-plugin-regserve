@@ -64,29 +64,28 @@ func (s ReleaseState) String() string { return string(s) }
 var (
 	// ErrNotPublishable is the caller having no grant on the plugin, OR the plugin not existing.
 	//
-	// ONE ERROR FOR BOTH, deliberately. Telling somebody "that plugin exists and is not yours"
-	// enumerates the registry's claimed ids for anybody with a wordlist, and the ids are permanent
-	// — so it also tells a squatter exactly which names are worth waiting for. The settings page
-	// already answers this way; the API answers the same way for the same reason.
+	// ONE ERROR FOR BOTH, deliberately, and it is one error in the DOMAIN and not merely one
+	// sentence at the edge: there is no branch here that a later change could surface. Telling
+	// somebody "that plugin exists and is not yours" enumerates the registry's claimed ids for
+	// anybody with a wordlist, and the ids are permanent — so it also tells a squatter exactly
+	// which names are worth waiting for. The settings page already answers this way; the API
+	// answers the same way for the same reason.
+	//
+	// SAYING "NOBODY HAS CLAIMED THAT ONE" IS THE SAME LEAK WEARING THE OTHER FACE, and this file
+	// briefly did it. If an unheld id is answered one way when it is free and another way when it
+	// is held, then the second answer PROVES the id is somebody's, and an unpinned publish token
+	// classifies a wordlist for free. The argument that talked us into it was that
+	// POST /api/v1/plugins already answers "taken or not" to any signed-in account. It does not,
+	// not usefully: its negative answer is a 201 that PERMANENTLY CLAIMS THE ID, which is a
+	// side effect nobody probing a wordlist wants and one that leaves an audit row per attempt.
+	// The public directory publishes only the COUNT of unlisted claims, never which. So the
+	// hidden set really is hidden, and it stays that way.
+	//
+	// What the author who met this actually needed was never per-id: it was "claiming is a
+	// separate, session-only step you may have skipped". That is a fact about how this registry
+	// works, it is the same for every id, and internal/api says it in this refusal unconditionally
+	// — see publishProblem, and the gate that asserts the two situations answer identically.
 	ErrNotPublishable = errors.New("no such plugin, or you do not hold it")
-
-	// ErrPluginUnclaimed is a publish to an id NOBODY has claimed. It is a different answer from
-	// the one above, and the difference is the whole point of it.
-	//
-	// WHY THIS IS SAFE TO SAY, when "that plugin exists and is not yours" is not. The secret the
-	// ambiguity protects is WHICH IDS ARE TAKEN AND BY WHOM — that is what a wordlist plus a
-	// permanent id gives a squatter. Whether an id is claimed AT ALL is already answerable by any
-	// signed-in account: POST /api/v1/plugins answers 409 for a taken id and 201 for a free one,
-	// and the public directory prints how many claimed ids are not listed. So this tells an
-	// authenticated caller something they could already ask for directly, and it still tells them
-	// nothing about who holds anything.
-	//
-	// WHY IT IS WORTH SAYING. An author who has never claimed their id gets the ambiguous refusal
-	// on the one path they can see — their release pipeline — and the sentence gives them no way
-	// to find out that a step they have never heard of is missing. That happened: a real author's
-	// workflow was answered "no such plugin, or you do not hold it" on every run until somebody
-	// read the source. A refusal that cannot be acted on is a dead end with a status code on it.
-	ErrPluginUnclaimed = errors.New("that plugin id has not been claimed by anybody")
 
 	// ErrGitHubIdentityRequired is an account with no identity from a provider that may publish.
 	//
@@ -359,11 +358,6 @@ func (p *Publisher) record(
 		// removed. ADR-0005 wants the authority and the change decided against one snapshot.
 		if err := ownership.RequireGrantTx(ctx, q, req.Submission.PluginID.String(), req.AccountID); err != nil {
 			if errors.Is(err, ownership.ErrNotAnOwner) {
-				// ErrNotPublishable and never ErrPluginUnclaimed. Reaching this transaction means
-				// the id was claimed forty-five seconds ago, and a claim cannot go away — a
-				// BEFORE DELETE trigger makes the plugin row permanent. The only thing that can
-				// have changed in the window is the GRANT, so "you do not hold it" is the whole
-				// truth here and "nobody has claimed it" would be a lie.
 				return ErrNotPublishable
 			}
 			return err
@@ -708,8 +702,10 @@ func (p *Publisher) checkAuthority(ctx context.Context, req Request) error {
 	})
 	switch {
 	case errors.Is(err, store.ErrNoRows):
-		// No GRANT. That is two situations with two different answers — see refusalFor.
-		return p.refusalFor(ctx, req.Submission.PluginID)
+		// NO SECOND LOOKUP. Whether the plugin row exists is deliberately not asked: a question
+		// nothing asks is a question no later refactor can start answering in the response. See
+		// ErrNotPublishable.
+		return ErrNotPublishable
 	case err != nil:
 		return fmt.Errorf("check ownership of %s: %w", req.Submission.PluginID, err)
 	}
@@ -730,34 +726,6 @@ func (p *Publisher) checkAuthority(ctx context.Context, req Request) error {
 		return ErrGitHubIdentityRequired
 	}
 	return nil
-}
-
-// refusalFor decides WHICH refusal a caller with no grant gets, by asking whether the id is
-// claimed at all.
-//
-// One extra read, on the refusal path only. It is the difference between an author learning that
-// they skipped a step and an author concluding the registry is broken, which is worth a SELECT
-// nobody makes on the way to a successful publish.
-//
-// The ambiguity is KEPT for a claimed id, deliberately and verbatim: ids are permanent and never
-// recycled, so "that one exists and is not yours" is exactly what tells a squatter which names are
-// worth waiting for. See ErrPluginUnclaimed for why the other half leaks nothing.
-//
-// A failure to answer the question is NOT reported as "unclaimed". "We could not check" and "it is
-// not there" are different facts, and telling somebody to claim an id that may already be
-// somebody else's on the strength of a database error is the confident mistake in miniature.
-func (p *Publisher) refusalFor(ctx context.Context, id core.PluginID) error {
-	_, err := p.db.Read().GetPlugin(ctx, id.String())
-	switch {
-	case errors.Is(err, store.ErrNoRows):
-		return ErrPluginUnclaimed
-	case err != nil:
-		return fmt.Errorf("check whether %s is claimed: %w", id, err)
-	}
-	// Claimed, and not by this caller. A DELISTED plugin lands here too, and must: delisting
-	// clears the listing and KEEPS the claim, so telling its author to go and claim it would be
-	// sending them after an id no one can ever have again.
-	return ErrNotPublishable
 }
 
 // checkVersionUnused reports ErrVersionExists for a version this plugin has already used.
