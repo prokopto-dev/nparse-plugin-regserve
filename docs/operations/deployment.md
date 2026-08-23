@@ -467,33 +467,47 @@ against columns it does not know about. That refusal is deliberate and is the si
 snapshot the deploy took immediately before the migration ran:
 
 ```bash
-# On the droplet, as deploy:
+# On the droplet, as deploy. Run these in order: the server does not come back until step 4 has
+# said the restored database is sound.
 cd /opt/regserve
+
+# 1. Stop the server. It holds -wal and -shm and will write them back over anything you do.
 docker compose stop regserve
-docker run --rm -v regserve_regserve-data:/data -v "$PWD/backups:/backups" alpine:3 \
-  sh -euc "
-    cp /backups/pre-<timestamp>.db /data/regserve.db
-    rm -f /data/regserve.db-wal /data/regserve.db-shm
-  "
+
+# 2. Put the snapshot in place, and remove the WAL and shared-memory files that belong to the
+#    database you just replaced.
+docker run --rm -v regserve_regserve-data:/data -v "$PWD/backups:/backups" alpine:3 sh -euc '
+  cp /backups/pre-<timestamp>.db /data/regserve.db
+  rm -f /data/regserve.db-wal /data/regserve.db-shm
+'
+
+# 3. Point .env at the image that goes with this schema.
 sed -i "s|^REGSERVE_IMAGE=.*|REGSERVE_IMAGE=ghcr.io/prokopto-dev/nparse-plugin-regserve:<old>|" .env
+
+# 4. VALIDATE BEFORE STARTING. `test ... = ok` is the check: integrity_check REPORTS corruption on
+#    stdout and still exits 0, so running it and reading the output by eye is not one. This exits
+#    non-zero and leaves the server stopped if the restored file is not sound.
+docker run --rm -v regserve_regserve-data:/data alpine:3 sh -euc '
+  apk add --no-cache sqlite >/dev/null
+  test "$(sqlite3 -bail /data/regserve.db "PRAGMA integrity_check;")" = ok
+  echo "plugins restored: $(sqlite3 -bail /data/regserve.db "SELECT count(*) FROM plugin;")"
+'
+
+# 5. Only now.
 docker compose up -d regserve
 ```
 
 **Deleting `-wal` and `-shm` is not tidying, it is the restore.** They belong to the database you
 just replaced. Left in place, SQLite finds a WAL whose header matches nothing and either replays the
 *old* database's committed frames on top of the restored file or refuses to open it — either way you
-have not restored what you thought you had. Stop the container first, for the same reason: a running
-server holds those files and will write them back.
+have not restored what you thought you had. Stopping the container first is the same point from the
+other end: a running server holds those files.
 
-**Check what you restored before starting the server**, since this is the moment to find out:
-
-```bash
-docker run --rm -v regserve_regserve-data:/data alpine:3 sh -euc "
-  apk add --no-cache sqlite >/dev/null
-  sqlite3 -bail /data/regserve.db 'PRAGMA integrity_check;'
-  sqlite3 -bail /data/regserve.db 'SELECT count(*) FROM plugin;'
-"
-```
+**Step 4 comes before step 5 deliberately.** A restore is done under pressure, and the two ways it
+goes wrong — the wrong snapshot, or a snapshot that is not sound — are both cheap to find while the
+service is still down and expensive to find after it is up and serving. Compare against `ok`
+explicitly: `PRAGMA integrity_check` prints what it found and exits 0 either way, so `sqlite3 -bail`
+does **not** fail on a corrupt database. A check that cannot fail is not a check.
 
 ## Downtime, and why it is acceptable
 
@@ -521,6 +535,10 @@ stamp="$(date -u +%Y%m%d)"
 docker run --rm -v regserve_regserve-data:/data -v /opt/regserve/backups:/backups alpine:3 \
   sh -euc "
     apk add --no-cache sqlite >/dev/null
+    # VACUUM INTO REFUSES A DESTINATION THAT EXISTS. One interrupted run leaves .daily.tmp behind,
+    # and without this every backup after it fails for ever -- a cron job that stops working and
+    # keeps exiting the same way. The deploy path clears its own temporary file for this reason.
+    rm -f /backups/.daily.tmp
     sqlite3 -bail /data/regserve.db \"VACUUM INTO '/backups/.daily.tmp';\"
     test \"\$(sqlite3 -bail /backups/.daily.tmp 'PRAGMA integrity_check;')\" = ok
   "
