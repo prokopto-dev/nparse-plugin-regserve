@@ -196,11 +196,16 @@ type pageData struct {
 	// statement from "you may not" and the one nothing was making.
 	//
 	// Without it the two are one blank page. `REGSERVE_REVIEWERS` is defaulted empty in the
-	// compose file, so an instance where every submission queues for ever and no human can act on
-	// any of it looks exactly like an instance whose queue happens to be empty — from the account
+	// compose file, so an instance where everything that reached review queues with nobody able to
+	// decide it looks exactly like an instance whose queue happens to be empty — from the account
 	// page, from the missing link, and from the outside. That ambiguity is what "never hide a row
 	// silently" is about, and it costs an author waiting on a release more than it costs anybody
 	// else.
+	//
+	// The page is careful about the SIZE of the claim: it is releases that reached human review
+	// that cannot be decided, not everything submitted. release.Publisher.decide still publishes a
+	// trusted owner's clean version bump of an already-approved plugin without a human, and that
+	// path never asks who may review.
 	//
 	// It is a FACT ABOUT THE DEPLOYMENT and is therefore shown to every signed-in account rather
 	// than to operators only: the person who most needs it is whoever is wondering why their

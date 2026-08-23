@@ -92,12 +92,12 @@ GitHub repository and a merge button.
 
 Three things follow, and each has bitten somebody somewhere:
 
-- **Unset means nobody can approve anything.** Not "everybody" — nobody. Releases will publish,
-  verify, and sit in the queue for ever. `compose.yaml` defaults it to empty
-  (`${REGSERVE_REVIEWERS:-}`), so this is the state a deployment is in until somebody sets it, and
-  it is announced twice:
+- **Unset means nobody can decide anything that reaches review.** Not "everybody" — nobody. A
+  release that goes to a human is recorded and verified and then sits in the queue for ever.
+  `compose.yaml` defaults it to empty (`${REGSERVE_REVIEWERS:-}`), so this is the state a deployment
+  is in until somebody sets it, and it is announced twice:
   - **At boot, as a `WARN`,** whether or not anything is waiting:
-    `no reviewers are configured; nothing submitted to this registry can ever be approved`, or
+    `no reviewers are configured; any release that reaches human review will stay pending`, or
     `releases are waiting for review and no reviewers are configured` once there is a backlog. Both
     carry `needs=REGSERVE_REVIEWERS`. The first used to be an `INFO`, which is where this hid: an
     empty queue is not evidence the setting is fine, it is what an unreachable queue looks like.
@@ -105,6 +105,14 @@ Three things follow, and each has bitten somebody somewhere:
     needs it more than the operator does. The page says the registry has no reviewers and names the
     variable. It never says who the reviewers are, or how many — an empty list is a fault worth
     reporting; a populated one is a list of people to work through.
+
+  **It is not "nothing can ever be published".** Trust levels are the exception and they are narrow:
+  a `trusted` owner's version bump of an *already-approved* plugin, fetched and re-hashed clean with
+  no quarantine rule triggered, is published by the server with no human involved and without
+  consulting this list. Everything else — every first release of an id, anything a rule flagged,
+  anything from an untrusted publisher — waits. And since raising somebody to `trusted` is itself
+  reviewer-only, a registry that has *never* had a reviewer configured cannot reach that exception
+  at all; one that had reviewers and lost the variable keeps whatever tiers it already granted.
 - **A handle grants nothing until that person has signed in here at least once.** The check
   resolves against a proven `identity` row, so a typo grants nobody rather than granting whoever
   registers that name next.
