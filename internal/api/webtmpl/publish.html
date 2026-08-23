@@ -91,6 +91,15 @@
       The secret is shown exactly once and is never recoverable — what is stored is a keyed hash of
       it. If you lose it, revoke it and mint another.
     </p>
+    {{if not .Providers}}
+      {{/* Same reason step 2 says it: /account is not served on an instance with no sign-in
+           configured, and a walkthrough that links to it anyway sends the reader to a 404 in the
+           middle of the path it is teaching. */}}
+      <p class="muted">
+        Nor a token, on this instance: with no sign-in there is no account page here, so a publish
+        credential comes from whoever runs it.
+      </p>
+    {{end}}
   </li>
 
   <li>

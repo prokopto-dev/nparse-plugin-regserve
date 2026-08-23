@@ -184,6 +184,61 @@ func TestPublishRelease_TheRefusal_FallsBackToAPathWithNoPublicURL(t *testing.T)
 		"a host from the request would be a phishing link written by the caller")
 }
 
+// TestPublishRelease_APublisherOnlyInstance_DoesNotSendAnybodyToAnAbsentAccountPage.
+//
+// A build with a database and no OAuth application is a SUPPORTED state and is what the live
+// deployment ran as for its whole first phase: the index, the catalogue and the publish endpoint
+// served, /account a 404, ownership set by an operator running `regserve seed-owners`. The serve
+// command wires Publisher as soon as the database opens and wires sign-in only when the OAuth pair
+// is set, so the two really do come apart.
+//
+// Telling that instance's callers to "sign in and claim it there" would hand them a URL that
+// answers 404, on an instance where neither claim door is registered — the dead end this whole
+// change removes, rebuilt one deployment over. Review caught it; this is the gate.
+func TestPublishRelease_APublisherOnlyInstance_DoesNotSendAnybodyToAnAbsentAccountPage(t *testing.T) {
+	t.Parallel()
+
+	w := newPublishWorld(t, func(cfg *api.Config) {
+		// Exactly what runServe leaves nil when no OAuth application is configured. Authn stays,
+		// because a token is still resolvable without a browser surface — which is the whole
+		// point of the configuration.
+		cfg.Claimer, cfg.Login, cfg.Sessions, cfg.Ownership = nil, nil, nil, nil
+		cfg.Providers = nil
+	})
+
+	unclaimed := w.publishTo(t, "floating-combat-text", w.unpinnedToken, "1.9.2", "run-a")
+	claimed := w.publishTo(t, w.somebodyElses, w.unpinnedToken, "1.0.0", "run-b")
+	t.Logf("publisher-only refusal -> HTTP %d %s", unclaimed.status, unclaimed.body)
+
+	// The account page really is absent on this build. Without this the test could pass against a
+	// server that serves it perfectly well and simply declines to mention it.
+	//
+	// Asserted on the BODY rather than on the status, because the status is not the same
+	// everywhere: this fixture wires no Directory, so /account is an unrouted 404 — but a real
+	// publisher-only deployment does serve `/`, and net/http's catch-all pattern answers /account
+	// with 200 and the plugin list. Both are "there is no account page here", and only one of
+	// them is a 404, so the status is the wrong thing to pin. (The catch-all itself is filed
+	// separately; it is not this change's doing.)
+	account := w.get(t, "/account")
+	require.NotContains(t, string(account.body), "Personal access tokens",
+		"this build must not be serving the account surface, or the test proves nothing")
+
+	p := problemOf(t, unclaimed)
+	require.NotContains(t, p.Detail, "/account",
+		"this build does not serve /account; sending somebody there is the dead end again")
+	require.NotContains(t, p.Detail, "sign in",
+		"there is nothing to sign in to")
+	require.Contains(t, p.Detail, "no such plugin, or you do not hold it")
+	require.Contains(t, p.Detail, "no way to claim one",
+		"an instance that cannot claim says so rather than going quiet")
+	require.Contains(t, p.Detail, "whoever operates it",
+		"and names who actually grants ownership here")
+
+	// AND STILL IDENTICAL FOR BOTH IDS. The advice varies with the deployment, which every caller
+	// can see anyway; it must never vary with the plugin being asked about.
+	require.Equal(t, string(claimed.body), string(unclaimed.body))
+}
+
 // publishedRelease is the response body, decoded. It is written out here rather than reusing the
 // handler's unexported type on purpose: this test is a client of the published contract, and a
 // client only has the JSON.
@@ -264,15 +319,31 @@ func newPublishWorld(t *testing.T, mutate ...func(cfg *api.Config)) *publishWorl
 	require.NoError(t, err)
 	w.tokens = tokens
 
+	login, err := auth.NewOAuth(db, clk, pepper, identity.NewRegistry(stubProvider{}))
+	require.NoError(t, err)
+	owners := ownership.New(db, clk)
+
+	// A WHOLE INSTANCE, not a publish endpoint on its own.
+	//
+	// The fixture used to wire Publisher and PublicURL and nothing else, which made it a
+	// publisher-only build — and it then asserted a refusal telling callers to go and claim an id
+	// at an /account this configuration does not serve. A fixture that blesses a combination the
+	// product cannot honour is worse than no fixture: it makes the broken case the tested one.
+	// The publisher-only build is still covered, deliberately and separately, by
+	// TestPublishRelease_APublisherOnlyInstance_DoesNotSendAnybodyToAnAbsentAccountPage.
 	cfg := api.Config{
 		Clock:     clk,
 		Authn:     auth.NewAuthenticator(sessions, tokens),
 		Tokens:    tokens,
+		Login:     login,
+		Sessions:  sessions,
+		Ownership: owners,
+		Claimer:   owners,
 		Providers: identity.NewRegistry(stubProvider{}),
 		Publisher: release.NewPublisher(db, clk, fetcher),
-		// Configured, because the refusal an unclaimed id gets names where to claim it and this
-		// is where that value comes from. An instance with none falls back to the path; naming
-		// the live registry's own URL here keeps the fixture honest about what an author reads.
+		// Configured, because the refusal names where to claim and this is where that value comes
+		// from. An instance with none falls back to the path; naming the live registry's own URL
+		// here keeps the fixture honest about what an author reads.
 		PublicURL: "https://nparseplugins.prokopto.dev",
 	}
 	for _, m := range mutate {
@@ -341,6 +412,24 @@ func (w *publishWorld) publishTo(t *testing.T, pluginID, token, version, key str
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Idempotency-Key", key)
+
+	// This server's own client, never a bare &http.Client{}: see harness.client.
+	resp, err := w.srv.Client().Do(req)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, resp.Body.Close()) }()
+
+	read, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	return response{status: resp.StatusCode, header: resp.Header.Clone(), body: read}
+}
+
+// get fetches a page, so a test can assert what this build does NOT serve. Without it, "the
+// refusal does not mention /account" would pass just as well against a server that serves it.
+func (w *publishWorld) get(t *testing.T, path string) response {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, w.srv.URL+path, nil)
+	require.NoError(t, err)
 
 	// This server's own client, never a bare &http.Client{}: see harness.client.
 	resp, err := w.srv.Client().Do(req)

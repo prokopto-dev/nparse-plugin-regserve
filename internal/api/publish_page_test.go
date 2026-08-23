@@ -181,6 +181,12 @@ func TestPublishGuide_OffersSignIn_OnlyWhereItIsConfigured(t *testing.T) {
 	require.NotContains(t, without, "/auth/github/login")
 	require.Contains(t, without, "no sign-in configured",
 		"an instance that cannot sign anybody in has to say so, not go quiet")
+
+	// AND THE SAME FOR THE TOKEN STEP. /account is not served either on such a build, so a
+	// walkthrough that sent the reader there would break in the middle of the path it teaches —
+	// which is the dead end this page exists to close, one step further down.
+	require.Contains(t, without, "there is no account page here",
+		"the step after claiming has to be honest on this build too")
 }
 
 // TestDirectory_LeadsToTheAuthorOnRamp — the gap this page was built to close.

@@ -106,12 +106,10 @@ type publishReleaseResult struct {
 
 // registerReleases wires the publish endpoint.
 //
-// publicURL is this registry's own absolute base, or empty on an instance that was never told
-// one. It is used for ONE thing: naming where an id is claimed, in the refusal an unclaimed id
-// gets. See claimHere.
-func registerReleases(api huma.API, publisher Publisher, publicURL string) {
-	claimAt := claimHere(publicURL)
-
+// advice is what a refused publish says about claiming an id, already decided by claimAdvice from
+// what this build serves. It is passed in rather than computed here because the answer depends on
+// which OTHER routes exist, which is knowledge this file does not have and must not guess at.
+func registerReleases(api huma.API, publisher Publisher, advice string) {
 	register(api,
 		// The permission is `plugin.publish`, SPELLED AS THE CATALOGUE SPELLS IT. It said
 		// `release.publish` for one release: a permission that exists nowhere in
@@ -185,7 +183,7 @@ func registerReleases(api huma.API, publisher Publisher, publicURL string) {
 				// submission above would have been refused otherwise — and passing the value that
 				// has been through core.ParsePluginID is what makes "this detail cannot echo
 				// something unvalidated" true by construction rather than by reading upwards.
-				return nil, publishProblem(ctx, submission.PluginID.String(), claimAt, err)
+				return nil, publishProblem(ctx, submission.PluginID.String(), advice, err)
 			}
 
 			return &publishReleaseOutput{
@@ -220,10 +218,10 @@ func badSubmission(err error) error {
 
 // publishProblem maps a publish failure onto a problem document.
 //
-// claimAt is where an id is claimed, already rendered by claimHere. pluginID reaches the LOG and
-// never a refusal: a message that named the id back would be a message that varied with the id,
-// which is the shape the case below exists to avoid.
-func publishProblem(ctx context.Context, pluginID, claimAt string, err error) error {
+// advice is the claiming sentence claimAdvice produced for this build. pluginID reaches the LOG
+// and never a refusal: a message that named the id back would be a message that varied with the
+// id, which is the shape the case below exists to avoid.
+func publishProblem(ctx context.Context, pluginID, advice string, err error) error {
 	switch {
 	case errors.Is(err, release.ErrNotPublishable):
 		// ONE ANSWER FOR "the id does not exist" AND "it is not yours", and it must stay one.
@@ -246,10 +244,7 @@ func publishProblem(ctx context.Context, pluginID, claimAt string, err error) er
 		// Gate: TestPublishRelease_TheRefusal_CannotClassifyAnID compares the two responses byte
 		// for byte over real HTTP, so a future branch that splits them again is a red test.
 		return NewProblem(http.StatusNotFound, CodeNotFound,
-			"no such plugin, or you do not hold it. Publishing never claims an id, and no token "+
-				"can claim one however scoped — claiming is session-only. If you have not "+
-				"claimed this id, sign in at "+claimAt+" and claim it there, then publish again; "+
-				"if you have, check that you are still an owner.")
+			"no such plugin, or you do not hold it. "+advice)
 
 	case errors.Is(err, release.ErrGitHubIdentityRequired):
 		return NewProblem(http.StatusForbidden, CodeGitHubIdentityRequired,
@@ -290,6 +285,28 @@ func publishProblem(ctx context.Context, pluginID, claimAt string, err error) er
 	// stranger is how a publish endpoint becomes an information-disclosure bug.
 	slog.ErrorContext(ctx, "publish a release", "plugin_id", pluginID, "error", err)
 	return NewProblem(http.StatusInternalServerError, CodeInternalError, "")
+}
+
+// claimAdvice is what a refused publish says about claiming an id, decided ONCE at registration
+// from what this build actually serves.
+//
+// TWO SENTENCES AND NO THIRD, and neither of them mentions the id. That is what keeps the refusal
+// unable to classify one: the advice varies with the DEPLOYMENT, which every caller can see
+// anyway, and never with the plugin asked about. See publishProblem.
+//
+// The unavailable case is not a shrug. An instance with no sign-in has no door onto claiming at
+// all — the browser form is unregistered and so is POST /api/v1/plugins — and ownership there is
+// set by whoever runs the process. Saying "sign in at /account" to that caller would be sending
+// them to a 404, which is the dead end this whole change removes.
+func claimAdvice(claimable bool, publicURL string) string {
+	if !claimable {
+		return "Publishing never claims an id, and this registry has no way to claim one: it is " +
+			"running without sign-in, so ownership is set by whoever operates it. Ask them to " +
+			"grant you the id, then publish again."
+	}
+	return "Publishing never claims an id, and no token can claim one however scoped — claiming " +
+		"is session-only. If you have not claimed this id, sign in at " + claimHere(publicURL) +
+		" and claim it there, then publish again; if you have, check that you are still an owner."
 }
 
 // claimHere renders WHERE an id is claimed, from the public URL the operator configured.

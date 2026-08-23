@@ -186,6 +186,26 @@ type TokenService interface {
 	Revoke(ctx context.Context, accountID, tokenID string) error
 }
 
+// servesTheClaimForm reports whether THIS build serves the account page's claim form.
+//
+// It is the exact conjunction registerWeb and registerClaimForm are gated on, written once so that
+// a refusal telling somebody to go and claim an id and the routes that would let them cannot
+// disagree. Two readers, one value — the same reason the Access declaration is stored twice from
+// one source.
+//
+// A PUBLISHER-ONLY INSTANCE IS A SUPPORTED STATE AND NOT A MISCONFIGURATION. The serve command
+// wires Publisher as soon as the database opens and wires sign-in only when an OAuth application
+// is configured, which is what the live deployment ran as for its whole first phase: the
+// catalogue, the index and the publish endpoint served, /account a 404, ownership set by an
+// operator running `regserve seed-owners`. Telling that instance's callers to "sign in and claim
+// it there" would send them to a page that does not exist — the same dead end this whole change
+// exists to remove, rebuilt one deployment over.
+func (c Config) servesTheClaimForm() bool {
+	return c.Claimer != nil &&
+		c.Login != nil && c.Sessions != nil && c.Providers != nil &&
+		c.Tokens != nil && c.Ownership != nil
+}
+
 // New builds the HTTP handler.
 func New(cfg Config) http.Handler {
 	if cfg.Clock == nil {
@@ -220,7 +240,9 @@ func New(cfg Config) http.Handler {
 		})
 	}
 	if cfg.Publisher != nil {
-		registerReleases(api, cfg.Publisher, cfg.PublicURL)
+		// The advice a refused publish gives is decided HERE, from what this build actually
+		// serves, rather than assumed by the route. See Config.servesTheClaimForm.
+		registerReleases(api, cfg.Publisher, claimAdvice(cfg.servesTheClaimForm(), cfg.PublicURL))
 	}
 	if cfg.Claimer != nil {
 		registerPlugins(api, cfg.Claimer)

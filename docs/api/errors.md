@@ -47,10 +47,12 @@ because the argument is tempting and wrong: that endpoint’s "not taken" answer
 takes ownership of every hit. The public directory publishes only the *count* of
 claimed-but-unlisted ids, never which.
 
-What the refusal **does** say, unconditionally, is that claiming is a separate session-only step no
-token can perform, and where to do it. That is a fact about the registry rather than about the id in
-the path — the same sentence for every caller and every id — which is what makes it safe to say and
-still enough to unblock an author whose pipeline is answered `404` on every tag.
+What the refusal **does** say is how claiming works on the instance answering it: that it is a
+separate session-only step no token can perform, and where to do it — or, on an instance running
+without sign-in, that ids cannot be claimed there at all and ownership comes from its operator.
+That varies with the *deployment*, which every caller can see anyway, and never with the id in the
+path. It is the same sentence for every plugin id, which is what makes it safe to say and still
+enough to unblock an author whose pipeline is answered `404` on every tag.
 
 ## invalid_request
 
