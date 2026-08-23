@@ -113,6 +113,17 @@ type DirectoryDeps struct {
 	// authorisation: every review route asks again in the middleware.
 	Reviewers ReviewerCheck
 
+	// AccountPage, ClaimForm and ClaimEndpoint say what this build actually serves, so the author
+	// on-ramp can only tell a reader to do things that are possible here. They are computed in New
+	// from the same conditions the routes are registered on — never inferred from Providers, which
+	// says only that somebody can sign in and nothing about what they will find.
+	//
+	// THREE FLAGS AND NOT ONE, because the states come apart: an account page without a claim
+	// form, and a claim endpoint without an account page, are both real wirings.
+	AccountPage   bool
+	ClaimForm     bool
+	ClaimEndpoint bool
+
 	// IndexURL is the absolute URL of this registry's index, for the "add this registry" line.
 	// Empty on an instance that was not told its own public URL, and the page then shows the path
 	// rather than inventing a host — a Host header is caller-controlled, and a URL somebody is
@@ -251,7 +262,14 @@ func normaliseQuery(raw string) (query string, truncated bool) {
 // A public page may still be looked at by somebody signed in, and a header that pretended
 // otherwise would tell a signed-in reader they were signed out.
 func directoryData(ctx context.Context, deps DirectoryDeps, title string) pageData {
-	data := pageData{Title: title, IndexPath: PathIndex, IndexURL: deps.IndexURL}
+	data := pageData{
+		Title:            title,
+		IndexPath:        PathIndex,
+		IndexURL:         deps.IndexURL,
+		HasAccountPage:   deps.AccountPage,
+		CanClaim:         deps.ClaimForm,
+		HasClaimEndpoint: deps.ClaimEndpoint,
+	}
 	if deps.Providers != nil {
 		data.Providers = deps.Providers.Kinds()
 	}

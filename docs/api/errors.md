@@ -35,6 +35,25 @@ difference is not a client's business, and distinguishing them lets someone enum
 malformed plugin id also lands here rather than on `invalid_request`, for the same reason — it
 cannot name a real plugin, and reporting *why* it was rejected invites probing.
 
+**Publishing draws no distinction either, and this is the one to be careful about.** A publish
+refused for want of a grant returns the *same* document whether the id is unclaimed or held by
+somebody else. It must: if the two differed, the generic answer would then *prove* the id is
+somebody’s, and anybody with an unpinned `plugin:publish` token could classify a wordlist. Ids
+are permanent and never recycled, so that list is exactly what a squatter wants.
+
+`POST /api/v1/plugins` is **not** an equivalent oracle for free ids, and it is worth saying why,
+because the argument is tempting and wrong: that endpoint’s "not taken" answer is a `201` that
+**claims the id, permanently**, with an audit row. Nobody probes a wordlist with a request that
+takes ownership of every hit. The public directory publishes only the *count* of
+claimed-but-unlisted ids, never which.
+
+What the refusal **does** say is how claiming works on the instance answering it: that it is a
+separate session-only step no token can perform, and where to do it — or, on an instance running
+without sign-in, that ids cannot be claimed there at all and ownership comes from its operator.
+That varies with the *deployment*, which every caller can see anyway, and never with the id in the
+path. It is the same sentence for every plugin id, which is what makes it safe to say and still
+enough to unblock an author whose pipeline is answered `404` on every tag.
+
 ## invalid_request
 
 **400.** The request was understood and is wrong: a missing field, a version that is not greater

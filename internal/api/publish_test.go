@@ -103,6 +103,188 @@ func TestPublishRelease_ARealTokenScopedToPublish_IsAdmittedAndTheReleaseIsRecor
 	})
 }
 
+// TestPublishRelease_TheRefusal_CannotClassifyAnID.
+//
+// THE GATE ON THE ANTI-ENUMERATION GUARANTEE, over real HTTP with a real token.
+//
+// A publish refused for want of a grant must be the SAME RESPONSE whether the id is unclaimed or
+// held by somebody else. If the two differed, an unpinned `plugin:publish` token would classify a
+// wordlist for free: one answer would mean available, and the other would then PROVE the id is
+// somebody's — which is the set that must stay hidden, because ids are permanent and never
+// recycled and a squatter only needs the list.
+//
+// This is not hypothetical caution. The first version of this change made the unclaimed case say
+// so, on the reasoning that POST /api/v1/plugins already answers "taken or not" to any signed-in
+// caller. It does not usefully: that endpoint's "not taken" answer is a 201 that CLAIMS the id,
+// permanently, with an audit row per attempt — a probe nobody can run twice. Review caught it. The
+// comparison below is byte for byte so that the same argument cannot win twice.
+//
+// The on-ramp is still served, by the other half of the assertion: the one shared sentence names
+// the claim step and where to do it, which is what the author who could not publish actually
+// needed. It is safe precisely because it is unconditional — it is a fact about the registry, not
+// about the id in the path.
+func TestPublishRelease_TheRefusal_CannotClassifyAnID(t *testing.T) {
+	t.Parallel()
+
+	w := newPublishWorld(t)
+
+	// UNPINNED, which is the credential the attack needs and also the author's real one: "any
+	// plugin you own", by an account that owns neither id below. A pinned token is refused by the
+	// middleware before the handler runs, which is a different refusal about a different thing.
+	unclaimed := w.publishTo(t, "floating-combat-text", w.unpinnedToken, "1.9.2", "run-unclaimed")
+	claimed := w.publishTo(t, w.somebodyElses, w.unpinnedToken, "1.0.0", "run-not-mine")
+
+	t.Logf("unclaimed id       -> HTTP %d %s", unclaimed.status, unclaimed.body)
+	t.Logf("claimed by another -> HTTP %d %s", claimed.status, claimed.body)
+
+	t.Run("the two are indistinguishable", func(t *testing.T) {
+		require.Equal(t, http.StatusNotFound, unclaimed.status)
+		require.Equal(t, http.StatusNotFound, claimed.status)
+
+		// The WHOLE document, not a field of it. A difference anywhere in the body is a difference
+		// a script can read, and picking fields to compare is how the next one gets missed.
+		require.Equal(t, string(claimed.body), string(unclaimed.body),
+			"the publish refusal must not say which of the two situations it is")
+	})
+
+	t.Run("and it still names the step an author has never heard of", func(t *testing.T) {
+		p := problemOf(t, unclaimed)
+		require.Equal(t, api.CodeNotFound, p.Code,
+			"the code is a closed enum a client switches on; only the prose moves")
+
+		require.Contains(t, p.Detail, "no such plugin, or you do not hold it",
+			"the original sentence still opens it")
+		require.Contains(t, p.Detail, "claiming is session-only")
+		require.Contains(t, p.Detail, "no token")
+		require.Contains(t, p.Detail, "https://nparseplugins.prokopto.dev/account",
+			"and where to do it, absolute, from the configured public URL")
+
+		// Nothing in it is about THIS id. A message that named the id back would be a message
+		// that varied with the id, which is the whole thing being guarded against.
+		require.NotContains(t, p.Detail, "floating-combat-text")
+	})
+}
+
+// TestPublishRelease_TheRefusal_FallsBackToAPathWithNoPublicURL.
+//
+// An instance that was never told its own public URL must not invent one from the request's Host
+// header — that value is chosen by the caller, and this sentence is printed verbatim into somebody
+// else's release pipeline by the reusable workflow. A path is less useful and it is not a lie.
+func TestPublishRelease_TheRefusal_FallsBackToAPathWithNoPublicURL(t *testing.T) {
+	t.Parallel()
+
+	w := newPublishWorld(t, func(cfg *api.Config) { cfg.PublicURL = "" })
+
+	resp := w.publishTo(t, "floating-combat-text", w.unpinnedToken, "1.9.2", "run-no-public-url")
+	require.Equal(t, http.StatusNotFound, resp.status)
+
+	p := problemOf(t, resp)
+	require.Contains(t, p.Detail, "sign in at /account")
+	require.NotContains(t, p.Detail, "http",
+		"a host from the request would be a phishing link written by the caller")
+}
+
+// TestPublishRelease_APublisherOnlyInstance_DoesNotSendAnybodyToAnAbsentAccountPage.
+//
+// A build with a database and no OAuth application is a SUPPORTED state and is what the live
+// deployment ran as for its whole first phase: the index, the catalogue and the publish endpoint
+// served, /account a 404, ownership set by an operator running `regserve seed-owners`. The serve
+// command wires Publisher as soon as the database opens and wires sign-in only when the OAuth pair
+// is set, so the two really do come apart.
+//
+// Telling that instance's callers to "sign in and claim it there" would hand them a URL that
+// answers 404, on an instance where neither claim door is registered — the dead end this whole
+// change removes, rebuilt one deployment over. Review caught it; this is the gate.
+func TestPublishRelease_APublisherOnlyInstance_DoesNotSendAnybodyToAnAbsentAccountPage(t *testing.T) {
+	t.Parallel()
+
+	w := newPublishWorld(t, func(cfg *api.Config) {
+		// Exactly what runServe leaves nil when no OAuth application is configured. Authn stays,
+		// because a token is still resolvable without a browser surface — which is the whole
+		// point of the configuration.
+		cfg.Claimer, cfg.Login, cfg.Sessions, cfg.Ownership = nil, nil, nil, nil
+		cfg.Providers = nil
+	})
+
+	unclaimed := w.publishTo(t, "floating-combat-text", w.unpinnedToken, "1.9.2", "run-a")
+	claimed := w.publishTo(t, w.somebodyElses, w.unpinnedToken, "1.0.0", "run-b")
+	t.Logf("publisher-only refusal -> HTTP %d %s", unclaimed.status, unclaimed.body)
+
+	// The account page really is absent on this build. Without this the test could pass against a
+	// server that serves it perfectly well and simply declines to mention it.
+	//
+	// Asserted on the BODY rather than on the status, because the status is not the same
+	// everywhere: this fixture wires no Directory, so /account is an unrouted 404 — but a real
+	// publisher-only deployment does serve `/`, and net/http's catch-all pattern answers /account
+	// with 200 and the plugin list. Both are "there is no account page here", and only one of
+	// them is a 404, so the status is the wrong thing to pin. (The catch-all itself is filed
+	// separately; it is not this change's doing.)
+	account := w.get(t, "/account")
+	require.NotContains(t, string(account.body), "Personal access tokens",
+		"this build must not be serving the account surface, or the test proves nothing")
+
+	p := problemOf(t, unclaimed)
+	require.NotContains(t, p.Detail, "/account",
+		"this build does not serve /account; sending somebody there is the dead end again")
+	require.NotContains(t, p.Detail, "sign in",
+		"there is nothing to sign in to")
+	require.Contains(t, p.Detail, "no such plugin, or you do not hold it")
+	require.Contains(t, p.Detail, "no way to claim an id on this registry",
+		"an instance that cannot claim says so rather than going quiet")
+
+	// AND NAMES A RECOVERY THE OPERATOR CAN ACTUALLY PERFORM. This said "ask them to grant you
+	// the id", which is not a thing anybody can do for the reader it was written for: an id
+	// nobody has claimed has no plugin row, and the ownership import skips ids it does not
+	// already carry rather than inventing them (ownership.SeedOutcome.UnknownPlugins). Advice
+	// that cannot be followed is the same dead end in a politer sentence.
+	require.Contains(t, p.Detail, "enable claiming",
+		"the only path to a new id here runs through the operator enabling a claim door")
+	require.Contains(t, p.Detail, "whoever operates it")
+	require.NotContains(t, p.Detail, "Ask them to grant you the id",
+		"an unclaimed id has no row to grant, so that instruction cannot be followed")
+
+	// AND STILL IDENTICAL FOR BOTH IDS. The advice varies with the deployment, which every caller
+	// can see anyway; it must never vary with the plugin being asked about.
+	require.Equal(t, string(claimed.body), string(unclaimed.body))
+}
+
+// TestPublishRelease_AnAPIFirstInstance_NamesTheEndpointItActuallyServes.
+//
+// THE FOURTH WIRING STATE, and the one that showed both fallbacks could lie in the other
+// direction. registerPlugins is gated on Claimer ALONE, so a build with sign-in and a Claimer but
+// no Tokens or Ownership serves a perfectly usable session-only POST /api/v1/plugins and no
+// account page at all.
+//
+// Collapsing that into "no claim form" told its callers the registry had no way to claim an id,
+// while the endpoint sat there answering. Naming a door that is not there and denying one that is
+// are the same mistake with the sign flipped, and this is the gate on the second half.
+func TestPublishRelease_AnAPIFirstInstance_NamesTheEndpointItActuallyServes(t *testing.T) {
+	t.Parallel()
+
+	w := newPublishWorld(t, func(cfg *api.Config) {
+		// Sign-in and the claim endpoint stay; the account surface goes.
+		cfg.Tokens, cfg.Ownership = nil, nil
+	})
+
+	unclaimed := w.publishTo(t, "floating-combat-text", w.unpinnedToken, "1.9.2", "run-a")
+	claimed := w.publishTo(t, w.somebodyElses, w.unpinnedToken, "1.0.0", "run-b")
+	t.Logf("api-first refusal -> HTTP %d %s", unclaimed.status, unclaimed.body)
+
+	require.NotContains(t, string(w.get(t, "/account").body), "Personal access tokens",
+		"this build must not be serving the account surface, or the test proves nothing")
+
+	p := problemOf(t, unclaimed)
+	require.Contains(t, p.Detail, "POST /api/v1/plugins",
+		"the endpoint IS served here and is the only door; the refusal has to name it")
+	require.NotContains(t, p.Detail, "/account",
+		"there is no account page on this build")
+	require.NotContains(t, p.Detail, "no way to claim",
+		"there is a way; saying otherwise is the same dead end with the sign flipped")
+
+	require.Equal(t, string(claimed.body), string(unclaimed.body),
+		"and it still cannot classify an id")
+}
+
 // publishedRelease is the response body, decoded. It is written out here rather than reusing the
 // handler's unexported type on purpose: this test is a client of the published contract, and a
 // client only has the JSON.
@@ -130,11 +312,20 @@ type publishWorld struct {
 	// holds. readToken carries `plugin:read` and is otherwise identical.
 	publishToken string
 	readToken    string
+
+	// unpinnedToken carries `plugin:publish` and NO pin — the "any plugin you own" option on the
+	// mint form, and the token the author this fixture is modelled on actually held. It is what
+	// lets one token reach two different plugin ids, which the middleware's pin check would
+	// otherwise refuse before the handler ran.
+	unpinnedToken string
+
+	// somebodyElses is an id claimed by ANOTHER account. It is what the ambiguous refusal is for.
+	somebodyElses string
 }
 
 // newPublishWorld builds everything a publish touches, with nothing faked between the token and
 // the row.
-func newPublishWorld(t *testing.T) *publishWorld {
+func newPublishWorld(t *testing.T, mutate ...func(cfg *api.Config)) *publishWorld {
 	t.Helper()
 
 	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
@@ -174,17 +365,54 @@ func newPublishWorld(t *testing.T) *publishWorld {
 	require.NoError(t, err)
 	w.tokens = tokens
 
-	w.srv = httptest.NewServer(api.New(api.Config{
+	login, err := auth.NewOAuth(db, clk, pepper, identity.NewRegistry(stubProvider{}))
+	require.NoError(t, err)
+	owners := ownership.New(db, clk)
+
+	// A WHOLE INSTANCE, not a publish endpoint on its own.
+	//
+	// The fixture used to wire Publisher and PublicURL and nothing else, which made it a
+	// publisher-only build — and it then asserted a refusal telling callers to go and claim an id
+	// at an /account this configuration does not serve. A fixture that blesses a combination the
+	// product cannot honour is worse than no fixture: it makes the broken case the tested one.
+	// The publisher-only build is still covered, deliberately and separately, by
+	// TestPublishRelease_APublisherOnlyInstance_DoesNotSendAnybodyToAnAbsentAccountPage.
+	cfg := api.Config{
 		Clock:     clk,
 		Authn:     auth.NewAuthenticator(sessions, tokens),
 		Tokens:    tokens,
+		Login:     login,
+		Sessions:  sessions,
+		Ownership: owners,
+		Claimer:   owners,
 		Providers: identity.NewRegistry(stubProvider{}),
 		Publisher: release.NewPublisher(db, clk, fetcher),
-	}))
+		// Configured, because the refusal names where to claim and this is where that value comes
+		// from. An instance with none falls back to the path; naming the live registry's own URL
+		// here keeps the fixture honest about what an author reads.
+		PublicURL: "https://nparseplugins.prokopto.dev",
+	}
+	for _, m := range mutate {
+		m(&cfg)
+	}
+	w.srv = httptest.NewServer(api.New(cfg))
 	t.Cleanup(w.srv.Close)
 
 	w.publishToken = w.mint(t, "the plugin's release workflow", "plugin:publish")
 	w.readToken = w.mint(t, "a token that may only look", "plugin:read")
+
+	// A second account holding a second id, so "claimed, and not by you" is a real row rather than
+	// a hypothesis. Its owner never publishes here; it exists to be refused.
+	w.somebodyElses = "merchant-mode-fork"
+	insertClaimedPlugin(t, db, now, w.somebodyElses, insertPublishingAccountAs(t, db, now, "octocat"))
+
+	unpinned, err := tokens.Mint(t.Context(), auth.MintRequest{
+		AccountID: w.account,
+		Name:      "any plugin you own",
+		Scopes:    []authz.Scope{"plugin:publish"},
+	})
+	require.NoError(t, err)
+	w.unpinnedToken = unpinned.Secret
 	return w
 }
 
@@ -204,9 +432,16 @@ func (w *publishWorld) mint(t *testing.T, name string, scope authz.Scope) string
 	return minted.Secret
 }
 
-// publish sends one release submission with the token in an Authorization header, which is the
-// only place a token is ever accepted.
+// publish sends one release submission for this world's own plugin.
 func (w *publishWorld) publish(t *testing.T, token, version, key string) response {
+	t.Helper()
+
+	return w.publishTo(t, w.plugin, token, version, key)
+}
+
+// publishTo sends one release submission with the token in an Authorization header, which is the
+// only place a token is ever accepted.
+func (w *publishWorld) publishTo(t *testing.T, pluginID, token, version, key string) response {
 	t.Helper()
 
 	body, err := json.Marshal(map[string]any{
@@ -218,11 +453,29 @@ func (w *publishWorld) publish(t *testing.T, token, version, key string) respons
 	require.NoError(t, err)
 
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
-		w.srv.URL+api.BasePath+"/plugins/"+w.plugin+"/releases", strings.NewReader(string(body)))
+		w.srv.URL+api.BasePath+"/plugins/"+pluginID+"/releases", strings.NewReader(string(body)))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Idempotency-Key", key)
+
+	// This server's own client, never a bare &http.Client{}: see harness.client.
+	resp, err := w.srv.Client().Do(req)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, resp.Body.Close()) }()
+
+	read, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	return response{status: resp.StatusCode, header: resp.Header.Clone(), body: read}
+}
+
+// get fetches a page, so a test can assert what this build does NOT serve. Without it, "the
+// refusal does not mention /account" would pass just as well against a server that serves it.
+func (w *publishWorld) get(t *testing.T, path string) response {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, w.srv.URL+path, nil)
+	require.NoError(t, err)
 
 	// This server's own client, never a bare &http.Client{}: see harness.client.
 	resp, err := w.srv.Client().Do(req)
@@ -247,6 +500,13 @@ func (w *publishWorld) artifactSHA256() string {
 // toggle. An account without one is refused by the domain, which would be a different test.
 func insertPublishingAccount(t *testing.T, db *store.DB, now time.Time) string {
 	t.Helper()
+	return insertPublishingAccountAs(t, db, now, "prokopto-dev")
+}
+
+// insertPublishingAccountAs is the same thing under a named handle, for a fixture that needs a
+// SECOND account. (provider, subject) is unique, so two accounts cannot share one.
+func insertPublishingAccountAs(t *testing.T, db *store.DB, now time.Time, handle string) string {
+	t.Helper()
 
 	accountID, err := core.NewULID(now)
 	require.NoError(t, err)
@@ -256,7 +516,7 @@ func insertPublishingAccount(t *testing.T, db *store.DB, now time.Time) string {
 	require.NoError(t, db.Tx(t.Context(), func(q *store.Queries) error {
 		if err := q.InsertAccount(t.Context(), sqlitegen.InsertAccountParams{
 			ID:          accountID.String(),
-			DisplayName: "prokopto-dev",
+			DisplayName: handle,
 			CreatedAt:   core.MicrosFromTime(now).Int64(),
 			UpdatedAt:   core.MicrosFromTime(now).Int64(),
 		}); err != nil {
@@ -266,8 +526,8 @@ func insertPublishingAccount(t *testing.T, db *store.DB, now time.Time) string {
 			ID:           identityID.String(),
 			AccountID:    accountID.String(),
 			ProviderKind: "github",
-			Subject:      "sub-prokopto-dev",
-			Handle:       "prokopto-dev",
+			Subject:      "sub-" + handle,
+			Handle:       handle,
 			LinkedAt:     core.MicrosFromTime(now).Int64(),
 			RefreshedAt:  core.MicrosFromTime(now).Int64(),
 		})

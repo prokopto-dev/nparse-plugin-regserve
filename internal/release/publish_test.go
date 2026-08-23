@@ -311,6 +311,78 @@ func TestPublish_Authority_IsOwnershipAtRequestTime(t *testing.T) {
 	}
 }
 
+// TestPublish_ARefusedPublish_DoesNotSayWhetherTheIDExists.
+//
+// THE DOMAIN DRAWS NO DISTINCTION, and this is the gate on that.
+//
+// An id nobody has claimed, an id somebody else holds, and an id that has been delisted are three
+// different facts about the registry and ONE error out of this package. If they were three errors,
+// the route would have three answers to choose between, and the answer for "somebody else holds
+// it" would then prove exactly that — which is the enumeration the ambiguity exists to prevent,
+// since ids are permanent and a squatter only needs to know which names are spoken for.
+//
+// A draft of this test asserted the opposite: that an unclaimed id reported itself as unclaimed,
+// so an author who had skipped the claim step would be told. The step still has to be named — it
+// is, in internal/api, in a sentence that is the same for every id and therefore classifies none.
+func TestPublish_ARefusedPublish_DoesNotSayWhetherTheIDExists(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		pluginID func(w *world) string
+		account  func(w *world) string
+		setUp    func(t *testing.T, w *world)
+	}{
+		{
+			name:     "an id nobody has claimed",
+			pluginID: func(*world) string { return "floating-combat-text" },
+			account:  func(w *world) string { return w.owner },
+		},
+		{
+			name:     "an id somebody else holds",
+			pluginID: func(w *world) string { return w.plugin },
+			account:  func(w *world) string { return w.stranger },
+		},
+		{
+			// Delisting clears the LISTING and keeps the CLAIM — the row survives for ever,
+			// because an id is never recycled. A third state, and the same answer.
+			name:     "an id that has been delisted",
+			pluginID: func(w *world) string { return w.plugin },
+			account:  func(w *world) string { return w.stranger },
+			setUp:    func(t *testing.T, w *world) { w.delist(t, w.plugin) },
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			w := newWorld(t, []byte("PK\x03\x04 bytes"))
+			if tc.setUp != nil {
+				tc.setUp(t, w)
+			}
+
+			sub := w.submit(t, func(raw *release.RawSubmission) { raw.PluginID = tc.pluginID(w) })
+			_, err := w.pub.Publish(t.Context(), release.Request{
+				Submission:     sub,
+				AccountID:      tc.account(w),
+				IdempotencyKey: "key-refused",
+			})
+
+			// The SAME error, and its message compared as a whole rather than with errors.Is
+			// alone: a wrapped sentinel carrying "...: that id is unclaimed" would satisfy
+			// errors.Is and still be the leak.
+			require.ErrorIs(t, err, release.ErrNotPublishable)
+			require.Equal(t, "no such plugin, or you do not hold it", err.Error(),
+				"a refusal that varies with the id is a refusal that classifies ids")
+
+			require.Zero(t, w.releaseCount(t), "a refused publish wrote a row")
+			require.Zero(t, w.fetchCount(),
+				"authority is checked before the artifact is fetched, in every one of these")
+		})
+	}
+}
+
 // TestPublish_AnOwnerRemovedDuringTheFetch_DoesNotGetOneMoreRelease.
 //
 // The fetch takes up to forty-five seconds and happens OUTSIDE the write transaction, because

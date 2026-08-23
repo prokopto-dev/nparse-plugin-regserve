@@ -20,11 +20,13 @@ so the id has to exist before the token can be minted.
    it as a GitHub template repository. Writing one from scratch is fine too: what this registry
    needs from a build is one artifact at a public `https` URL and a version string your plugin
    declares.
-2. **Claim your plugin id.** Sign in at <https://nparseplugins.prokopto.dev/> with GitHub. Ids are
+2. **Claim your plugin id.** Sign in at <https://nparseplugins.prokopto.dev/> with GitHub and use
+   the **Claim a plugin id** form on [/account](https://nparseplugins.prokopto.dev/account). Ids are
    first-come, permanent and **never recycled** — an id names your plugin in every installed copy on
-   every user's machine. See the honest note below: there is no page for this step yet, and the
-   account that claims an id is the account that owns it.
-3. **Mint a scoped token** on **/account**: `plugin:publish`, pinned to that id, nothing else.
+   every user's machine. **No token can do this step**, however scoped; see
+   [Claiming is a separate step, and session-only](#claiming-is-a-separate-step-and-session-only).
+3. **Mint a scoped token** on **/account**: `plugin:publish`, pinned to that id, nothing else. The
+   pin is a plugin id you must already hold, which is why step 2 comes first.
 4. **Store it as a repository secret** in your plugin repository, as `REGSERVE_TOKEN`.
 5. **Tag a release.** Your workflow builds the artifact and uploads it to the GitHub Release.
 6. **Call the reusable workflow** as one more job. It publishes, or it records that a human needs to
@@ -36,31 +38,39 @@ succeeds with a warning and reports `state: pending`; the release is durably rec
 version is claimed. That is the correct outcome, not a broken publish, and reading it as a failure
 is the mistake this page most wants to prevent.
 
-### Claiming an id has no page yet
+### Claiming is a separate step, and session-only
 
-`POST /api/v1/plugins` is the claim, and it is **session-only** — no personal access token can claim
-an id, however scoped, because a deployment credential that could register new ids would grow its
-own reach every time it was used. The browser surface has **no form for it**, tracked as
-[issue #42](https://github.com/prokopto-dev/nparse-plugin-regserve/issues/42). It is recorded here
-rather than glossed, because an author looking for a button that does not exist concludes the
-registry is broken.
+**Publishing does not claim an id, and a token cannot claim one.** These are two different acts with
+two different credentials, and the order matters: claim first, mint second.
 
-**Send that request yourself.** Sign in at <https://nparseplugins.prokopto.dev/>, then call the
-endpoint carrying your own `__Host-regserve_session` cookie.
+Claiming is **capability-floor** — session-only, no scope, no token, ever — because a deployment
+credential that could register new ids would grow its own reach every time it was used
+([ADR-0005](../adr/0005-pats-scoped-to-plugins.md)). There are two doors onto the same
+act and both need a browser session:
 
-**Do not ask somebody else to claim it for you.** The account whose session sends the request
-becomes the owner: the handler passes the *authenticated caller's* account id to the claim, and the
-request body has no on-behalf-of field. Because ids are permanent and never reassigned, that is not
-something anybody can correct afterwards — it has to be **handed over** instead, which is the
-three-step dance ownership always is:
+- the **Claim a plugin id** form on [/account](https://nparseplugins.prokopto.dev/account);
+- `POST /api/v1/plugins`, carrying your own `__Host-regserve_session` cookie.
 
-1. they add you as an owner (which needs you to have signed in here at least once, so there is no
-   avoiding that part either);
-2. you mint your own token, pinned to the id;
-3. only then do they remove themselves — their tokens stop working the moment they stop being an
-   owner, because ownership is checked on every request rather than cascade-revoked.
+If you skip it, your publish job is answered **404**, and the message names the step:
 
-Signing in and claiming it yourself is strictly less work than any of that.
+```json
+{
+  "code": "not_found",
+  "detail": "no such plugin, or you do not hold it. Publishing never claims an id, and no token
+             can claim one however scoped — claiming is session-only. If you have not claimed this
+             id, sign in at https://nparseplugins.prokopto.dev/account and claim it there, then
+             publish again; if you have, check that you are still an owner."
+}
+```
+
+**That is the same answer for an id nobody has claimed and an id somebody else holds**, and
+deliberately so. The registry will not tell you which, from this endpoint, however you ask: ids
+are permanent and never recycled, so a refusal that distinguished the two would let anyone with a
+publish token sweep a wordlist for unclaimed names. The guidance above is unconditional — it is
+true of the registry rather than of your id — which is why it can be said at all.
+
+If you are not sure which of the two you are in, the claim form tells you: claiming an id somebody
+else holds is a `409`, and it still does not say who.
 
 ## The short version
 
@@ -244,6 +254,12 @@ ordering matters if you create the release as a draft.
 
 A refusal — anything that is not one of the three above — fails the job and prints the registry's own
 sentence explaining why. Nothing is recorded, and the version is still free.
+
+**`404 not_found` on a plugin id you believe is yours** is the one worth naming here, because it is
+the first thing a new author meets. Either you never claimed the id — the message says so and says
+where to claim it — or you are no longer an owner of it. Ownership is checked on every request
+rather than carried on the credential, so a token that worked last month stops working the moment
+its holder stops being an owner.
 
 ## Outputs
 

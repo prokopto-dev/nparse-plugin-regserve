@@ -138,9 +138,11 @@ type Config struct {
 	// account surface.
 	Tokens TokenService
 
-	// Claimer registers new plugin ids. It is the same OwnershipService in practice; declared
-	// separately because the account surface needs the one and the API needs the other, and a
-	// build could reasonably serve the pages without the endpoint.
+	// Claimer registers new plugin ids, for BOTH doors onto that act: POST /api/v1/plugins and
+	// the account page's claim form. It is the same OwnershipService in practice; declared
+	// separately because the two are different interfaces, and a build could reasonably serve the
+	// pages without the endpoint. Nil leaves the endpoint unregistered and the form unoffered —
+	// never a form that posts to a route this build does not serve.
 	Claimer Claimer
 
 	// Ownership backs the plugin settings page. Nil, like a nil Tokens, means the account surface
@@ -184,6 +186,59 @@ type TokenService interface {
 	Revoke(ctx context.Context, accountID, tokenID string) error
 }
 
+// What this build actually serves, asked once and answered from the same conditions the routes are
+// registered on below.
+//
+// EVERY PAGE AND EVERY REFUSAL THAT TELLS SOMEBODY WHERE TO GO READS ONE OF THESE. The alternative
+// — each surface deciding from whichever dependency it happens to hold — is how a walkthrough ends
+// up sending a reader to /account on an instance that does not serve it, which is the dead end
+// this whole change exists to remove.
+//
+// A PUBLISHER-ONLY INSTANCE IS A SUPPORTED STATE AND NOT A MISCONFIGURATION. The serve command
+// wires Publisher as soon as the database opens and wires sign-in only when an OAuth application
+// is configured, which is what the live deployment ran as for its whole first phase: the
+// catalogue, the index and the publish endpoint served, no account surface at all, ownership set
+// by an operator running `regserve seed-owners`.
+
+// EACH OF THESE IS A REGISTRATION CONDITION AND NOTHING MORE — the exact conjunction the routes
+// below are gated on, so "the page says you can do this here" and "the route that does it exists"
+// are one fact rather than two. Whether an authenticated route is REACHABLE is a separate,
+// build-wide question: a nil Authn makes every non-public operation answer 503, which the
+// middleware reports honestly and which no amount of different prose on one page would fix.
+// Mixing the two in was an asymmetry, and it showed up immediately as one flag counting Authn and
+// another ignoring it.
+
+// servesTheAccountPage reports whether /account and the token forms are registered. It is the
+// exact conjunction registerWeb is gated on.
+func (c Config) servesTheAccountPage() bool {
+	return c.Login != nil && c.Sessions != nil && c.Providers != nil &&
+		c.Tokens != nil && c.Ownership != nil
+}
+
+// servesTheClaimEndpoint reports whether POST /api/v1/plugins is registered. It is the exact
+// condition registerPlugins is gated on, which is Claimer and nothing else.
+//
+// SEPARATE FROM THE FORM, because the two really do come apart: an API-FIRST BUILD — sign-in and a
+// Claimer, no Tokens or Ownership — serves a usable session-only claim endpoint and no account
+// page at all. Collapsing the two told that instance's callers the registry had no way to claim an
+// id and that the endpoint was not served, both of which were false while the endpoint sat there
+// answering. Naming a door that is not there and denying one that is are the same mistake with the
+// sign flipped.
+func (c Config) servesTheClaimEndpoint() bool {
+	return c.Claimer != nil
+}
+
+// servesTheClaimForm reports whether the account page carries the claim form: the account surface,
+// plus something to claim through. It is the exact conjunction registerClaimForm is gated on.
+//
+// It is STRICTLY NARROWER than servesTheAccountPage, and the two are separate because the middle
+// state is real: a build with sign-in and no Claimer serves /account and mints tokens perfectly
+// well and has nowhere to claim an id. Telling that instance's readers there is no account page
+// would be as wrong as telling them to claim one there.
+func (c Config) servesTheClaimForm() bool {
+	return c.servesTheAccountPage() && c.Claimer != nil
+}
+
 // New builds the HTTP handler.
 func New(cfg Config) http.Handler {
 	if cfg.Clock == nil {
@@ -215,10 +270,20 @@ func New(cfg Config) http.Handler {
 			Sessions:  cfg.Sessions,
 			Reviewers: cfg.Reviewers,
 			IndexURL:  indexURL(cfg.PublicURL),
+			// What the on-ramp is allowed to tell a reader to do, from the same two answers the
+			// publish refusal uses. The page has no dependencies of its own to infer this from,
+			// and inferring it from Providers alone was wrong: sign-in configured does not mean
+			// an id can be claimed here.
+			AccountPage:   cfg.servesTheAccountPage(),
+			ClaimForm:     cfg.servesTheClaimForm(),
+			ClaimEndpoint: cfg.servesTheClaimEndpoint(),
 		})
 	}
 	if cfg.Publisher != nil {
-		registerReleases(api, cfg.Publisher)
+		// The advice a refused publish gives is decided HERE, from what this build actually
+		// serves, rather than assumed by the route. See Config.servesTheClaimForm.
+		registerReleases(api, cfg.Publisher,
+			claimAdvice(cfg.servesTheClaimForm(), cfg.servesTheClaimEndpoint(), cfg.PublicURL))
 	}
 	if cfg.Claimer != nil {
 		registerPlugins(api, cfg.Claimer)
@@ -241,6 +306,9 @@ func New(cfg Config) http.Handler {
 				Tokens:    cfg.Tokens,
 				Ownership: cfg.Ownership,
 				Providers: cfg.Providers,
+				// The same Claimer the JSON endpoint is registered with, so the form and
+				// POST /api/v1/plugins cannot end up claiming into two different services.
+				Claimer: cfg.Claimer,
 				// The same two dependencies the JSON API's review routes are wired from, so the
 				// pages and the endpoints cannot be looking at different queues. Nil leaves the
 				// review pages unregistered — see registerWeb.

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
 
@@ -104,7 +105,11 @@ type publishReleaseResult struct {
 }
 
 // registerReleases wires the publish endpoint.
-func registerReleases(api huma.API, publisher Publisher) {
+//
+// advice is what a refused publish says about claiming an id, already decided by claimAdvice from
+// what this build serves. It is passed in rather than computed here because the answer depends on
+// which OTHER routes exist, which is knowledge this file does not have and must not guess at.
+func registerReleases(api huma.API, publisher Publisher, advice string) {
 	register(api,
 		// The permission is `plugin.publish`, SPELLED AS THE CATALOGUE SPELLS IT. It said
 		// `release.publish` for one release: a permission that exists nowhere in
@@ -174,7 +179,11 @@ func registerReleases(api huma.API, publisher Publisher) {
 				IdempotencyKey: in.IdempotencyKey,
 			})
 			if err != nil {
-				return nil, publishProblem(ctx, in.PluginID, err)
+				// The PARSED id, not the raw path parameter. It is the same string — the
+				// submission above would have been refused otherwise — and passing the value that
+				// has been through core.ParsePluginID is what makes "this detail cannot echo
+				// something unvalidated" true by construction rather than by reading upwards.
+				return nil, publishProblem(ctx, submission.PluginID.String(), advice, err)
 			}
 
 			return &publishReleaseOutput{
@@ -208,15 +217,34 @@ func badSubmission(err error) error {
 }
 
 // publishProblem maps a publish failure onto a problem document.
-func publishProblem(ctx context.Context, pluginID string, err error) error {
+//
+// advice is the claiming sentence claimAdvice produced for this build. pluginID reaches the LOG
+// and never a refusal: a message that named the id back would be a message that varied with the
+// id, which is the shape the case below exists to avoid.
+func publishProblem(ctx context.Context, pluginID, advice string, err error) error {
 	switch {
 	case errors.Is(err, release.ErrNotPublishable):
-		// 404 and not 403, and the same answer as a plugin that does not exist. Telling somebody
-		// "that plugin exists and is not yours" enumerates claimed ids for anybody with a
-		// wordlist — and because ids are permanent and never recycled, it also tells a squatter
-		// which names are worth waiting for.
+		// ONE ANSWER FOR "the id does not exist" AND "it is not yours", and it must stay one.
+		//
+		// A refusal that varied between the two would let anybody holding an unpinned
+		// `plugin:publish` token classify a wordlist: the specific answer would mean free, and
+		// this general one would then PROVE the id is somebody else's — which is precisely the
+		// set that must not be enumerable, since ids are permanent and never recycled. A draft of
+		// this change did exactly that, on the reasoning that POST /api/v1/plugins already tells a
+		// signed-in caller whether an id is taken. It does not usefully: its "not taken" answer is
+		// a 201 that CLAIMS THE ID, permanently, with an audit row. That side effect is what makes
+		// the claim endpoint useless as a probe, and it is why this one must not be a substitute.
+		//
+		// THE GUIDANCE BELOW IS UNCONDITIONAL, and that is what makes it safe. Every word of it is
+		// true of the registry rather than of this id: claiming is a separate act, no token can
+		// perform it, and here is where it is done. The author who could not publish did not need
+		// to be told that HIS id was free — he needed to be told the step existed at all, and that
+		// is the same sentence whoever asks and whichever id they ask about.
+		//
+		// Gate: TestPublishRelease_TheRefusal_CannotClassifyAnID compares the two responses byte
+		// for byte over real HTTP, so a future branch that splits them again is a red test.
 		return NewProblem(http.StatusNotFound, CodeNotFound,
-			"no such plugin, or you do not hold it")
+			"no such plugin, or you do not hold it. "+advice)
 
 	case errors.Is(err, release.ErrGitHubIdentityRequired):
 		return NewProblem(http.StatusForbidden, CodeGitHubIdentityRequired,
@@ -257,4 +285,64 @@ func publishProblem(ctx context.Context, pluginID string, err error) error {
 	// stranger is how a publish endpoint becomes an information-disclosure bug.
 	slog.ErrorContext(ctx, "publish a release", "plugin_id", pluginID, "error", err)
 	return NewProblem(http.StatusInternalServerError, CodeInternalError, "")
+}
+
+// claimAdvice is what a refused publish says about claiming an id, decided ONCE at registration
+// from what this build actually serves.
+//
+// THREE SENTENCES, ONE PER SHAPE OF DEPLOYMENT, and none of them mentions the id. That is what
+// keeps the refusal unable to classify one: the advice varies with the DEPLOYMENT, which every
+// caller can see anyway, and never with the plugin asked about. See publishProblem.
+//
+// The two doors onto claiming are tracked separately because they come apart — see
+// Config.servesTheClaimEndpoint. Naming a door this build does not have is the dead end this whole
+// change removes; denying one it does have is the same mistake with the sign flipped.
+func claimAdvice(form, endpoint bool, publicURL string) string {
+	const preamble = "Publishing never claims an id, and no token can claim one however scoped " +
+		"— claiming is session-only. "
+
+	switch {
+	case form:
+		return preamble + "If you have not claimed this id, sign in at " + claimHere(publicURL) +
+			" and claim it there, then publish again; if you have, check that you are still an " +
+			"owner."
+
+	case endpoint:
+		// AN API-FIRST BUILD: the claim endpoint is served and the account page is not. Saying
+		// "sign in at /account" here would name a page this instance does not have, and saying
+		// "there is no way to claim" would be false while the endpoint answers.
+		return preamble + "This instance serves no claim form, so claim the id by sending " +
+			"POST /api/v1/plugins with your own session cookie, then publish again; if you have " +
+			"already claimed it, check that you are still an owner."
+
+	default:
+		// NEITHER DOOR, and the recovery it names has to be one the operator can actually
+		// perform. "Ask them to grant you the id" is not, for the reader this whole change is
+		// for: an id nobody has claimed has NO PLUGIN ROW, and the ownership import refuses to
+		// invent one — ownership.SeedOutcome.UnknownPlugins names such ids and skips them,
+		// because a grant on an id the registry does not carry is a claim nobody can check. The
+		// catalogue seed is one-time into an empty database, and there is no operator claim
+		// route. So the only path to a NEW id here runs through enabling claiming first.
+		//
+		// It does not say the endpoint is absent, only that there is no way to claim — the one
+		// phrasing true in every shape of this case.
+		return preamble + "There is no way to claim an id on this registry: ask whoever operates " +
+			"it to enable claiming. Until they do, an id nobody has claimed cannot be registered " +
+			"here by anybody, including them; an id that already exists is theirs to grant."
+	}
+}
+
+// claimHere renders WHERE an id is claimed, from the public URL the operator configured.
+//
+// The absolute URL when this instance was told its own, and the PATH when it was not. Never a URL
+// assembled from the request's Host header: that value is chosen by the caller, and this sentence
+// is printed verbatim into somebody else's release pipeline by the reusable workflow. A registry
+// that told an author to go and sign in at a host an attacker put in a header would be handing out
+// a phishing link with a straight face. Same rule as indexURL, for the same reason.
+func claimHere(publicURL string) string {
+	base := strings.TrimSpace(publicURL)
+	if base == "" {
+		return PathAccountPage
+	}
+	return strings.TrimSuffix(base, "/") + PathAccountPage
 }

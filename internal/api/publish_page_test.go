@@ -30,7 +30,10 @@ import (
 func TestPublishGuide_IsPublic_AndNamesEveryStepOfTheRealPath(t *testing.T) {
 	t.Parallel()
 
-	resp := browse(t, api.Config{Directory: directoryOf(testPlugin("alpha"))}, api.PathPublish)
+	// The claim-capable build: this test is about the WHOLE path, and the whole path is only true
+	// on an instance that serves every step of it. The builds that serve fewer are covered by
+	// TestPublishGuide_TellsAReaderOnlyWhatThisBuildCanDo.
+	resp := browse(t, claimCapable(), api.PathPublish)
 
 	require.Equal(t, http.StatusOK, resp.status, "the on-ramp needs no credential")
 	require.Equal(t, "text/html; charset=utf-8", resp.header.Get("Content-Type"))
@@ -67,20 +70,30 @@ func TestPublishGuide_SaysTheFirstReleaseWaitsForAHuman(t *testing.T) {
 		"the page has to say what a pending release IS, not only that it happens")
 }
 
-// TestPublishGuide_SaysThereIsNoFormForClaimingAnId.
+// TestPublishGuide_SaysClaimingIsSessionOnly_BeforeTheTokenStep.
 //
-// `POST /api/v1/plugins` is a capability-floor operation and the browser surface has no form for
-// it (issue 42). An on-ramp that listed "claim your id" as though a button existed would send every
-// author looking for one — the failure mode being designed against is a CONFIDENT MISTAKE, and a
-// missing step stated plainly costs a paragraph.
-func TestPublishGuide_SaysThereIsNoFormForClaimingAnId(t *testing.T) {
+// This used to assert the opposite — that the page said there was NO FORM for claiming (issue 42)
+// — and the honesty was right while it was true. The form exists now, so the assertion moved to
+// what still has to be true: that claiming is a separate act no token can perform, said BEFORE the
+// step that mints one. An author who reads the token step first concludes the token is the
+// credential, wires CI, and is answered 404 on every tag. One did.
+func TestPublishGuide_SaysClaimingIsSessionOnly_BeforeTheTokenStep(t *testing.T) {
 	t.Parallel()
 
-	body := string(browse(t, api.Config{Directory: directoryOf(testPlugin("alpha"))},
-		api.PathPublish).body)
+	body := string(browse(t, claimCapable(), api.PathPublish).body)
 
-	require.Contains(t, body, "no form for this step yet")
-	require.Contains(t, body, "/issues/42", "the gap is tracked, not glossed")
+	require.Contains(t, body, "A token cannot do this step")
+	require.Contains(t, body, "session-only")
+	require.Contains(t, body, "Claim a plugin id",
+		"the page names the form by the legend it carries on the account page")
+
+	// ORDER, not just presence. The rule the page exists to teach is a sequence — claim, then mint
+	// a token pinned to what you claimed — and prose that says the right things in the wrong order
+	// teaches the wrong one.
+	claim := strings.Index(body, "Claim your plugin id")
+	token := strings.Index(body, "Mint a scoped token")
+	require.GreaterOrEqual(t, claim, 0)
+	require.Greater(t, token, claim, "claiming has to come before minting, on the page as in life")
 
 	// The claim takes the AUTHENTICATED CALLER's account id and the body has no on-behalf-of
 	// field, so "ask somebody to claim it for you" hands them the plugin — permanently, since ids
@@ -150,24 +163,142 @@ func TestPublishGuide_RendersTheGitHubExpressionSyntax_Intact(t *testing.T) {
 		"an entity that survives into the copied text is a workflow file that does not parse")
 }
 
-// TestPublishGuide_OffersSignIn_OnlyWhereItIsConfigured.
+// claimCapable is a build that serves the directory, the account surface AND the claim form: the
+// live deployment's shape, and the one the walkthrough's instructions are true on.
 //
-// Claiming an id needs a session, so the page points at sign-in — and an instance with no OAuth
-// application says so rather than offering a link that leads to a 404.
-func TestPublishGuide_OffersSignIn_OnlyWhereItIsConfigured(t *testing.T) {
-	t.Parallel()
-
-	withSignIn := string(browse(t, api.Config{
+// Written out rather than defaulted, because the whole point of the tests below is that the page
+// says different things on different builds, and a fixture that quietly wired everything would
+// make the interesting cases unreachable.
+func claimCapable() api.Config {
+	return api.Config{
 		Directory: directoryOf(testPlugin("alpha")),
 		Providers: identity.NewRegistry(stubProvider{}),
-	}, api.PathPublish).body)
-	require.Contains(t, withSignIn, "/auth/github/login?next=/account")
+		Login:     &fakeLogin{},
+		Sessions:  &fakeSessions{},
+		Tokens:    &fakeTokens{},
+		Ownership: &fakeOwnership{},
+		Claimer:   &fakeOwnership{},
+	}
+}
 
-	without := string(browse(t, api.Config{Directory: directoryOf(testPlugin("alpha"))},
-		api.PathPublish).body)
-	require.NotContains(t, without, "/auth/github/login")
-	require.Contains(t, without, "no sign-in configured",
-		"an instance that cannot sign anybody in has to say so, not go quiet")
+// TestPublishGuide_TellsAReaderOnlyWhatThisBuildCanDo.
+//
+// FOUR WIRING STATES, FOUR WALKTHROUGHS, and the assertions are as much about what is ABSENT as
+// about what is there. Both halves of that are corrections:
+//
+//   - an earlier version kept "on your account, mint a token" unconditional and merely APPENDED a
+//     note saying there was no account page, so a publisher-only reader was sent to a dead
+//     destination and then told it was dead. The test checked only for the appended sentence, so
+//     it blessed the contradiction. A test for a conditional page has to assert the branch not
+//     taken is GONE;
+//   - the next version collapsed the claim endpoint into the claim form, so an API-first build —
+//     registerPlugins is gated on Claimer ALONE — was told ids could not be claimed there while
+//     POST /api/v1/plugins sat answering. Naming a door that is not there and denying one that is
+//     are the same mistake with the sign flipped.
+//
+// The four rows are wirings runServe can actually produce. A fifth would be a fifth row.
+func TestPublishGuide_TellsAReaderOnlyWhatThisBuildCanDo(t *testing.T) {
+	t.Parallel()
+
+	// Sign-in, a Claimer, and no account surface: the JSON endpoint is served and nothing else is.
+	apiFirst := claimCapable()
+	apiFirst.Tokens, apiFirst.Ownership = nil, nil
+
+	// The account surface with nothing to claim through: /account and the token forms are served,
+	// the claim form is not, and neither is the endpoint.
+	signInOnly := claimCapable()
+	signInOnly.Claimer = nil
+
+	tests := []struct {
+		name string
+		cfg  api.Config
+
+		wants    []string
+		wantsNot []string
+	}{
+		{
+			name: "a build that serves the form tells the whole path",
+			cfg:  claimCapable(),
+			wants: []string{
+				"/auth/github/login?next=/account",
+				"Claim a plugin id",
+				`On <a href="/account">your account</a>`,
+			},
+			wantsNot: []string{
+				"cannot be claimed on this instance",
+				"no account page on this instance",
+				"serves no claim form",
+			},
+		},
+		{
+			// THE ACCOUNT PAGE AND THE CLAIM FORM COME APART. /account is served here and the
+			// token step is real; only the step above it is not.
+			name: "a build with an account page and nothing to claim through still mints",
+			cfg:  signInOnly,
+			wants: []string{
+				"Ids cannot be claimed on this instance",
+				"enable claiming",
+				`On <a href="/account">your account</a>`,
+			},
+			wantsNot: []string{
+				"Claim a plugin id",
+				"no account page on this instance",
+				"POST /api/v1/plugins",
+			},
+		},
+		{
+			// AND THE CLAIM ENDPOINT AND THE ACCOUNT PAGE COME APART TOO, the other way round.
+			name: "an api-first build names the endpoint it actually serves",
+			cfg:  apiFirst,
+			wants: []string{
+				"serves no claim form",
+				"POST /api/v1/plugins",
+				"no account page on this instance",
+			},
+			wantsNot: []string{
+				"Ids cannot be claimed on this instance",
+				`On <a href="/account">your account</a>`,
+			},
+		},
+		{
+			name: "a publisher-only build sends nobody anywhere it does not serve",
+			cfg:  api.Config{Directory: directoryOf(testPlugin("alpha"))},
+			wants: []string{
+				"Ids cannot be claimed on this instance",
+				"no account page on this instance",
+				"whoever operates the registry",
+				// The recovery has to be one the operator can perform. An id nobody has claimed
+				// has no plugin row, and the ownership import skips ids it does not already carry
+				// rather than inventing them, so "ask them to grant it to you" is advice that
+				// cannot be followed for exactly the reader this page is written for.
+				"enable claiming",
+			},
+			wantsNot: []string{
+				`href="/account"`,
+				"/auth/github/login",
+				"Claim a plugin id",
+				"POST /api/v1/plugins",
+				"claim the id and grant it to you",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			body := string(browse(t, tc.cfg, api.PathPublish).body)
+			for _, want := range tc.wants {
+				require.Containsf(t, body, want, "this build has to say %q", want)
+			}
+			for _, unwanted := range tc.wantsNot {
+				// THE ABSENCE IS THE ASSERTION. A dead instruction followed by a correction is
+				// worse than either alone: the reader follows the first one.
+				require.NotContainsf(t, body, unwanted,
+					"this build must not say %q — it is not true here", unwanted)
+			}
+		})
+	}
 }
 
 // TestDirectory_LeadsToTheAuthorOnRamp — the gap this page was built to close.

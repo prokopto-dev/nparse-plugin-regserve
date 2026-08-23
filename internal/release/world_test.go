@@ -266,6 +266,20 @@ func (w *world) revoke(t *testing.T, accountID string) {
 	}))
 }
 
+// delist clears a plugin's listing while KEEPING its claim, which is what delisting is: the row
+// survives for ever because ids are never recycled. Written through storetest.Exec rather than a
+// query, because nothing in production delists from this package and adding one for a test to call
+// would be a query nobody maintains.
+func (w *world) delist(t *testing.T, pluginID string) {
+	t.Helper()
+
+	// The reason is not optional: a CHECK requires it, because a listing that vanishes without a
+	// stated reason is indistinguishable from a bug.
+	storetest.Exec(t, w.db,
+		`UPDATE plugin SET delisted_at = ?, delisted_reason = ? WHERE id = ?`,
+		core.MicrosFromTime(now).Int64(), "delisted by a test", pluginID)
+}
+
 // releaseCount is how many release rows exist at all.
 //
 // It is the assertion that a REFUSED publish wrote nothing and that a REPLAY did nothing rather

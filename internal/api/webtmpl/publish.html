@@ -4,8 +4,10 @@
      The front page answers "what plugins exist". Until this page there was nowhere that answered
      "how do I make one", so a visitor who wanted to WRITE a plugin left with the same information
      they arrived with. The walkthrough below is the REAL path in the order it actually happens,
-     including the step this service has no form for yet — an on-ramp that skipped that step would
-     be a confident mistake, and every author would hit it second. */}}
+     including CLAIMING AN ID — the step that has no token-shaped door and is therefore the one an
+     author driving a release pipeline never discovers on their own. An on-ramp that skipped it
+     would be a confident mistake, and every author would hit it second. One did: a publish to an
+     unclaimed id was answered "no such plugin, or you do not hold it" on every run. */}}
 <h2>Publish a plugin</h2>
 <p>
   A plugin is a Python package with a manifest, built and released by your own repository. This
@@ -47,48 +49,82 @@
     installed copy on every user's machine, so it is never released or reassigned, not even after a
     delisting. Claiming it registers the id to your account and makes you its owner. It does not
     list anything.
-    {{if .Providers}}
+    {{/* GATED ON WHAT THIS BUILD SERVES, not on what a registry usually does. .CanClaim and
+         .HasAccountPage are computed in New from the same conditions the routes are registered
+         on. A walkthrough that told a reader to use a form this instance does not serve would be
+         the dead end this page exists to close, printed by the page that closes it. */}}
+    {{if .CanClaim}}
       {{range .Providers}}
       <p class="muted">
-        <a href="/auth/{{.}}/login?next=/account">Sign in with GitHub</a> first — GitHub is the
-        only identity this registry accepts, because the artifacts live on GitHub Releases and the
-        ownership records it was migrated from are GitHub handles.
+        <a href="/auth/{{.}}/login?next=/account">Sign in with GitHub</a>, then claim the id with
+        the <strong>Claim a plugin id</strong> form on <a href="/account">your account page</a>.
+        GitHub is the only identity this registry accepts, because the artifacts live on GitHub
+        Releases and the ownership records it was migrated from are GitHub handles.
       </p>
       {{end}}
+      <p class="warn">
+        <strong>A token cannot do this step, however scoped, and that is deliberate.</strong>
+        Claiming is session-only — <code>POST /api/v1/plugins</code> for a machine, the account
+        page's form for you — because a deployment credential that could register new ids would
+        grow its own reach every time it was used.
+        <strong>Claim the id before you mint the token</strong>: a token is pinned to an id, and
+        publishing to an id nobody has claimed is answered <code>404</code>, whatever the token
+        carries.
+      </p>
+    {{else if .HasClaimEndpoint}}
+      {{/* AN API-FIRST BUILD: the claim endpoint is served and the account page is not. Neither
+           of the other two branches is true here — there is no form to point at, and saying ids
+           cannot be claimed would be false while the endpoint answers. */}}
+      <p class="warn">
+        <strong>This instance serves no claim form, and a token still cannot claim an id.</strong>
+        Claiming is session-only, so sign in and send <code>POST /api/v1/plugins</code> yourself,
+        carrying your own session cookie. <strong>Claim the id before you mint the token</strong>:
+        publishing to an id nobody has claimed is answered <code>404</code>, whatever the token
+        carries.
+      </p>
     {{else}}
-      <p class="muted">
-        This instance has no sign-in configured, so an id cannot be claimed here.
+      <p class="warn">
+        <strong>Ids cannot be claimed on this instance.</strong> Ask whoever operates the registry
+        to <strong>enable claiming</strong> — that is the step, and asking them to grant you the id
+        instead does not work for a new one: an id nobody has claimed has no row to grant, and the
+        ownership import deliberately skips ids it does not already carry rather than inventing
+        them. An id that <em>already</em> exists is theirs to grant. Publishing to an id you do not
+        hold is answered <code>404</code>, whatever your token carries.
       </p>
     {{end}}
-    <p class="warn">
-      <strong>There is no form for this step yet.</strong> Claiming is
-      <code>POST /api/v1/plugins</code>, and it is session-only — no token can claim an id, however
-      scoped, because a deployment credential that could register new ids would grow its own reach
-      every time it was used. Until the page exists, <strong>send that request yourself</strong>,
-      signed in and carrying your own session cookie. Saying so is better than sending you looking
-      for a button that is not there; it is tracked as
-      <a href="https://github.com/prokopto-dev/nparse-plugin-regserve/issues/42">issue 42</a>.
-    </p>
-    <p class="muted">
-      <strong>Do not ask somebody else to claim it for you.</strong> The account whose session sends
-      the request becomes the owner — the claim takes the caller's own id and there is no
-      on-behalf-of field — and an id is permanent, so that is not something anybody can correct
-      afterwards. It has to be handed over instead: they add you as an owner, you mint your own
-      token, and only then do they remove themselves. That needs you to have signed in here at least
-      once anyway, so signing in and claiming it yourself is strictly less work.
-    </p>
+    {{if .CanClaim}}
+      <p class="muted">
+        <strong>Do not ask somebody else to claim it for you.</strong> The account whose session
+        sends the request becomes the owner — the claim takes the caller's own id and there is no
+        on-behalf-of field — and an id is permanent, so that is not something anybody can correct
+        afterwards. It has to be handed over instead: they add you as an owner, you mint your own
+        token, and only then do they remove themselves. That needs you to have signed in here at
+        least once anyway, so signing in and claiming it yourself is strictly less work.
+      </p>
+    {{end}}
   </li>
 
   <li>
     <strong>Mint a scoped token.</strong>
-    On <a href="/account">your account</a>, mint a personal access token with
-    <code>plugin:publish</code> and nothing else, <strong>pinned to that one plugin id</strong>. The
-    pin is the half that contains a leak: a token stolen from one repository's CI can publish to one
-    plugin.
-    <p class="muted">
-      The secret is shown exactly once and is never recoverable — what is stored is a keyed hash of
-      it. If you lose it, revoke it and mint another.
-    </p>
+    {{/* .HasAccountPage AND NOT .CanClaim: the two come apart. A build with sign-in and nothing to
+         claim through serves /account and mints tokens perfectly well, so this step is real there
+         even though the one above it is not. Gating both on the same flag would print one of the
+         two wrong sentences on that instance. */}}
+    {{if .HasAccountPage}}
+      On <a href="/account">your account</a>, mint a personal access token with
+      <code>plugin:publish</code> and nothing else, <strong>pinned to that one plugin id</strong>.
+      The pin is the half that contains a leak: a token stolen from one repository's CI can publish
+      to one plugin.
+      <p class="muted">
+        The secret is shown exactly once and is never recoverable — what is stored is a keyed hash
+        of it. If you lose it, revoke it and mint another.
+      </p>
+    {{else}}
+      <strong>There is no account page on this instance</strong>, so there is nowhere here to mint
+      one: a publish credential comes from whoever operates the registry. Ask them for a token
+      carrying <code>plugin:publish</code> and pinned to your plugin id — the pin is the half that
+      contains a leak, so it is worth asking for.
+    {{end}}
   </li>
 
   <li>

@@ -64,10 +64,27 @@ func (s ReleaseState) String() string { return string(s) }
 var (
 	// ErrNotPublishable is the caller having no grant on the plugin, OR the plugin not existing.
 	//
-	// ONE ERROR FOR BOTH, deliberately. Telling somebody "that plugin exists and is not yours"
-	// enumerates the registry's claimed ids for anybody with a wordlist, and the ids are permanent
-	// — so it also tells a squatter exactly which names are worth waiting for. The settings page
-	// already answers this way; the API answers the same way for the same reason.
+	// ONE ERROR FOR BOTH, deliberately, and it is one error in the DOMAIN and not merely one
+	// sentence at the edge: there is no branch here that a later change could surface. Telling
+	// somebody "that plugin exists and is not yours" enumerates the registry's claimed ids for
+	// anybody with a wordlist, and the ids are permanent — so it also tells a squatter exactly
+	// which names are worth waiting for. The settings page already answers this way; the API
+	// answers the same way for the same reason.
+	//
+	// SAYING "NOBODY HAS CLAIMED THAT ONE" IS THE SAME LEAK WEARING THE OTHER FACE, and this file
+	// briefly did it. If an unheld id is answered one way when it is free and another way when it
+	// is held, then the second answer PROVES the id is somebody's, and an unpinned publish token
+	// classifies a wordlist for free. The argument that talked us into it was that
+	// POST /api/v1/plugins already answers "taken or not" to any signed-in account. It does not,
+	// not usefully: its negative answer is a 201 that PERMANENTLY CLAIMS THE ID, which is a
+	// side effect nobody probing a wordlist wants and one that leaves an audit row per attempt.
+	// The public directory publishes only the COUNT of unlisted claims, never which. So the
+	// hidden set really is hidden, and it stays that way.
+	//
+	// What the author who met this actually needed was never per-id: it was "claiming is a
+	// separate, session-only step you may have skipped". That is a fact about how this registry
+	// works, it is the same for every id, and internal/api says it in this refusal unconditionally
+	// — see publishProblem, and the gate that asserts the two situations answer identically.
 	ErrNotPublishable = errors.New("no such plugin, or you do not hold it")
 
 	// ErrGitHubIdentityRequired is an account with no identity from a provider that may publish.
@@ -685,6 +702,9 @@ func (p *Publisher) checkAuthority(ctx context.Context, req Request) error {
 	})
 	switch {
 	case errors.Is(err, store.ErrNoRows):
+		// NO SECOND LOOKUP. Whether the plugin row exists is deliberately not asked: a question
+		// nothing asks is a question no later refactor can start answering in the response. See
+		// ErrNotPublishable.
 		return ErrNotPublishable
 	case err != nil:
 		return fmt.Errorf("check ownership of %s: %w", req.Submission.PluginID, err)

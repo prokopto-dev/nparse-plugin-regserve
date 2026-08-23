@@ -95,7 +95,10 @@
   fieldset { border: 1px solid var(--line); border-radius: 6px; padding: 1rem; margin: 0 0 1rem; }
   legend { padding: 0 .4rem; font-weight: 600; font-size: .9rem; }
   label { display: block; margin: .6rem 0 .2rem; font-size: .9rem; }
-  input[type=text], input[type=search], select {
+  /* type=url is in this list because the claim form has one. A field the stylesheet does not
+     cover keeps the browser's default white background, which in dark mode is a lit box in the
+     middle of a dark form. */
+  input[type=text], input[type=search], input[type=url], select {
          padding: .4rem .5rem; border: 1px solid var(--field); border-radius: 4px;
          background: var(--bg); color: var(--fg); min-width: 18rem; max-width: 100%; }
   button { padding: .45rem .9rem; border: 1px solid var(--plate-line); border-radius: 4px;

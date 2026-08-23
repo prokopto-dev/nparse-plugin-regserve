@@ -47,6 +47,17 @@ const (
 	PathRevokeToken    = "/account/tokens/{id}/revoke"
 	PathPluginSettings = "/plugins/{id}/settings"
 	PathPluginOwners   = "/plugins/{id}/owners"
+
+	// PathClaimPlugin is the browser form that registers a plugin id. It sits under /account and
+	// not at /plugins for the reason the token forms do: it is a form on the account surface, and
+	// the account surface is the only place a capability-floor operation can be performed at all.
+	//
+	// It is a SECOND door onto the same act as POST /api/v1/plugins, not a replacement for it. The
+	// JSON endpoint is the contract; this is the form, and both go through the same Claimer and
+	// the same Floor declaration. What existed before was only the first, which is a
+	// session-only operation with no session-shaped way to reach it — so the answer to "how do I
+	// claim an id" was "send the request yourself", and the author this shipped for did not.
+	PathClaimPlugin = "/account/plugins"
 )
 
 // tagAccount groups the browser pages in the document, away from the API operations.
@@ -82,6 +93,12 @@ type WebDeps struct {
 	Ownership OwnershipService
 	Providers *identity.Registry
 
+	// Claimer registers plugin ids. NIL MEANS THE FORM IS NOT REGISTERED AND NOT RENDERED — the
+	// same principle every other optional dependency here follows. A page that offered a form
+	// posting to a route this build does not serve would be an on-ramp ending in a 404, which is
+	// the exact failure this form exists to remove.
+	Claimer Claimer
+
 	// Queue and Reviewers back the review pages, and are needed TOGETHER for the reason the JSON
 	// API needs them together: a reviewer-only route on a build that cannot say who reviews is a
 	// wiring bug worth making unrepresentable rather than answering 503 for.
@@ -91,6 +108,10 @@ type WebDeps struct {
 	Queue     ReviewQueue
 	Reviewers ReviewerCheck
 }
+
+// Claimer is declared in plugins.go, next to the JSON endpoint that was its first consumer. The
+// account surface takes the same interface rather than a second spelling of it: one act, one
+// service, two doors.
 
 // OwnershipService is the part of internal/ownership the pages use.
 type OwnershipService interface {
@@ -122,6 +143,22 @@ type pageData struct {
 	NewToken  string
 	Plugin    *ownership.Plugin
 	Owners    []ownership.Owner
+
+	// CanClaim decides whether a page offers the claim form, and HasAccountPage whether it may
+	// send a reader to /account at all. Both are WIRING and not authorisation — every session may
+	// claim an id — and both are false only where the routes in question are not registered.
+	//
+	// The public on-ramp needs the second as well as the first: an instance with sign-in and no
+	// Claimer serves /account and mints tokens and cannot claim an id, so "there is no account
+	// page here" and "you cannot claim here" are different sentences and it must not print the
+	// wrong one.
+	CanClaim       bool
+	HasAccountPage bool
+
+	// HasClaimEndpoint is whether POST /api/v1/plugins is served AND reachable. The public
+	// on-ramp needs it as a third state: a build can serve that endpoint with no account page at
+	// all, and telling its readers there is no way to claim an id would be false.
+	HasClaimEndpoint bool
 
 	// CanManageOwners gates the owner forms. A maintainer holds the plugin and may publish to it,
 	// and may not change who holds it — so the page does not offer controls the service will
@@ -175,6 +212,13 @@ func registerWeb(api huma.API, deps WebDeps) {
 	registerAccountPage(api, deps)
 	registerTokenForms(api, deps)
 	registerPluginPages(api, deps)
+
+	// Registered only when there is something to claim through, and the page asks the same
+	// question before it renders the form. Both read deps.Claimer, so the form and the route
+	// cannot disagree about whether this build can claim an id.
+	if deps.Claimer != nil {
+		registerClaimForm(api, deps)
+	}
 
 	// Both or neither, exactly as the JSON API's review routes are wired: a reviewer-only page on
 	// a build that cannot answer "is this account a reviewer" is a page the middleware refuses
@@ -424,6 +468,89 @@ type ownersInput struct {
 	RawBody []byte `contentType:"application/x-www-form-urlencoded"`
 }
 
+// registerClaimForm wires the browser form that registers a plugin id.
+//
+// THE SAME FLOOR AS THE JSON ENDPOINT, from the same catalogue permission: session-only, no scope,
+// no token, ever. A form is not a softer door — it is the door the floor always implied and never
+// had. ADR-0005's argument is that a deployment credential must not be able to grow its own reach,
+// and that argument is untouched by there being a text box.
+func registerClaimForm(api huma.API, deps WebDeps) {
+	register(api, Floor("plugin.claim"), huma.Operation{
+		// NOT `claimPlugin`: that is the JSON endpoint's OperationID, it is an SDK method name,
+		// and OAPI001 requires ids to be unique. This one is the form post.
+		OperationID:  "submitPluginClaim",
+		MaxBodyBytes: maxFormBytes,
+		Method:       http.MethodPost,
+		Path:         PathClaimPlugin,
+		Summary:      "Claim a plugin id",
+		Description: "An HTML form post, and the browser half of `POST /api/v1/plugins`. " +
+			"Capability-floor: claiming is session-only, so no personal access token can reach " +
+			"either door, however scoped.\n\n" +
+			"**Ids are first-come, permanent and never recycled.** Claiming does not list " +
+			"anything: the first release of a new id always goes to human review.",
+		Tags:      []string{tagAccount},
+		Errors:    []int{http.StatusUnauthorized, http.StatusForbidden},
+		Responses: redirectResponses("Your account page."),
+	}, func(ctx context.Context, in *claimFormInput) (*redirectOutput, error) {
+		form := parseForm(in.RawBody)
+		p, err := requireFormPrincipal(ctx, deps, form.Get(auth.CSRFFieldName))
+		if err != nil {
+			return nil, err
+		}
+
+		id, err := core.ParsePluginID(strings.TrimSpace(form.Get("id")))
+		if err != nil {
+			// Refused before the claim is built, and the page says what an id looks like rather
+			// than echoing what was typed. The rule itself is core's, so this cannot drift from
+			// what the JSON endpoint accepts.
+			return redirectTo(PathAccountPage, msgPluginIDInvalid), nil
+		}
+
+		claim := ownership.Claim{
+			PluginID:    id,
+			Name:        form.Get("name"),
+			Description: form.Get("description"),
+			Author:      form.Get("author"),
+			Homepage:    form.Get("homepage"),
+		}
+
+		claimErr := deps.Claimer.ClaimID(ctx, claim, p.AccountID)
+		if claimErr == nil {
+			// The prefix of an audit trail rather than a celebration: an id is permanent, so a
+			// claim is the one action on this page nobody can undo.
+			slog.InfoContext(ctx, "plugin id claimed",
+				"account_id", p.AccountID, "plugin_id", id.String())
+		}
+		return redirectTo(PathAccountPage, claimMessage(ctx, claimErr)), nil
+	})
+}
+
+type claimFormInput struct {
+	RawBody []byte `contentType:"application/x-www-form-urlencoded"`
+}
+
+// claimMessage maps a claim failure onto a message code.
+//
+// A CODE, looked up in a fixed table, and never the error's own sentence: ownership.ErrBadListing
+// carries the field that was wrong, which is a fact about what the caller submitted, and prose in
+// a redirect is prose somebody can put in a link. The page says what a name and a homepage have to
+// be; it does not repeat what was typed.
+func claimMessage(ctx context.Context, err error) string {
+	switch {
+	case err == nil:
+		return msgPluginClaimed
+	case errors.Is(err, ownership.ErrAlreadyClaimed):
+		return msgPluginIDTaken
+	case errors.Is(err, core.ErrInvalidPluginID):
+		return msgPluginIDInvalid
+	case errors.Is(err, ownership.ErrBadListing):
+		return msgPluginDetailsInvalid
+	default:
+		slog.ErrorContext(ctx, "claim a plugin id", "error", err)
+		return msgPluginClaimFailed
+	}
+}
+
 // maxFormBytes caps a form post. Every field on these pages is a handle, a name, a plugin id or a
 // scope; 16 KiB is far above any of them and far below anything that could hurt.
 const maxFormBytes int64 = 16 * 1024
@@ -512,6 +639,7 @@ func accountData(ctx context.Context, deps WebDeps, p auth.Principal) (pageData,
 		Plugins:   plugins,
 		Tokens:    tokens,
 		Scopes:    options,
+		CanClaim:  deps.Claimer != nil,
 		// Whether to OFFER the queue, not whether it may be reached. Asked per request rather than
 		// resolved at sign-in, like every other reviewer check: an operator who adds a handle and
 		// redeploys should not need everybody to sign in again.
@@ -623,6 +751,15 @@ const (
 	// business, and saying so plainly is better than a generic refusal that reads as a bug.
 	msgOwnerRoleTooNarrow = "owner_role_too_narrow"
 
+	// Claiming an id. Each outcome is told apart because the actions they call for are different:
+	// a taken id needs a different id, a malformed one needs a correction, and a rejected listing
+	// needs a name or a homepage fixed.
+	msgPluginClaimed        = "plugin_claimed"
+	msgPluginIDTaken        = "plugin_id_taken"
+	msgPluginIDInvalid      = "plugin_id_invalid"
+	msgPluginDetailsInvalid = "plugin_details_invalid"
+	msgPluginClaimFailed    = "plugin_claim_failed"
+
 	// The review surface. Each is a distinct outcome a reviewer needs told apart — in particular
 	// "re-verified" and "still could not be fetched", which a single "done" would collapse into
 	// the confident mistake this whole service is designed against.
@@ -658,6 +795,32 @@ var messages = map[string]struct {
 		text:    "You hold this plugin as a maintainer. Only an owner can change who holds it.",
 		problem: true,
 	},
+
+	msgPluginClaimed: {
+		text: "That id is yours, permanently. It is not listed yet: publish a release to it, and " +
+			"the first release of a new id always goes to human review. Mint a token pinned to " +
+			"it below and your pipeline can publish.",
+	},
+	msgPluginIDTaken: {
+		// It says nothing about WHO holds it. The list of listed ids is public; which account
+		// holds an unlisted one is not, and answering that would make this form a way to map ids
+		// to people.
+		text: "That plugin id is already claimed. Ids are first-come and permanent, so nobody " +
+			"can release one — pick another.",
+		problem: true,
+	},
+	msgPluginIDInvalid: {
+		text: "A plugin id starts with a lowercase letter and is 2 to 40 characters of lowercase " +
+			"letters, digits, hyphens and underscores. Use the id your plugin's manifest declares.",
+		problem: true,
+	},
+	msgPluginDetailsInvalid: {
+		text: "Those details cannot be stored. A name is required, a homepage must be an " +
+			"ordinary https URL, and none of the fields may carry control characters — every one " +
+			"of them is rendered inside a desktop application.",
+		problem: true,
+	},
+	msgPluginClaimFailed: {text: "That id could not be claimed.", problem: true},
 
 	msgReleaseDecided: {text: "Recorded. The audit trail below says what happened and when."},
 	msgReleaseStillUnverified: {

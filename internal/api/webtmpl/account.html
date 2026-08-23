@@ -19,11 +19,76 @@
     </tbody>
   </table>
 {{else}}
+  {{/* THE EMPTY STATE IS WHERE A FIRST-TIME AUTHOR LANDS, and it used to explain only the
+       migration from owners.json — which told somebody who had never been in that file to go and
+       report a problem, when what they needed was the form below. The migration note is still
+       true and is still here; it is no longer the whole answer.
+
+       GATED ON .CanClaim, like the form itself. An instance wired without a Claimer serves no
+       claim form and no POST /api/v1/plugins, and copy that sent somebody looking for a form that
+       is not there would rebuild the dead end this page exists to remove — in the one
+       configuration nobody would think to check. */}}
+  {{if .CanClaim}}
+    <p class="muted">
+      You do not own any plugins yet. <strong>Claim an id below</strong> — that is the step that
+      makes a plugin yours, and it is the one a publish token cannot do for you.
+    </p>
+  {{else}}
+    <p class="warn">
+      You do not own any plugins yet, and
+      <strong>this instance cannot register new plugin ids</strong>: it is running without the
+      service that claims them, so there is no form here and <code>POST /api/v1/plugins</code> is
+      not served either. That is this deployment's configuration and not something to work around
+      from this page — ask whoever runs it.
+    </p>
+  {{end}}
   <p class="muted">
-    You do not own any plugins yet. Ownership of the plugins carried over from the static registry
-    was migrated from <code>owners.json</code>; if one of those is yours and is not here, that is
-    worth reporting rather than working around.
+    Ownership of the plugins carried over from the static registry was migrated from
+    <code>owners.json</code>. If one of those is yours and is not here, that is worth reporting
+    rather than claiming the id again: it is already claimed, and ids are never reassigned.
   </p>
+{{end}}
+
+{{if .CanClaim}}
+<form method="post" action="/account/plugins">
+  <fieldset>
+    <legend>Claim a plugin id</legend>
+    <input type="hidden" name="{{.CSRFField}}" value="{{.CSRFToken}}">
+
+    <p class="warn">
+      <strong>An id is first come, permanent, and never recycled.</strong> It names your plugin in
+      every installed copy on every user's machine, so it is never released or reassigned — not
+      even after a delisting, and not by us. Claim the id your plugin's manifest declares, and
+      check the spelling before you submit.
+    </p>
+
+    <label for="claim_id">Plugin id</label>
+    <input type="text" id="claim_id" name="id" placeholder="floating-combat-text"
+           pattern="[a-z][a-z0-9_-]{1,39}" maxlength="40" required>
+
+    <label for="claim_name">Name</label>
+    <input type="text" id="claim_name" name="name" placeholder="Floating Combat Text"
+           maxlength="120" required>
+
+    <label for="claim_description">Description</label>
+    <input type="text" id="claim_description" name="description" maxlength="500">
+
+    <label for="claim_author">Author</label>
+    <input type="text" id="claim_author" name="author" maxlength="120">
+
+    <label for="claim_homepage">Homepage</label>
+    <input type="url" id="claim_homepage" name="homepage" maxlength="500"
+           placeholder="https://github.com/you/your-plugin">
+
+    <p><button type="submit">Claim this id</button></p>
+    <p class="muted">
+      Claiming registers the id to your account and makes you its owner. <strong>It does not list
+      anything.</strong> Your plugin appears in the index once a release of it has been approved,
+      and the first release of a new id always goes to human review — whatever your trust level.
+      The whole path is on <a href="/publish">the publishing walkthrough</a>.
+    </p>
+  </fieldset>
+</form>
 {{end}}
 
 <h2>Personal access tokens</h2>
@@ -41,10 +106,30 @@
 {{end}}
 
 <p class="muted">
-  A token is a deployment credential for one plugin's pipeline. It cannot mint another token,
-  change who owns a plugin, or set a trust level — those need a browser session, so a token that
-  leaks out of a CI log stays a publish credential rather than becoming your account.
+  A token is a deployment credential for one plugin's pipeline. It cannot
+  <strong>claim a plugin id</strong>, mint another token, change who owns a plugin, or set a trust
+  level — those need a browser session, so a token that leaks out of a CI log stays a publish
+  credential rather than becoming your account.
 </p>
+{{if not .Plugins}}
+  {{/* A token minted here would be valid, correctly scoped, and able to publish to nothing: the
+       server answers 404 on every publish, because ownership is checked per request and this
+       account holds no plugin. That is exactly the dead end this page shipped with — a credential
+       handed over without a word about the missing step. Saying it costs one sentence.
+
+       The FIX for it depends on whether this instance can claim at all, so the sentence that
+       names one is gated the same way the form is. */}}
+  <p class="warn">
+    <strong>You own no plugins yet, so a token minted now could publish nothing.</strong>
+    A publish to an id you do not hold is answered "no such plugin", whatever the token carries.
+    {{if .CanClaim}}
+      Claim your id first, above.
+    {{else}}
+      Ids cannot be claimed on this instance, so there is nothing a token minted here could
+      publish to until somebody grants you a plugin.
+    {{end}}
+  </p>
+{{end}}
 
 {{if .Tokens}}
   <table>
@@ -90,6 +175,12 @@
       <option value="">any plugin you own</option>
       {{range .Plugins}}<option value="{{.ID}}">{{.ID}}</option>{{end}}
     </select>
+    {{if not .Plugins}}
+      <p class="muted">
+        There is nothing to pin to yet — "any plugin you own" is currently no plugins.
+        {{if .CanClaim}}Claim an id above first.{{end}}
+      </p>
+    {{end}}
 
     <label>Scopes</label>
     {{range .Scopes}}
