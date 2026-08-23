@@ -245,7 +245,7 @@ func New(cfg Config) http.Handler {
 		cfg.Clock = clock.System{}
 	}
 
-	mux := http.NewServeMux()
+	mux := newRouteMux()
 	api := newHumaAPI(mux)
 
 	// Installed before any route is registered, and unconditionally. It enforces the Access every
@@ -318,6 +318,12 @@ func New(cfg Config) http.Handler {
 		}
 	}
 
+	// Last, and only once every route is on: what answers a request that matched none of them.
+	// It reads the registrations above to build each 405's Allow header, so it cannot run before
+	// them — see routeMux, and note that without it `GET /` is a catch-all that answers the home
+	// page to every path this service does not have.
+	mux.installFallbacks()
+
 	// Plain http.Handler wrappers rather than Huma middleware, because they must also cover the
 	// responses Huma never sees: the 404 and 405 the mux answers by itself. A request id that
 	// covers only the routes that matched is a request id nobody can quote in a bug report — and a
@@ -355,7 +361,7 @@ func indexURL(publicURL string) string {
 //
 // So: the format map is a literal with JSON and nothing else, the transformer list stays empty,
 // and the three doc paths stay unset. Gate SCHEMA001 asserts the result over real HTTP responses.
-func newHumaAPI(mux *http.ServeMux) huma.API {
+func newHumaAPI(mux humago.Mux) huma.API {
 	cfg := huma.Config{
 		OpenAPI: &huma.OpenAPI{
 			OpenAPI: "3.1.0",

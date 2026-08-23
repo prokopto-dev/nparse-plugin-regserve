@@ -26,11 +26,17 @@ type failingReviewers struct{ err error }
 
 func (f failingReviewers) IsReviewer(context.Context, string) (bool, error) { return false, f.err }
 
+// Configured is TRUE for both doubles below: these tests are about the per-request check, and an
+// unconfigured registry would be a different subject.
+func (failingReviewers) Configured() bool { return true }
+
 // alwaysReviewers answers yes, for the case that proves a refusal is about the check and not about
 // the route being unreachable.
 type alwaysReviewers struct{}
 
 func (alwaysReviewers) IsReviewer(context.Context, string) (bool, error) { return true, nil }
+
+func (alwaysReviewers) Configured() bool { return true }
 
 func TestReviewerCheck_WhenItCannotAnswer_TheRequestIsRefused(t *testing.T) {
 	t.Parallel()

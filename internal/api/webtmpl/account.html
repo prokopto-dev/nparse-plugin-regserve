@@ -1,4 +1,36 @@
 {{define "content"}}
+{{/* A fact about the DEPLOYMENT, not about the reader, and the one this page could not say. A
+     registry with nobody named in REGSERVE_REVIEWERS still accepts and verifies releases, and then
+     cannot decide the ones that reached review -- and from here that looked exactly like a registry
+     whose queue happens to be empty. It is shown to every signed-in account rather than to
+     operators only, because the person it costs most is whoever is waiting on a release. Who the
+     reviewers are, and how many, is deliberately not said either way.
+
+     It says "any release that reaches human review" and not "nothing can be approved", because the
+     second is false: release.Publisher.decide publishes a trusted owner's clean version bump of an
+     already-listed plugin with no human involved, and that path never consults the reviewer set. */}}
+{{if .NoReviewers}}
+  <div class="notice problem">
+    <p>
+      <strong>This registry has no reviewers configured, so any release that reaches human review
+      will wait indefinitely.</strong>
+    </p>
+    <p class="muted">
+      That is most of them: a plugin’s first release always goes to a person, and so does anything a
+      quarantine rule flagged or anything from a publisher this registry has not marked trusted.
+      Those releases are still recorded and their artifacts still downloaded and hashed — they
+      simply queue, with nobody able to decide them. What still reaches the index on its own is a
+      trusted owner’s clean version bump of an already-listed plugin, and marking somebody trusted
+      is itself a reviewer-only action.
+    </p>
+    <p class="muted">
+      Moderation comes from control of the deployment and from nothing else, so the fix is to set
+      <code>REGSERVE_REVIEWERS</code> to a comma-separated list of GitHub handles and restart the
+      service. There is deliberately no way to grant it from inside here.
+    </p>
+  </div>
+{{end}}
+
 <h2>Your plugins</h2>
 {{if .Plugins}}
   <table>

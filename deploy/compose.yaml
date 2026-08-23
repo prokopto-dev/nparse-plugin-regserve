@@ -53,10 +53,15 @@ services:
       REGSERVE_GITHUB_CLIENT_SECRET: ${REGSERVE_GITHUB_CLIENT_SECRET:-}
       # Who may approve what this registry lists. Comma-separated GitHub handles.
       #
-      # Empty means NOBODY can approve -- never everybody. Releases will publish, verify, and wait
-      # in the queue for ever, and the server says so at boot. There is deliberately no other way
-      # to grant this: the authority to decide what every installed client downloads comes from
+      # Empty means NOBODY can decide a release that reached human review -- never everybody. Such
+      # a release publishes, verifies and then waits in the queue for ever, and the server WARNs at
+      # boot and says so on every signed-in account page. There is deliberately no other way to
+      # grant this: the authority to decide what every installed client downloads comes from
       # control of this file.
+      #
+      # It is not "nothing can be published": a trusted owner's clean version bump of an
+      # already-approved plugin goes out with no human, and that path never reads this list. See
+      # docs/operations/deployment.md.
       REGSERVE_REVIEWERS: ${REGSERVE_REVIEWERS:-}
 
     volumes:

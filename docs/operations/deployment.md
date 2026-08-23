@@ -92,9 +92,27 @@ GitHub repository and a merge button.
 
 Three things follow, and each has bitten somebody somewhere:
 
-- **Unset means nobody can approve anything.** Not "everybody" — nobody. Releases will publish,
-  verify, and sit in the queue for ever. The server says so at boot:
-  `releases are waiting for review and no reviewers are configured`.
+- **Unset means nobody can decide anything that reaches review.** Not "everybody" — nobody. A
+  release that goes to a human is recorded and verified and then sits in the queue for ever.
+  `compose.yaml` defaults it to empty (`${REGSERVE_REVIEWERS:-}`), so this is the state a deployment
+  is in until somebody sets it, and it is announced twice:
+  - **At boot, as a `WARN`,** whether or not anything is waiting:
+    `no reviewers are configured; any release that reaches human review will stay pending`, or
+    `releases are waiting for review and no reviewers are configured` once there is a backlog. Both
+    carry `needs=REGSERVE_REVIEWERS`. The first used to be an `INFO`, which is where this hid: an
+    empty queue is not evidence the setting is fine, it is what an unreachable queue looks like.
+  - **On the account page of every signed-in visitor,** because an author waiting on a release
+    needs it more than the operator does. The page says the registry has no reviewers and names the
+    variable. It never says who the reviewers are, or how many — an empty list is a fault worth
+    reporting; a populated one is a list of people to work through.
+
+  **It is not "nothing can ever be published".** Trust levels are the exception and they are narrow:
+  a `trusted` owner's version bump of an *already-approved* plugin, fetched and re-hashed clean with
+  no quarantine rule triggered, is published by the server with no human involved and without
+  consulting this list. Everything else — every first release of an id, anything a rule flagged,
+  anything from an untrusted publisher — waits. And since raising somebody to `trusted` is itself
+  reviewer-only, a registry that has *never* had a reviewer configured cannot reach that exception
+  at all; one that had reviewers and lost the variable keeps whatever tiers it already granted.
 - **A handle grants nothing until that person has signed in here at least once.** The check
   resolves against a proven `identity` row, so a typo grants nobody rather than granting whoever
   registers that name next.
@@ -108,6 +126,11 @@ including a reviewer's own. Moderation is a browser-and-session operation only.
 
 A configured reviewer signs in and gets a **review queue** link in the page header; the pages are at
 `/review` and `/review/releases/{id}`, served by the same binary as everything else.
+
+**If the link is not there, the account page says which of the two reasons applies:** this account
+is not one of the configured reviewers, or the registry has no configured reviewers at all. Those
+are different problems — the first is somebody else's account to fix, the second is this file — and
+until the page distinguished them, both looked like a queue that happened to be empty.
 
 The queue lists what is waiting, oldest first. Opening a release shows **why it is there** — every
 quarantine rule that fired when it was submitted, read from the audit row the publish wrote rather
@@ -315,7 +338,9 @@ report an empty registry to every client — check the seed mount before anythin
    against the host's `.env` (`docker compose config -q`, which fails on a malformed file *and* on
    any required variable the `.env` is missing), and adopts it — keeping `compose.yaml.prev`.
 4. It asserts `/opt/regserve/seed.json` exists and is non-empty, snapshots `regserve.db` into
-   `/opt/regserve/backups/pre-<timestamp>.db`, pins `REGSERVE_IMAGE` in `.env` to the exact image,
+   `/opt/regserve/backups/pre-<timestamp>.db` **with `VACUUM INTO`, checking the result and stopping
+   the deploy if it is missing, empty or fails `integrity_check`**, pins `REGSERVE_IMAGE` in `.env`
+   to the exact image,
    pulls, and restarts the container.
 5. It polls `/healthz`, then `/readyz`, then fetches `/index.json` and asserts it parses and
    declares `schema_version: 1`.
@@ -442,14 +467,47 @@ against columns it does not know about. That refusal is deliberate and is the si
 snapshot the deploy took immediately before the migration ran:
 
 ```bash
-# On the droplet, as deploy:
+# On the droplet, as deploy. Run these in order: the server does not come back until step 4 has
+# said the restored database is sound.
 cd /opt/regserve
+
+# 1. Stop the server. It holds -wal and -shm and will write them back over anything you do.
 docker compose stop regserve
-docker run --rm -v regserve_regserve-data:/data -v "$PWD/backups:/backups" alpine:3 \
-  sh -c "cp /backups/pre-<timestamp>.db /data/regserve.db"
+
+# 2. Put the snapshot in place, and remove the WAL and shared-memory files that belong to the
+#    database you just replaced.
+docker run --rm -v regserve_regserve-data:/data -v "$PWD/backups:/backups" alpine:3 sh -euc '
+  cp /backups/pre-<timestamp>.db /data/regserve.db
+  rm -f /data/regserve.db-wal /data/regserve.db-shm
+'
+
+# 3. Point .env at the image that goes with this schema.
 sed -i "s|^REGSERVE_IMAGE=.*|REGSERVE_IMAGE=ghcr.io/prokopto-dev/nparse-plugin-regserve:<old>|" .env
+
+# 4. VALIDATE BEFORE STARTING. `test ... = ok` is the check: integrity_check REPORTS corruption on
+#    stdout and still exits 0, so running it and reading the output by eye is not one. This exits
+#    non-zero and leaves the server stopped if the restored file is not sound.
+docker run --rm -v regserve_regserve-data:/data alpine:3 sh -euc '
+  apk add --no-cache sqlite >/dev/null
+  test "$(sqlite3 -bail /data/regserve.db "PRAGMA integrity_check;")" = ok
+  echo "plugins restored: $(sqlite3 -bail /data/regserve.db "SELECT count(*) FROM plugin;")"
+'
+
+# 5. Only now.
 docker compose up -d regserve
 ```
+
+**Deleting `-wal` and `-shm` is not tidying, it is the restore.** They belong to the database you
+just replaced. Left in place, SQLite finds a WAL whose header matches nothing and either replays the
+*old* database's committed frames on top of the restored file or refuses to open it — either way you
+have not restored what you thought you had. Stopping the container first is the same point from the
+other end: a running server holds those files.
+
+**Step 4 comes before step 5 deliberately.** A restore is done under pressure, and the two ways it
+goes wrong — the wrong snapshot, or a snapshot that is not sound — are both cheap to find while the
+service is still down and expensive to find after it is up and serving. Compare against `ok`
+explicitly: `PRAGMA integrity_check` prints what it found and exits 0 either way, so `sqlite3 -bail`
+does **not** fail on a corrupt database. A check that cannot fail is not a check.
 
 ## Downtime, and why it is acceptable
 
@@ -473,17 +531,36 @@ Add a daily one:
 # /etc/cron.daily/regserve-backup  (root, chmod 755)
 #!/bin/sh
 set -eu
+stamp="$(date -u +%Y%m%d)"
 docker run --rm -v regserve_regserve-data:/data -v /opt/regserve/backups:/backups alpine:3 \
-  sh -c "cp /data/regserve.db /backups/daily-$(date -u +%Y%m%d).db"
+  sh -euc "
+    apk add --no-cache sqlite >/dev/null
+    # VACUUM INTO REFUSES A DESTINATION THAT EXISTS. One interrupted run leaves .daily.tmp behind,
+    # and without this every backup after it fails for ever -- a cron job that stops working and
+    # keeps exiting the same way. The deploy path clears its own temporary file for this reason.
+    rm -f /backups/.daily.tmp
+    sqlite3 -bail /data/regserve.db \"VACUUM INTO '/backups/.daily.tmp';\"
+    test \"\$(sqlite3 -bail /backups/.daily.tmp 'PRAGMA integrity_check;')\" = ok
+  "
+mv /opt/regserve/backups/.daily.tmp "/opt/regserve/backups/daily-${stamp}.db"
 find /opt/regserve/backups -name 'daily-*.db' -mtime +30 -delete
 ```
 
 Copy them off the droplet. A backup on the same disk as the database survives a bad migration and
 nothing else — not a failed droplet, not a deleted volume, not the droplet being destroyed.
 
-> `cp` of a live SQLite file in WAL mode can capture a torn copy. It is good enough for a service
-> with this write rate, and the honest fix once it matters is `sqlite3 .backup` or `VACUUM INTO`
-> from inside the container. Recorded here rather than glossed over.
+> **`VACUUM INTO`, never `cp`, and this used to say otherwise.** The server runs SQLite in WAL mode
+> ([`internal/store`](../../internal/store/store.go)), so a committed transaction lives in
+> `regserve.db-wal` until something checkpoints it. Copying the main file out from under the running
+> container produces a database that opens cleanly, passes `PRAGMA integrity_check` and is **missing
+> every write since the last checkpoint** — which is the worst kind of wrong, because nothing about
+> the file says so. `VACUUM INTO` reads one consistent snapshot inside a read transaction and takes
+> the WAL with it. Gate `BACKUP001` holds both halves: `internal/store/backup_test.go` proves the
+> difference against a live writer, and `test/repo/backup_test.go` asserts the deploy still does it
+> that way.
+>
+> The temporary name and the rename are the same care the deploy takes: a half-written snapshot must
+> never sit in `backups/` under a name that looks like a finished one.
 
 ## What is deliberately not here
 

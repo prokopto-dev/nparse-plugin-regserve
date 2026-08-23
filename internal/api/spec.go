@@ -168,6 +168,11 @@ type unavailableReviewers struct{}
 
 func (unavailableReviewers) IsReviewer(context.Context, string) (bool, error) { return false, nil }
 
+// Configured answers TRUE, which is the opposite direction from IsReviewer and is deliberate: the
+// spec generator is not a deployment, and a document build must not render the "this registry has
+// no reviewers" warning as though it had inspected one.
+func (unavailableReviewers) Configured() bool { return true }
+
 type unavailableTrust struct{}
 
 func (unavailableTrust) SetTrust(context.Context, string, release.Trust, string, string) error {
