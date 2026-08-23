@@ -155,6 +155,11 @@ type pageData struct {
 	CanClaim       bool
 	HasAccountPage bool
 
+	// HasClaimEndpoint is whether POST /api/v1/plugins is served AND reachable. The public
+	// on-ramp needs it as a third state: a build can serve that endpoint with no account page at
+	// all, and telling its readers there is no way to claim an id would be false.
+	HasClaimEndpoint bool
+
 	// CanManageOwners gates the owner forms. A maintainer holds the plugin and may publish to it,
 	// and may not change who holds it — so the page does not offer controls the service will
 	// refuse. Both this and the refusal read the same fact through Role.CanManageOwners.

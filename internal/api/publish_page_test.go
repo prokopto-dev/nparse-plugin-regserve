@@ -183,65 +183,115 @@ func claimCapable() api.Config {
 
 // TestPublishGuide_TellsAReaderOnlyWhatThisBuildCanDo.
 //
-// THREE BUILDS, THREE DIFFERENT WALKTHROUGHS, and the assertions are as much about what is ABSENT
-// as about what is there. That is the correction: an earlier version of this page kept the "on
-// your account, mint a token" instruction unconditional and merely APPENDED a note saying there
-// was no account page — so a publisher-only reader was sent to a dead destination and then told
-// it was dead. The test only checked for the appended sentence, so it blessed the contradiction.
+// FOUR WIRING STATES, FOUR WALKTHROUGHS, and the assertions are as much about what is ABSENT as
+// about what is there. Both halves of that are corrections:
 //
-// A test for a conditional page has to assert the branch NOT taken is gone.
+//   - an earlier version kept "on your account, mint a token" unconditional and merely APPENDED a
+//     note saying there was no account page, so a publisher-only reader was sent to a dead
+//     destination and then told it was dead. The test checked only for the appended sentence, so
+//     it blessed the contradiction. A test for a conditional page has to assert the branch not
+//     taken is GONE;
+//   - the next version collapsed the claim endpoint into the claim form, so an API-first build —
+//     registerPlugins is gated on Claimer ALONE — was told ids could not be claimed there while
+//     POST /api/v1/plugins sat answering. Naming a door that is not there and denying one that is
+//     are the same mistake with the sign flipped.
+//
+// The four rows are wirings runServe can actually produce. A fifth would be a fifth row.
 func TestPublishGuide_TellsAReaderOnlyWhatThisBuildCanDo(t *testing.T) {
 	t.Parallel()
 
-	// The account surface and the claim form come apart, so all three states are real.
+	// Sign-in, a Claimer, and no account surface: the JSON endpoint is served and nothing else is.
+	apiFirst := claimCapable()
+	apiFirst.Tokens, apiFirst.Ownership = nil, nil
+
+	// The account surface with nothing to claim through: /account and the token forms are served,
+	// the claim form is not, and neither is the endpoint.
 	signInOnly := claimCapable()
 	signInOnly.Claimer = nil
 
-	publisherOnly := api.Config{Directory: directoryOf(testPlugin("alpha"))}
+	tests := []struct {
+		name string
+		cfg  api.Config
 
-	t.Run("a build that serves both tells the whole path", func(t *testing.T) {
-		t.Parallel()
+		wants    []string
+		wantsNot []string
+	}{
+		{
+			name: "a build that serves the form tells the whole path",
+			cfg:  claimCapable(),
+			wants: []string{
+				"/auth/github/login?next=/account",
+				"Claim a plugin id",
+				`On <a href="/account">your account</a>`,
+			},
+			wantsNot: []string{
+				"cannot be claimed on this instance",
+				"no account page on this instance",
+				"serves no claim form",
+			},
+		},
+		{
+			// THE ACCOUNT PAGE AND THE CLAIM FORM COME APART. /account is served here and the
+			// token step is real; only the step above it is not.
+			name: "a build with an account page and nothing to claim through still mints",
+			cfg:  signInOnly,
+			wants: []string{
+				"Ids cannot be claimed on this instance",
+				`On <a href="/account">your account</a>`,
+			},
+			wantsNot: []string{
+				"Claim a plugin id",
+				"no account page on this instance",
+				"POST /api/v1/plugins",
+			},
+		},
+		{
+			// AND THE CLAIM ENDPOINT AND THE ACCOUNT PAGE COME APART TOO, the other way round.
+			name: "an api-first build names the endpoint it actually serves",
+			cfg:  apiFirst,
+			wants: []string{
+				"serves no claim form",
+				"POST /api/v1/plugins",
+				"no account page on this instance",
+			},
+			wantsNot: []string{
+				"Ids cannot be claimed on this instance",
+				`On <a href="/account">your account</a>`,
+			},
+		},
+		{
+			name: "a publisher-only build sends nobody anywhere it does not serve",
+			cfg:  api.Config{Directory: directoryOf(testPlugin("alpha"))},
+			wants: []string{
+				"Ids cannot be claimed on this instance",
+				"no account page on this instance",
+				"whoever operates the registry",
+			},
+			wantsNot: []string{
+				`href="/account"`,
+				"/auth/github/login",
+				"Claim a plugin id",
+				"POST /api/v1/plugins",
+			},
+		},
+	}
 
-		body := string(browse(t, claimCapable(), api.PathPublish).body)
-		require.Contains(t, body, "/auth/github/login?next=/account")
-		require.Contains(t, body, "Claim a plugin id")
-		require.Contains(t, body, `On <a href="/account">your account</a>`)
-		require.NotContains(t, body, "cannot be claimed on this instance")
-		require.NotContains(t, body, "no account page on this instance")
-	})
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	t.Run("a build with sign-in and nothing to claim says so, and still mints", func(t *testing.T) {
-		t.Parallel()
-
-		// THE MIDDLE STATE, and the reason the page reads two flags rather than one. /account is
-		// served here and the token step is real — gating both on "can claim" would have printed
-		// "there is no account page" to a reader looking at one.
-		body := string(browse(t, signInOnly, api.PathPublish).body)
-		require.Contains(t, body, "Ids cannot be claimed on this instance")
-		require.NotContains(t, body, "Claim a plugin id",
-			"there is no form here to name")
-		require.Contains(t, body, `On <a href="/account">your account</a>`,
-			"the account page IS served on this build; the token step is real")
-		require.NotContains(t, body, "no account page on this instance")
-	})
-
-	t.Run("a publisher-only build sends nobody to an account page", func(t *testing.T) {
-		t.Parallel()
-
-		body := string(browse(t, publisherOnly, api.PathPublish).body)
-
-		// THE ABSENCE IS THE ASSERTION. A dead instruction followed by a correction is worse than
-		// either alone: the reader follows the first one.
-		require.NotContains(t, body, `href="/account"`,
-			"this build does not serve /account, so the walkthrough must not link to it")
-		require.NotContains(t, body, "/auth/github/login")
-		require.NotContains(t, body, "Claim a plugin id")
-
-		require.Contains(t, body, "Ids cannot be claimed on this instance")
-		require.Contains(t, body, "no account page on this instance")
-		require.Contains(t, body, "whoever operates the registry",
-			"and it names who can actually help, rather than going quiet")
-	})
+			body := string(browse(t, tc.cfg, api.PathPublish).body)
+			for _, want := range tc.wants {
+				require.Containsf(t, body, want, "this build has to say %q", want)
+			}
+			for _, unwanted := range tc.wantsNot {
+				// THE ABSENCE IS THE ASSERTION. A dead instruction followed by a correction is
+				// worse than either alone: the reader follows the first one.
+				require.NotContainsf(t, body, unwanted,
+					"this build must not say %q — it is not true here", unwanted)
+			}
+		})
+	}
 }
 
 // TestDirectory_LeadsToTheAuthorOnRamp — the gap this page was built to close.

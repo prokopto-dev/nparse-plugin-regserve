@@ -229,7 +229,7 @@ func TestPublishRelease_APublisherOnlyInstance_DoesNotSendAnybodyToAnAbsentAccou
 	require.NotContains(t, p.Detail, "sign in",
 		"there is nothing to sign in to")
 	require.Contains(t, p.Detail, "no such plugin, or you do not hold it")
-	require.Contains(t, p.Detail, "no way to claim one",
+	require.Contains(t, p.Detail, "no way to claim an id on this registry",
 		"an instance that cannot claim says so rather than going quiet")
 	require.Contains(t, p.Detail, "whoever operates it",
 		"and names who actually grants ownership here")
@@ -237,6 +237,43 @@ func TestPublishRelease_APublisherOnlyInstance_DoesNotSendAnybodyToAnAbsentAccou
 	// AND STILL IDENTICAL FOR BOTH IDS. The advice varies with the deployment, which every caller
 	// can see anyway; it must never vary with the plugin being asked about.
 	require.Equal(t, string(claimed.body), string(unclaimed.body))
+}
+
+// TestPublishRelease_AnAPIFirstInstance_NamesTheEndpointItActuallyServes.
+//
+// THE FOURTH WIRING STATE, and the one that showed both fallbacks could lie in the other
+// direction. registerPlugins is gated on Claimer ALONE, so a build with sign-in and a Claimer but
+// no Tokens or Ownership serves a perfectly usable session-only POST /api/v1/plugins and no
+// account page at all.
+//
+// Collapsing that into "no claim form" told its callers the registry had no way to claim an id,
+// while the endpoint sat there answering. Naming a door that is not there and denying one that is
+// are the same mistake with the sign flipped, and this is the gate on the second half.
+func TestPublishRelease_AnAPIFirstInstance_NamesTheEndpointItActuallyServes(t *testing.T) {
+	t.Parallel()
+
+	w := newPublishWorld(t, func(cfg *api.Config) {
+		// Sign-in and the claim endpoint stay; the account surface goes.
+		cfg.Tokens, cfg.Ownership = nil, nil
+	})
+
+	unclaimed := w.publishTo(t, "floating-combat-text", w.unpinnedToken, "1.9.2", "run-a")
+	claimed := w.publishTo(t, w.somebodyElses, w.unpinnedToken, "1.0.0", "run-b")
+	t.Logf("api-first refusal -> HTTP %d %s", unclaimed.status, unclaimed.body)
+
+	require.NotContains(t, string(w.get(t, "/account").body), "Personal access tokens",
+		"this build must not be serving the account surface, or the test proves nothing")
+
+	p := problemOf(t, unclaimed)
+	require.Contains(t, p.Detail, "POST /api/v1/plugins",
+		"the endpoint IS served here and is the only door; the refusal has to name it")
+	require.NotContains(t, p.Detail, "/account",
+		"there is no account page on this build")
+	require.NotContains(t, p.Detail, "no way to claim",
+		"there is a way; saying otherwise is the same dead end with the sign flipped")
+
+	require.Equal(t, string(claimed.body), string(unclaimed.body),
+		"and it still cannot classify an id")
 }
 
 // publishedRelease is the response body, decoded. It is written out here rather than reusing the

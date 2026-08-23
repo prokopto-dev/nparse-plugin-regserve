@@ -40,7 +40,7 @@ func Spec() *huma.OpenAPI {
 	// URL baked into it would be one instance's hostname published as everybody's. Claimable,
 	// because this document describes what the BUILD exposes and the build exposes both doors
 	// onto claiming — see the registrations below.
-	registerReleases(api, unavailablePublisher{}, claimAdvice(true, ""))
+	registerReleases(api, unavailablePublisher{}, claimAdvice(true, true, ""))
 	registerPlugins(api, unavailableOwnership{})
 	registerReview(api, unavailableQueue{})
 	registerTrust(api, unavailableTrust{})

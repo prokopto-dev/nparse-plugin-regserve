@@ -200,11 +200,32 @@ type TokenService interface {
 // catalogue, the index and the publish endpoint served, no account surface at all, ownership set
 // by an operator running `regserve seed-owners`.
 
+// EACH OF THESE IS A REGISTRATION CONDITION AND NOTHING MORE — the exact conjunction the routes
+// below are gated on, so "the page says you can do this here" and "the route that does it exists"
+// are one fact rather than two. Whether an authenticated route is REACHABLE is a separate,
+// build-wide question: a nil Authn makes every non-public operation answer 503, which the
+// middleware reports honestly and which no amount of different prose on one page would fix.
+// Mixing the two in was an asymmetry, and it showed up immediately as one flag counting Authn and
+// another ignoring it.
+
 // servesTheAccountPage reports whether /account and the token forms are registered. It is the
 // exact conjunction registerWeb is gated on.
 func (c Config) servesTheAccountPage() bool {
 	return c.Login != nil && c.Sessions != nil && c.Providers != nil &&
 		c.Tokens != nil && c.Ownership != nil
+}
+
+// servesTheClaimEndpoint reports whether POST /api/v1/plugins is registered. It is the exact
+// condition registerPlugins is gated on, which is Claimer and nothing else.
+//
+// SEPARATE FROM THE FORM, because the two really do come apart: an API-FIRST BUILD — sign-in and a
+// Claimer, no Tokens or Ownership — serves a usable session-only claim endpoint and no account
+// page at all. Collapsing the two told that instance's callers the registry had no way to claim an
+// id and that the endpoint was not served, both of which were false while the endpoint sat there
+// answering. Naming a door that is not there and denying one that is are the same mistake with the
+// sign flipped.
+func (c Config) servesTheClaimEndpoint() bool {
+	return c.Claimer != nil
 }
 
 // servesTheClaimForm reports whether the account page carries the claim form: the account surface,
@@ -253,14 +274,16 @@ func New(cfg Config) http.Handler {
 			// publish refusal uses. The page has no dependencies of its own to infer this from,
 			// and inferring it from Providers alone was wrong: sign-in configured does not mean
 			// an id can be claimed here.
-			AccountPage: cfg.servesTheAccountPage(),
-			ClaimForm:   cfg.servesTheClaimForm(),
+			AccountPage:   cfg.servesTheAccountPage(),
+			ClaimForm:     cfg.servesTheClaimForm(),
+			ClaimEndpoint: cfg.servesTheClaimEndpoint(),
 		})
 	}
 	if cfg.Publisher != nil {
 		// The advice a refused publish gives is decided HERE, from what this build actually
 		// serves, rather than assumed by the route. See Config.servesTheClaimForm.
-		registerReleases(api, cfg.Publisher, claimAdvice(cfg.servesTheClaimForm(), cfg.PublicURL))
+		registerReleases(api, cfg.Publisher,
+			claimAdvice(cfg.servesTheClaimForm(), cfg.servesTheClaimEndpoint(), cfg.PublicURL))
 	}
 	if cfg.Claimer != nil {
 		registerPlugins(api, cfg.Claimer)

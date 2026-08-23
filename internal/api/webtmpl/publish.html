@@ -71,12 +71,22 @@
         publishing to an id nobody has claimed is answered <code>404</code>, whatever the token
         carries.
       </p>
+    {{else if .HasClaimEndpoint}}
+      {{/* AN API-FIRST BUILD: the claim endpoint is served and the account page is not. Neither
+           of the other two branches is true here — there is no form to point at, and saying ids
+           cannot be claimed would be false while the endpoint answers. */}}
+      <p class="warn">
+        <strong>This instance serves no claim form, and a token still cannot claim an id.</strong>
+        Claiming is session-only, so sign in and send <code>POST /api/v1/plugins</code> yourself,
+        carrying your own session cookie. <strong>Claim the id before you mint the token</strong>:
+        publishing to an id nobody has claimed is answered <code>404</code>, whatever the token
+        carries.
+      </p>
     {{else}}
       <p class="warn">
-        <strong>Ids cannot be claimed on this instance.</strong> It serves neither the claim form
-        nor <code>POST /api/v1/plugins</code>, so ownership here is set by whoever operates the
-        registry — ask them to claim the id and grant it to you. Publishing to an id you do not
-        hold is answered <code>404</code>, whatever your token carries.
+        <strong>Ids cannot be claimed on this instance.</strong> Ownership here is set by whoever
+        operates the registry — ask them to claim the id and grant it to you. Publishing to an id
+        you do not hold is answered <code>404</code>, whatever your token carries.
       </p>
     {{end}}
     {{if .CanClaim}}

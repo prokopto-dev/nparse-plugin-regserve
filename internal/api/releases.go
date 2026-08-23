@@ -290,23 +290,38 @@ func publishProblem(ctx context.Context, pluginID, advice string, err error) err
 // claimAdvice is what a refused publish says about claiming an id, decided ONCE at registration
 // from what this build actually serves.
 //
-// TWO SENTENCES AND NO THIRD, and neither of them mentions the id. That is what keeps the refusal
-// unable to classify one: the advice varies with the DEPLOYMENT, which every caller can see
-// anyway, and never with the plugin asked about. See publishProblem.
+// THREE SENTENCES, ONE PER SHAPE OF DEPLOYMENT, and none of them mentions the id. That is what
+// keeps the refusal unable to classify one: the advice varies with the DEPLOYMENT, which every
+// caller can see anyway, and never with the plugin asked about. See publishProblem.
 //
-// The unavailable case is not a shrug. An instance with no sign-in has no door onto claiming at
-// all — the browser form is unregistered and so is POST /api/v1/plugins — and ownership there is
-// set by whoever runs the process. Saying "sign in at /account" to that caller would be sending
-// them to a 404, which is the dead end this whole change removes.
-func claimAdvice(claimable bool, publicURL string) string {
-	if !claimable {
-		return "Publishing never claims an id, and this registry has no way to claim one: it is " +
-			"running without sign-in, so ownership is set by whoever operates it. Ask them to " +
-			"grant you the id, then publish again."
+// The two doors onto claiming are tracked separately because they come apart — see
+// Config.servesTheClaimEndpoint. Naming a door this build does not have is the dead end this whole
+// change removes; denying one it does have is the same mistake with the sign flipped.
+func claimAdvice(form, endpoint bool, publicURL string) string {
+	const preamble = "Publishing never claims an id, and no token can claim one however scoped " +
+		"— claiming is session-only. "
+
+	switch {
+	case form:
+		return preamble + "If you have not claimed this id, sign in at " + claimHere(publicURL) +
+			" and claim it there, then publish again; if you have, check that you are still an " +
+			"owner."
+
+	case endpoint:
+		// AN API-FIRST BUILD: the claim endpoint is served and the account page is not. Saying
+		// "sign in at /account" here would name a page this instance does not have, and saying
+		// "there is no way to claim" would be false while the endpoint answers.
+		return preamble + "This instance serves no claim form, so claim the id by sending " +
+			"POST /api/v1/plugins with your own session cookie, then publish again; if you have " +
+			"already claimed it, check that you are still an owner."
+
+	default:
+		// Neither door. It does NOT say the endpoint is absent — it says there is no way to
+		// claim, which is the fact that matters and the only one true in every shape of this
+		// case, including a Claimer wired on a build nobody can sign in to.
+		return preamble + "There is no way to claim an id on this registry: ownership here is " +
+			"set by whoever operates it. Ask them to grant you the id, then publish again."
 	}
-	return "Publishing never claims an id, and no token can claim one however scoped — claiming " +
-		"is session-only. If you have not claimed this id, sign in at " + claimHere(publicURL) +
-		" and claim it there, then publish again; if you have, check that you are still an owner."
 }
 
 // claimHere renders WHERE an id is claimed, from the public URL the operator configured.
