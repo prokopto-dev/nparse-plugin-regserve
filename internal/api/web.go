@@ -144,10 +144,16 @@ type pageData struct {
 	Plugin    *ownership.Plugin
 	Owners    []ownership.Owner
 
-	// CanClaim decides whether the account page offers the claim form. It is WIRING and not
-	// authorisation — every session may claim an id — and it is false only on a build with no
-	// Claimer, where the route is not registered either.
-	CanClaim bool
+	// CanClaim decides whether a page offers the claim form, and HasAccountPage whether it may
+	// send a reader to /account at all. Both are WIRING and not authorisation — every session may
+	// claim an id — and both are false only where the routes in question are not registered.
+	//
+	// The public on-ramp needs the second as well as the first: an instance with sign-in and no
+	// Claimer serves /account and mints tokens and cannot claim an id, so "there is no account
+	// page here" and "you cannot claim here" are different sentences and it must not print the
+	// wrong one.
+	CanClaim       bool
+	HasAccountPage bool
 
 	// CanManageOwners gates the owner forms. A maintainer holds the plugin and may publish to it,
 	// and may not change who holds it — so the page does not offer controls the service will

@@ -30,7 +30,10 @@ import (
 func TestPublishGuide_IsPublic_AndNamesEveryStepOfTheRealPath(t *testing.T) {
 	t.Parallel()
 
-	resp := browse(t, api.Config{Directory: directoryOf(testPlugin("alpha"))}, api.PathPublish)
+	// The claim-capable build: this test is about the WHOLE path, and the whole path is only true
+	// on an instance that serves every step of it. The builds that serve fewer are covered by
+	// TestPublishGuide_TellsAReaderOnlyWhatThisBuildCanDo.
+	resp := browse(t, claimCapable(), api.PathPublish)
 
 	require.Equal(t, http.StatusOK, resp.status, "the on-ramp needs no credential")
 	require.Equal(t, "text/html; charset=utf-8", resp.header.Get("Content-Type"))
@@ -77,10 +80,7 @@ func TestPublishGuide_SaysTheFirstReleaseWaitsForAHuman(t *testing.T) {
 func TestPublishGuide_SaysClaimingIsSessionOnly_BeforeTheTokenStep(t *testing.T) {
 	t.Parallel()
 
-	body := string(browse(t, api.Config{
-		Directory: directoryOf(testPlugin("alpha")),
-		Providers: identity.NewRegistry(stubProvider{}),
-	}, api.PathPublish).body)
+	body := string(browse(t, claimCapable(), api.PathPublish).body)
 
 	require.Contains(t, body, "A token cannot do this step")
 	require.Contains(t, body, "session-only")
@@ -163,30 +163,85 @@ func TestPublishGuide_RendersTheGitHubExpressionSyntax_Intact(t *testing.T) {
 		"an entity that survives into the copied text is a workflow file that does not parse")
 }
 
-// TestPublishGuide_OffersSignIn_OnlyWhereItIsConfigured.
+// claimCapable is a build that serves the directory, the account surface AND the claim form: the
+// live deployment's shape, and the one the walkthrough's instructions are true on.
 //
-// Claiming an id needs a session, so the page points at sign-in — and an instance with no OAuth
-// application says so rather than offering a link that leads to a 404.
-func TestPublishGuide_OffersSignIn_OnlyWhereItIsConfigured(t *testing.T) {
-	t.Parallel()
-
-	withSignIn := string(browse(t, api.Config{
+// Written out rather than defaulted, because the whole point of the tests below is that the page
+// says different things on different builds, and a fixture that quietly wired everything would
+// make the interesting cases unreachable.
+func claimCapable() api.Config {
+	return api.Config{
 		Directory: directoryOf(testPlugin("alpha")),
 		Providers: identity.NewRegistry(stubProvider{}),
-	}, api.PathPublish).body)
-	require.Contains(t, withSignIn, "/auth/github/login?next=/account")
+		Login:     &fakeLogin{},
+		Sessions:  &fakeSessions{},
+		Tokens:    &fakeTokens{},
+		Ownership: &fakeOwnership{},
+		Claimer:   &fakeOwnership{},
+	}
+}
 
-	without := string(browse(t, api.Config{Directory: directoryOf(testPlugin("alpha"))},
-		api.PathPublish).body)
-	require.NotContains(t, without, "/auth/github/login")
-	require.Contains(t, without, "no sign-in configured",
-		"an instance that cannot sign anybody in has to say so, not go quiet")
+// TestPublishGuide_TellsAReaderOnlyWhatThisBuildCanDo.
+//
+// THREE BUILDS, THREE DIFFERENT WALKTHROUGHS, and the assertions are as much about what is ABSENT
+// as about what is there. That is the correction: an earlier version of this page kept the "on
+// your account, mint a token" instruction unconditional and merely APPENDED a note saying there
+// was no account page — so a publisher-only reader was sent to a dead destination and then told
+// it was dead. The test only checked for the appended sentence, so it blessed the contradiction.
+//
+// A test for a conditional page has to assert the branch NOT taken is gone.
+func TestPublishGuide_TellsAReaderOnlyWhatThisBuildCanDo(t *testing.T) {
+	t.Parallel()
 
-	// AND THE SAME FOR THE TOKEN STEP. /account is not served either on such a build, so a
-	// walkthrough that sent the reader there would break in the middle of the path it teaches —
-	// which is the dead end this page exists to close, one step further down.
-	require.Contains(t, without, "there is no account page here",
-		"the step after claiming has to be honest on this build too")
+	// The account surface and the claim form come apart, so all three states are real.
+	signInOnly := claimCapable()
+	signInOnly.Claimer = nil
+
+	publisherOnly := api.Config{Directory: directoryOf(testPlugin("alpha"))}
+
+	t.Run("a build that serves both tells the whole path", func(t *testing.T) {
+		t.Parallel()
+
+		body := string(browse(t, claimCapable(), api.PathPublish).body)
+		require.Contains(t, body, "/auth/github/login?next=/account")
+		require.Contains(t, body, "Claim a plugin id")
+		require.Contains(t, body, `On <a href="/account">your account</a>`)
+		require.NotContains(t, body, "cannot be claimed on this instance")
+		require.NotContains(t, body, "no account page on this instance")
+	})
+
+	t.Run("a build with sign-in and nothing to claim says so, and still mints", func(t *testing.T) {
+		t.Parallel()
+
+		// THE MIDDLE STATE, and the reason the page reads two flags rather than one. /account is
+		// served here and the token step is real — gating both on "can claim" would have printed
+		// "there is no account page" to a reader looking at one.
+		body := string(browse(t, signInOnly, api.PathPublish).body)
+		require.Contains(t, body, "Ids cannot be claimed on this instance")
+		require.NotContains(t, body, "Claim a plugin id",
+			"there is no form here to name")
+		require.Contains(t, body, `On <a href="/account">your account</a>`,
+			"the account page IS served on this build; the token step is real")
+		require.NotContains(t, body, "no account page on this instance")
+	})
+
+	t.Run("a publisher-only build sends nobody to an account page", func(t *testing.T) {
+		t.Parallel()
+
+		body := string(browse(t, publisherOnly, api.PathPublish).body)
+
+		// THE ABSENCE IS THE ASSERTION. A dead instruction followed by a correction is worse than
+		// either alone: the reader follows the first one.
+		require.NotContains(t, body, `href="/account"`,
+			"this build does not serve /account, so the walkthrough must not link to it")
+		require.NotContains(t, body, "/auth/github/login")
+		require.NotContains(t, body, "Claim a plugin id")
+
+		require.Contains(t, body, "Ids cannot be claimed on this instance")
+		require.Contains(t, body, "no account page on this instance")
+		require.Contains(t, body, "whoever operates the registry",
+			"and it names who can actually help, rather than going quiet")
+	})
 }
 
 // TestDirectory_LeadsToTheAuthorOnRamp — the gap this page was built to close.

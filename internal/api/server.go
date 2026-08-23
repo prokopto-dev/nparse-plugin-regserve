@@ -186,24 +186,36 @@ type TokenService interface {
 	Revoke(ctx context.Context, accountID, tokenID string) error
 }
 
-// servesTheClaimForm reports whether THIS build serves the account page's claim form.
+// What this build actually serves, asked once and answered from the same conditions the routes are
+// registered on below.
 //
-// It is the exact conjunction registerWeb and registerClaimForm are gated on, written once so that
-// a refusal telling somebody to go and claim an id and the routes that would let them cannot
-// disagree. Two readers, one value — the same reason the Access declaration is stored twice from
-// one source.
+// EVERY PAGE AND EVERY REFUSAL THAT TELLS SOMEBODY WHERE TO GO READS ONE OF THESE. The alternative
+// — each surface deciding from whichever dependency it happens to hold — is how a walkthrough ends
+// up sending a reader to /account on an instance that does not serve it, which is the dead end
+// this whole change exists to remove.
 //
 // A PUBLISHER-ONLY INSTANCE IS A SUPPORTED STATE AND NOT A MISCONFIGURATION. The serve command
 // wires Publisher as soon as the database opens and wires sign-in only when an OAuth application
 // is configured, which is what the live deployment ran as for its whole first phase: the
-// catalogue, the index and the publish endpoint served, /account a 404, ownership set by an
-// operator running `regserve seed-owners`. Telling that instance's callers to "sign in and claim
-// it there" would send them to a page that does not exist — the same dead end this whole change
-// exists to remove, rebuilt one deployment over.
-func (c Config) servesTheClaimForm() bool {
-	return c.Claimer != nil &&
-		c.Login != nil && c.Sessions != nil && c.Providers != nil &&
+// catalogue, the index and the publish endpoint served, no account surface at all, ownership set
+// by an operator running `regserve seed-owners`.
+
+// servesTheAccountPage reports whether /account and the token forms are registered. It is the
+// exact conjunction registerWeb is gated on.
+func (c Config) servesTheAccountPage() bool {
+	return c.Login != nil && c.Sessions != nil && c.Providers != nil &&
 		c.Tokens != nil && c.Ownership != nil
+}
+
+// servesTheClaimForm reports whether the account page carries the claim form: the account surface,
+// plus something to claim through. It is the exact conjunction registerClaimForm is gated on.
+//
+// It is STRICTLY NARROWER than servesTheAccountPage, and the two are separate because the middle
+// state is real: a build with sign-in and no Claimer serves /account and mints tokens perfectly
+// well and has nowhere to claim an id. Telling that instance's readers there is no account page
+// would be as wrong as telling them to claim one there.
+func (c Config) servesTheClaimForm() bool {
+	return c.servesTheAccountPage() && c.Claimer != nil
 }
 
 // New builds the HTTP handler.
@@ -237,6 +249,12 @@ func New(cfg Config) http.Handler {
 			Sessions:  cfg.Sessions,
 			Reviewers: cfg.Reviewers,
 			IndexURL:  indexURL(cfg.PublicURL),
+			// What the on-ramp is allowed to tell a reader to do, from the same two answers the
+			// publish refusal uses. The page has no dependencies of its own to infer this from,
+			// and inferring it from Providers alone was wrong: sign-in configured does not mean
+			// an id can be claimed here.
+			AccountPage: cfg.servesTheAccountPage(),
+			ClaimForm:   cfg.servesTheClaimForm(),
 		})
 	}
 	if cfg.Publisher != nil {
