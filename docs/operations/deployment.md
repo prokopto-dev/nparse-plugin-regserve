@@ -338,7 +338,9 @@ report an empty registry to every client — check the seed mount before anythin
    against the host's `.env` (`docker compose config -q`, which fails on a malformed file *and* on
    any required variable the `.env` is missing), and adopts it — keeping `compose.yaml.prev`.
 4. It asserts `/opt/regserve/seed.json` exists and is non-empty, snapshots `regserve.db` into
-   `/opt/regserve/backups/pre-<timestamp>.db`, pins `REGSERVE_IMAGE` in `.env` to the exact image,
+   `/opt/regserve/backups/pre-<timestamp>.db` **with `VACUUM INTO`, checking the result and stopping
+   the deploy if it is missing, empty or fails `integrity_check`**, pins `REGSERVE_IMAGE` in `.env`
+   to the exact image,
    pulls, and restarts the container.
 5. It polls `/healthz`, then `/readyz`, then fetches `/index.json` and asserts it parses and
    declares `schema_version: 1`.
@@ -469,9 +471,28 @@ snapshot the deploy took immediately before the migration ran:
 cd /opt/regserve
 docker compose stop regserve
 docker run --rm -v regserve_regserve-data:/data -v "$PWD/backups:/backups" alpine:3 \
-  sh -c "cp /backups/pre-<timestamp>.db /data/regserve.db"
+  sh -euc "
+    cp /backups/pre-<timestamp>.db /data/regserve.db
+    rm -f /data/regserve.db-wal /data/regserve.db-shm
+  "
 sed -i "s|^REGSERVE_IMAGE=.*|REGSERVE_IMAGE=ghcr.io/prokopto-dev/nparse-plugin-regserve:<old>|" .env
 docker compose up -d regserve
+```
+
+**Deleting `-wal` and `-shm` is not tidying, it is the restore.** They belong to the database you
+just replaced. Left in place, SQLite finds a WAL whose header matches nothing and either replays the
+*old* database's committed frames on top of the restored file or refuses to open it — either way you
+have not restored what you thought you had. Stop the container first, for the same reason: a running
+server holds those files and will write them back.
+
+**Check what you restored before starting the server**, since this is the moment to find out:
+
+```bash
+docker run --rm -v regserve_regserve-data:/data alpine:3 sh -euc "
+  apk add --no-cache sqlite >/dev/null
+  sqlite3 -bail /data/regserve.db 'PRAGMA integrity_check;'
+  sqlite3 -bail /data/regserve.db 'SELECT count(*) FROM plugin;'
+"
 ```
 
 ## Downtime, and why it is acceptable
@@ -496,17 +517,32 @@ Add a daily one:
 # /etc/cron.daily/regserve-backup  (root, chmod 755)
 #!/bin/sh
 set -eu
+stamp="$(date -u +%Y%m%d)"
 docker run --rm -v regserve_regserve-data:/data -v /opt/regserve/backups:/backups alpine:3 \
-  sh -c "cp /data/regserve.db /backups/daily-$(date -u +%Y%m%d).db"
+  sh -euc "
+    apk add --no-cache sqlite >/dev/null
+    sqlite3 -bail /data/regserve.db \"VACUUM INTO '/backups/.daily.tmp';\"
+    test \"\$(sqlite3 -bail /backups/.daily.tmp 'PRAGMA integrity_check;')\" = ok
+  "
+mv /opt/regserve/backups/.daily.tmp "/opt/regserve/backups/daily-${stamp}.db"
 find /opt/regserve/backups -name 'daily-*.db' -mtime +30 -delete
 ```
 
 Copy them off the droplet. A backup on the same disk as the database survives a bad migration and
 nothing else — not a failed droplet, not a deleted volume, not the droplet being destroyed.
 
-> `cp` of a live SQLite file in WAL mode can capture a torn copy. It is good enough for a service
-> with this write rate, and the honest fix once it matters is `sqlite3 .backup` or `VACUUM INTO`
-> from inside the container. Recorded here rather than glossed over.
+> **`VACUUM INTO`, never `cp`, and this used to say otherwise.** The server runs SQLite in WAL mode
+> ([`internal/store`](../../internal/store/store.go)), so a committed transaction lives in
+> `regserve.db-wal` until something checkpoints it. Copying the main file out from under the running
+> container produces a database that opens cleanly, passes `PRAGMA integrity_check` and is **missing
+> every write since the last checkpoint** — which is the worst kind of wrong, because nothing about
+> the file says so. `VACUUM INTO` reads one consistent snapshot inside a read transaction and takes
+> the WAL with it. Gate `BACKUP001` holds both halves: `internal/store/backup_test.go` proves the
+> difference against a live writer, and `test/repo/backup_test.go` asserts the deploy still does it
+> that way.
+>
+> The temporary name and the rename are the same care the deploy takes: a half-written snapshot must
+> never sit in `backups/` under a name that looks like a finished one.
 
 ## What is deliberately not here
 

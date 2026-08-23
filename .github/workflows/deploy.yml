@@ -262,16 +262,82 @@ jobs:
           # Snapshot before anything changes. Migrations are forward-only (ADR-0006), so this file
           # is the only undo that exists. Taking it after the pull would be taking it after the
           # point of no return.
+          #
+          # VACUUM INTO, NOT `cp`. The store opens SQLite in WAL mode with synchronous=NORMAL
+          # (internal/store/store.go), so a committed transaction lives in `regserve.db-wal` until
+          # something checkpoints it. Copying the main file alone out of a RUNNING container omits
+          # every commit still in the WAL -- a release published minutes ago, an id just claimed, a
+          # token just minted -- and says nothing about having done so. A backup quietly missing the
+          # newest writes is worse than no backup, because it is the one that gets trusted on the
+          # day it matters. internal/store/storetest says the same thing from the other side:
+          # "closing is what checkpoints the WAL into the file being copied".
+          #
+          # Why VACUUM INTO and not the alternatives:
+          #   - It reads ONE consistent snapshot inside a read transaction. Writers carry on; what
+          #     lands is the database as of the instant it began, WAL frames included.
+          #   - `.backup` (sqlite3_backup) copies page by page and RESTARTS from the beginning
+          #     whenever the source is written to, so against a live service it can spin, and the
+          #     CLI can give up with SQLITE_BUSY. A backup that sometimes does not finish is a
+          #     different failure, not a smaller one.
+          #   - Copying db + -wal + -shm with `cp` is three reads of a moving target. It is
+          #     consistent only if nothing commits between them, which is the assumption that put
+          #     this comment here in the first place.
+          #   - It reads every page through the b-tree, so a corrupt database FAILS the backup
+          #     rather than producing a corrupt copy that looks fine until it is restored.
+          #
+          # THE COST, STATED: the output is a fresh, defragmented database rather than a byte copy,
+          # so its size will not match the source -- which is why the check below is "non-empty and
+          # passes integrity_check" and not a size comparison. And `apk add sqlite` means this step
+          # now needs the package mirror; a deploy fails if it cannot reach it, which is the correct
+          # direction for the only undo there is.
           mkdir -p backups
           stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-          if docker volume inspect regserve_regserve-data >/dev/null 2>&1; then
+          snapshot="backups/pre-${stamp}.db"
+          rm -f backups/.snapshot.tmp backups/.integrity
+
+          if ! docker volume inspect regserve_regserve-data >/dev/null 2>&1; then
+            echo "no data volume yet; first deploy, nothing to snapshot"
+          elif ! docker run --rm -v regserve_regserve-data:/data \
+                 alpine:3 sh -c 'test -f /data/regserve.db'; then
+            # The volume is there and holds no database: a first boot that has not happened yet.
+            # Genuinely nothing to snapshot, and genuinely not a failure -- this is the ONLY branch
+            # that may continue without one.
+            echo "no database in the volume yet; nothing to snapshot"
+          else
+            # NO `2>/dev/null` and NO `|| echo`. The previous version printed "no database file
+            # yet; nothing to snapshot" for a permission error, a full disk and an sqlite failure
+            # alike, and then walked into the migration. Every failure from here has to stop the
+            # deploy, because the next lines are the point of no return.
+            #
+            # The snapshot is written to a DOT-file and only renamed once it has been checked, so a
+            # half-written file can never sit in backups/ under a name that looks like a good one.
+            # Dot-files are also invisible to the rotation below, which lists only `pre-*.db`.
             docker run --rm \
               -v regserve_regserve-data:/data \
               -v "$PWD/backups:/backups" \
-              alpine:3 sh -c 'cp /data/regserve.db "/backups/pre-'"$stamp"'.db" 2>/dev/null' \
-              || echo "no database file yet; nothing to snapshot"
-          else
-            echo "no data volume yet; first deploy"
+              alpine:3 sh -euc "
+                apk add --no-cache sqlite >/dev/null
+                sqlite3 -bail /data/regserve.db \"VACUUM INTO '/backups/.snapshot.tmp';\"
+                sqlite3 -bail /backups/.snapshot.tmp 'PRAGMA integrity_check;' > /backups/.integrity
+              "
+
+            # Asserted, not assumed -- the same shape as the seed preflight above. A backup step
+            # that reported success without leaving a usable file is exactly the class of bug this
+            # whole block is being rewritten for.
+            if [ ! -s backups/.snapshot.tmp ]; then
+              echo "FATAL: the pre-deploy snapshot is missing or empty." >&2
+              echo "Nothing has been changed yet. Fix the snapshot before deploying." >&2
+              exit 1
+            fi
+            if [ "$(cat backups/.integrity)" != "ok" ]; then
+              echo "FATAL: the pre-deploy snapshot failed PRAGMA integrity_check:" >&2
+              cat backups/.integrity >&2
+              exit 1
+            fi
+
+            mv backups/.snapshot.tmp "$snapshot"
+            rm -f backups/.integrity
+            echo "snapshot ${snapshot} ($(wc -c < "$snapshot") bytes), integrity ok"
           fi
           ls -1t backups/ 2>/dev/null | tail -n +11 | while read -r old; do rm -f -- "backups/$old"; done
 
