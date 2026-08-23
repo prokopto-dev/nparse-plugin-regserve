@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,7 @@ import (
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/api"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/auth"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/authz"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/core"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/identity"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/ownership"
 )
@@ -65,6 +67,13 @@ type fakeOwnership struct {
 
 	sawAdd    []string
 	sawRemove []string
+
+	// claimErr is what ClaimID answers with, and sawClaim is every claim it was asked to make.
+	// The real service is internal/ownership's and is tested there; what this fixture is for is
+	// what the PAGE does with each answer.
+	claimErr  error
+	sawClaim  []ownership.Claim
+	claimedBy []string
 }
 
 func (f *fakeOwnership) Mine(context.Context, string) ([]ownership.Plugin, error) {
@@ -99,6 +108,12 @@ func (f *fakeOwnership) Remove(_ context.Context, _, _, targetID string) error {
 	return f.rmErr
 }
 
+func (f *fakeOwnership) ClaimID(_ context.Context, c ownership.Claim, accountID string) error {
+	f.sawClaim = append(f.sawClaim, c)
+	f.claimedBy = append(f.claimedBy, accountID)
+	return f.claimErr
+}
+
 // webHarness is a running account surface plus the fakes behind it.
 type webHarness struct {
 	srv       *httptest.Server
@@ -106,6 +121,9 @@ type webHarness struct {
 	sessions  *fakeSessions
 	tokens    *fakeTokens
 	ownership *fakeOwnership
+
+	// noClaimer builds the surface with no Claimer at all. See webHarness.claimer.
+	noClaimer bool
 }
 
 func newWebHarness(t *testing.T, mutate ...func(h *webHarness)) *webHarness {
@@ -144,9 +162,22 @@ func newWebHarness(t *testing.T, mutate ...func(h *webHarness)) *webHarness {
 		Providers: identity.NewRegistry(stubProvider{}),
 		Tokens:    h.tokens,
 		Ownership: h.ownership,
+		// The same object as Ownership, exactly as the serve command wires it: one service, two
+		// consumer-declared interfaces.
+		Claimer: h.claimer(),
 	}))
 	t.Cleanup(h.srv.Close)
 	return h
+}
+
+// claimer is what the harness passes as api.Claimer. It is the fakeOwnership unless a test has
+// asked for a build with none — noClaimer models a deployment that cannot register ids, where the
+// form must not be offered at all rather than offered and answered 404.
+func (h *webHarness) claimer() api.Claimer {
+	if h.noClaimer {
+		return nil
+	}
+	return h.ownership
 }
 
 // csrf is the value the fake session issuer expects back.
@@ -355,6 +386,7 @@ func TestMutatingForms_WithoutAValidCSRFToken_AreRefused(t *testing.T) {
 		// carries whatever its author put in it; an entirely empty POST is a different, degenerate
 		// case, covered separately below.
 		{name: "revoke a token", path: "/account/tokens/tok-1/revoke", body: url.Values{"submit": {"revoke"}}},
+		{name: "claim a plugin id", path: "/account/plugins", body: url.Values{"id": {"floating-combat-text"}, "name": {"Floating Combat Text"}}},
 		{name: "add an owner", path: "/plugins/merchant-mode/owners", body: url.Values{"action": {"add"}, "handle": {"octocat"}}},
 		{name: "remove an owner", path: "/plugins/merchant-mode/owners", body: url.Values{"action": {"remove"}, "account_id": {"acct"}}},
 	}
@@ -654,4 +686,205 @@ func TestManageOwners_AMaintainersPost_IsRefusedByTheService(t *testing.T) {
 
 	body := string(h.get(t, "/plugins/merchant-mode/settings?msg=owner_role_too_narrow").body)
 	require.Contains(t, body, "Only an owner can change who holds it.")
+}
+
+// --- claiming a plugin id ----------------------------------------------------------------------
+
+// TestAccountPage_OffersAWayToClaimAnID — the affordance that did not exist.
+//
+// THIS IS A REGRESSION TEST FOR A SHIPPED DEAD END. Claiming is capability-floor, so it is
+// session-only, so a browser is the ONLY place it can happen — and the browser surface had no form
+// for it. The account page offered a token mint and nothing else, and its empty state explained a
+// migration from owners.json, which told a first-time author to go and report a problem when what
+// they needed was to claim an id. An author with a repository, a build and a token could not find
+// the one step that would make any of it work.
+func TestAccountPage_OffersAWayToClaimAnID(t *testing.T) {
+	t.Parallel()
+
+	t.Run("the form is on the page", func(t *testing.T) {
+		t.Parallel()
+
+		body := string(newWebHarness(t).get(t, "/account").body)
+		require.Contains(t, body, `action="/account/plugins"`)
+		require.Contains(t, body, "Claim a plugin id")
+		require.Contains(t, body, `name="id"`, "with somewhere to type the id")
+		require.Contains(t, body, "permanent",
+			"and the one warning that cannot be undone afterwards")
+	})
+
+	t.Run("and the token explainer says a token cannot do it", func(t *testing.T) {
+		t.Parallel()
+
+		// The omission was load-bearing: the list of what a token cannot do named minting,
+		// ownership and trust, and not claiming — which is part of why the author believed the
+		// token he had was the whole credential he needed.
+		body := string(newWebHarness(t).get(t, "/account").body)
+		require.Contains(t, body, "claim a plugin id")
+		require.Contains(t, body, "browser session")
+	})
+
+	t.Run("and an account holding nothing is pointed at the claim, not at a migration", func(t *testing.T) {
+		t.Parallel()
+
+		h := newWebHarness(t, func(h *webHarness) { h.ownership.mine = nil })
+		body := string(h.get(t, "/account").body)
+
+		require.Contains(t, body, "Claim an id below",
+			"the empty state is where a first-time author lands")
+		require.Contains(t, body, "could publish nothing",
+			"and minting a token while owning no plugin is a credential that cannot publish")
+	})
+
+	t.Run("while a build with no claimer offers no form and serves no route", func(t *testing.T) {
+		t.Parallel()
+
+		h := newWebHarness(t, func(h *webHarness) { h.noClaimer = true })
+
+		require.NotContains(t, string(h.get(t, "/account").body), `action="/account/plugins"`,
+			"a form posting to a route this build does not serve is an on-ramp ending in a 404")
+		require.Equal(t, http.StatusNotFound, h.post(t, "/account/plugins", url.Values{
+			auth.CSRFFieldName: {h.csrf()},
+			"id":               {"floating-combat-text"},
+			"name":             {"Floating Combat Text"},
+		}).status)
+	})
+}
+
+// TestClaimForm_ClaimsForTheSignedInAccount_AndSaysWhatHappened.
+//
+// The account id comes from the SESSION and from nowhere else — there is no on-behalf-of field and
+// there must never be one, because an id is permanent and a claim made for the wrong account
+// cannot be corrected, only handed over.
+func TestClaimForm_ClaimsForTheSignedInAccount_AndSaysWhatHappened(t *testing.T) {
+	t.Parallel()
+
+	h := newWebHarness(t)
+
+	resp := h.post(t, "/account/plugins", url.Values{
+		auth.CSRFFieldName: {h.csrf()},
+		"id":               {"floating-combat-text"},
+		"name":             {"Floating Combat Text"},
+		"description":      {"Damage numbers that float."},
+		"author":           {"BennyTwoThumbs"},
+		"homepage":         {"https://github.com/example/floating-combat-text"},
+	})
+
+	require.Equal(t, http.StatusSeeOther, resp.status, "post/redirect/get, like every other form")
+	require.Equal(t, "/account?msg=plugin_claimed", resp.header.Get("Location"))
+
+	require.Len(t, h.ownership.sawClaim, 1)
+	require.Equal(t, core.PluginID("floating-combat-text"), h.ownership.sawClaim[0].PluginID)
+	require.Equal(t, "Floating Combat Text", h.ownership.sawClaim[0].Name)
+	require.Equal(t, "https://github.com/example/floating-combat-text", h.ownership.sawClaim[0].Homepage)
+	require.Equal(t, []string{signedIn().AccountID}, h.ownership.claimedBy,
+		"the claimant is the session's account, never a field somebody submitted")
+
+	// And the page that lands says what was and was not done: an id is claimed, nothing is listed.
+	landed := h.get(t, "/account?msg=plugin_claimed")
+	require.Contains(t, string(landed.body), "not listed yet")
+}
+
+// TestClaimForm_EachRefusal_SaysWhatToDoAndNothingAboutWhoHoldsWhat.
+func TestClaimForm_EachRefusal_SaysWhatToDoAndNothingAboutWhoHoldsWhat(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		id   string
+		err  error
+
+		wantMessage string
+		wantPage    string
+		wantCalled  bool
+	}{
+		{
+			name: "an id somebody already holds",
+			id:   "merchant-mode",
+			err:  ownership.ErrAlreadyClaimed,
+			// It says the id is taken and NOT who has it. The set of listed ids is public; which
+			// account holds an unlisted one is not, and answering that would make this form a way
+			// to map ids to people.
+			wantMessage: "plugin_id_taken",
+			wantPage:    "already claimed",
+			wantCalled:  true,
+		},
+		{
+			name: "a malformed id",
+			id:   "Not An Id",
+			// Refused HERE, before the service is called at all: the rule is core.ParsePluginID's,
+			// so the form cannot accept something the JSON endpoint would refuse.
+			wantMessage: "plugin_id_invalid",
+			wantPage:    "lowercase letter",
+			wantCalled:  false,
+		},
+		{
+			name:        "a listing the columns will not take",
+			id:          "floating-combat-text",
+			err:         ownership.ErrBadListing,
+			wantMessage: "plugin_details_invalid",
+			wantPage:    "https URL",
+			wantCalled:  true,
+		},
+		{
+			name:        "anything else",
+			id:          "floating-combat-text",
+			err:         errors.New("the database fell over"),
+			wantMessage: "plugin_claim_failed",
+			wantPage:    "could not be claimed",
+			wantCalled:  true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newWebHarness(t, func(h *webHarness) { h.ownership.claimErr = tc.err })
+			resp := h.post(t, "/account/plugins", url.Values{
+				auth.CSRFFieldName: {h.csrf()},
+				"id":               {tc.id},
+				"name":             {"Something"},
+			})
+
+			require.Equal(t, http.StatusSeeOther, resp.status)
+			require.Equal(t, "/account?msg="+tc.wantMessage, resp.header.Get("Location"))
+			require.Equal(t, tc.wantCalled, len(h.ownership.sawClaim) == 1)
+
+			// The message a redirect carries is a CODE looked up in a fixed table, so what renders
+			// is prose this package wrote. Following it is what proves the code resolves to
+			// something rather than to silence.
+			landed := h.get(t, "/account?msg="+tc.wantMessage)
+			require.Contains(t, string(landed.body), tc.wantPage)
+			require.NotContains(t, string(landed.body), "prokopto-dev holds",
+				"a refusal never says who holds an id")
+		})
+	}
+}
+
+// TestClaimForm_IsCapabilityFloor — no token, however scoped, reaches the form.
+//
+// The JSON endpoint's floor has been enforced since it was registered. Adding a second door onto
+// the same act is exactly how a floor gets a hole in it, so the door is asserted here rather than
+// assumed from the declaration it shares.
+func TestClaimForm_IsCapabilityFloor(t *testing.T) {
+	t.Parallel()
+
+	h := newWebHarness(t, func(h *webHarness) {
+		h.authn.principal = auth.Principal{
+			AccountID: "acct", DisplayName: "prokopto-dev",
+			TokenID: "tok-1", Scopes: authz.Scopes(),
+		}
+	})
+
+	resp := h.post(t, "/account/plugins", url.Values{
+		auth.CSRFFieldName: {h.csrf()},
+		"id":               {"floating-combat-text"},
+		"name":             {"Floating Combat Text"},
+	})
+
+	require.Equal(t, http.StatusForbidden, resp.status)
+	// The refusal has to be THE FLOOR's and not the CSRF check's, which is also a 403 with nothing
+	// claimed. Reading the sentence is what tells the two apart.
+	require.Contains(t, string(resp.body), "session-only")
+	require.Empty(t, h.ownership.sawClaim, "refused before the handler ran")
 }

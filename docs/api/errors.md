@@ -35,6 +35,19 @@ difference is not a client's business, and distinguishing them lets someone enum
 malformed plugin id also lands here rather than on `invalid_request`, for the same reason — it
 cannot name a real plugin, and reporting *why* it was rejected invites probing.
 
+**One distinction is drawn, in `detail` only.** Publishing to an id that **nobody has claimed** says
+so and names the claim step; publishing to an id **somebody else holds** keeps the ambiguous
+sentence, unchanged. The status and the code are the same in both cases — this is prose for a human,
+not a member to switch on.
+
+The asymmetry is deliberate in both directions. *Who* holds an id is the secret, and it stays one:
+that is what a wordlist plus a permanent id would otherwise hand a squatter. Whether an id is
+claimed **at all** is already answerable to any signed-in account — `POST /api/v1/plugins` is `409`
+for a taken id and `201` for a free one — and the public directory prints how many claimed ids are
+unlisted. Saying it in the refusal leaks nothing new and closes a real dead end: claiming is
+session-only, so an author driving a release pipeline has no way to discover the step from the one
+surface they can see.
+
 ## invalid_request
 
 **400.** The request was understood and is wrong: a missing field, a version that is not greater

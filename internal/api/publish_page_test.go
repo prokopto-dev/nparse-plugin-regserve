@@ -67,20 +67,33 @@ func TestPublishGuide_SaysTheFirstReleaseWaitsForAHuman(t *testing.T) {
 		"the page has to say what a pending release IS, not only that it happens")
 }
 
-// TestPublishGuide_SaysThereIsNoFormForClaimingAnId.
+// TestPublishGuide_SaysClaimingIsSessionOnly_BeforeTheTokenStep.
 //
-// `POST /api/v1/plugins` is a capability-floor operation and the browser surface has no form for
-// it (issue 42). An on-ramp that listed "claim your id" as though a button existed would send every
-// author looking for one — the failure mode being designed against is a CONFIDENT MISTAKE, and a
-// missing step stated plainly costs a paragraph.
-func TestPublishGuide_SaysThereIsNoFormForClaimingAnId(t *testing.T) {
+// This used to assert the opposite — that the page said there was NO FORM for claiming (issue 42)
+// — and the honesty was right while it was true. The form exists now, so the assertion moved to
+// what still has to be true: that claiming is a separate act no token can perform, said BEFORE the
+// step that mints one. An author who reads the token step first concludes the token is the
+// credential, wires CI, and is answered 404 on every tag. One did.
+func TestPublishGuide_SaysClaimingIsSessionOnly_BeforeTheTokenStep(t *testing.T) {
 	t.Parallel()
 
-	body := string(browse(t, api.Config{Directory: directoryOf(testPlugin("alpha"))},
-		api.PathPublish).body)
+	body := string(browse(t, api.Config{
+		Directory: directoryOf(testPlugin("alpha")),
+		Providers: identity.NewRegistry(stubProvider{}),
+	}, api.PathPublish).body)
 
-	require.Contains(t, body, "no form for this step yet")
-	require.Contains(t, body, "/issues/42", "the gap is tracked, not glossed")
+	require.Contains(t, body, "A token cannot do this step")
+	require.Contains(t, body, "session-only")
+	require.Contains(t, body, "Claim a plugin id",
+		"the page names the form by the legend it carries on the account page")
+
+	// ORDER, not just presence. The rule the page exists to teach is a sequence — claim, then mint
+	// a token pinned to what you claimed — and prose that says the right things in the wrong order
+	// teaches the wrong one.
+	claim := strings.Index(body, "Claim your plugin id")
+	token := strings.Index(body, "Mint a scoped token")
+	require.GreaterOrEqual(t, claim, 0)
+	require.Greater(t, token, claim, "claiming has to come before minting, on the page as in life")
 
 	// The claim takes the AUTHENTICATED CALLER's account id and the body has no on-behalf-of
 	// field, so "ask somebody to claim it for you" hands them the plugin — permanently, since ids

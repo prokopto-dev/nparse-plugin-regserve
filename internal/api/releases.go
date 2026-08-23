@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
 
@@ -104,7 +105,13 @@ type publishReleaseResult struct {
 }
 
 // registerReleases wires the publish endpoint.
-func registerReleases(api huma.API, publisher Publisher) {
+//
+// publicURL is this registry's own absolute base, or empty on an instance that was never told
+// one. It is used for ONE thing: naming where an id is claimed, in the refusal an unclaimed id
+// gets. See claimHere.
+func registerReleases(api huma.API, publisher Publisher, publicURL string) {
+	claimAt := claimHere(publicURL)
+
 	register(api,
 		// The permission is `plugin.publish`, SPELLED AS THE CATALOGUE SPELLS IT. It said
 		// `release.publish` for one release: a permission that exists nowhere in
@@ -174,7 +181,11 @@ func registerReleases(api huma.API, publisher Publisher) {
 				IdempotencyKey: in.IdempotencyKey,
 			})
 			if err != nil {
-				return nil, publishProblem(ctx, in.PluginID, err)
+				// The PARSED id, not the raw path parameter. It is the same string — the
+				// submission above would have been refused otherwise — and passing the value that
+				// has been through core.ParsePluginID is what makes "this detail cannot echo
+				// something unvalidated" true by construction rather than by reading upwards.
+				return nil, publishProblem(ctx, submission.PluginID.String(), claimAt, err)
 			}
 
 			return &publishReleaseOutput{
@@ -208,13 +219,34 @@ func badSubmission(err error) error {
 }
 
 // publishProblem maps a publish failure onto a problem document.
-func publishProblem(ctx context.Context, pluginID string, err error) error {
+//
+// claimAt is where an id is claimed, already rendered by claimHere.
+func publishProblem(ctx context.Context, pluginID, claimAt string, err error) error {
 	switch {
+	case errors.Is(err, release.ErrPluginUnclaimed):
+		// STILL 404, and still `not_found`. The status and the code are unchanged because the
+		// situation is unchanged — there is no such plugin here — and both are public API a
+		// client switches on. What changes is `detail`, which is the member documented as prose
+		// for a human, and which the reusable publish workflow prints verbatim into the author's
+		// Actions log. So an author who skipped the claim step reads the missing step in the
+		// place they were already looking, and no client's error handling moves.
+		//
+		// Why this may say more than the case below does: the secret is WHO HOLDS AN ID, and it
+		// is still kept. Whether an id is claimed at all is already answerable to any signed-in
+		// account — POST /api/v1/plugins is 409 for a taken id and 201 for a free one — and the
+		// public directory prints how many claimed ids are unlisted. See release.ErrPluginUnclaimed.
+		return NewProblem(http.StatusNotFound, CodeNotFound,
+			"nobody has claimed the plugin id "+pluginID+" on this registry, and publishing does "+
+				"not claim one. Claiming is a separate step and no token can perform it, however "+
+				"scoped: sign in at "+claimAt+" and claim the id there, then run this publish "+
+				"again. Ids are first-come and permanent, so claim the one your plugin declares.")
+
 	case errors.Is(err, release.ErrNotPublishable):
-		// 404 and not 403, and the same answer as a plugin that does not exist. Telling somebody
-		// "that plugin exists and is not yours" enumerates claimed ids for anybody with a
-		// wordlist — and because ids are permanent and never recycled, it also tells a squatter
-		// which names are worth waiting for.
+		// 404 and not 403, and AMBIGUOUS ON PURPOSE. Telling somebody "that plugin exists and is
+		// not yours" enumerates claimed ids for anybody with a wordlist — and because ids are
+		// permanent and never recycled, it also tells a squatter which names are worth waiting
+		// for. This sentence is UNCHANGED, to the byte, and a test asserts that it is: the case
+		// above narrowed which situations reach here, and narrowing it must not have softened it.
 		return NewProblem(http.StatusNotFound, CodeNotFound,
 			"no such plugin, or you do not hold it")
 
@@ -257,4 +289,19 @@ func publishProblem(ctx context.Context, pluginID string, err error) error {
 	// stranger is how a publish endpoint becomes an information-disclosure bug.
 	slog.ErrorContext(ctx, "publish a release", "plugin_id", pluginID, "error", err)
 	return NewProblem(http.StatusInternalServerError, CodeInternalError, "")
+}
+
+// claimHere renders WHERE an id is claimed, from the public URL the operator configured.
+//
+// The absolute URL when this instance was told its own, and the PATH when it was not. Never a URL
+// assembled from the request's Host header: that value is chosen by the caller, and this sentence
+// is printed verbatim into somebody else's release pipeline by the reusable workflow. A registry
+// that told an author to go and sign in at a host an attacker put in a header would be handing out
+// a phishing link with a straight face. Same rule as indexURL, for the same reason.
+func claimHere(publicURL string) string {
+	base := strings.TrimSpace(publicURL)
+	if base == "" {
+		return PathAccountPage
+	}
+	return strings.TrimSuffix(base, "/") + PathAccountPage
 }

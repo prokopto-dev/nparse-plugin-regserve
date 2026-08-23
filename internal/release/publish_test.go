@@ -311,6 +311,75 @@ func TestPublish_Authority_IsOwnershipAtRequestTime(t *testing.T) {
 	}
 }
 
+// TestPublish_AnUnclaimedID_IsToldSo_AndAClaimedOneIsStillNotToldWhoHoldsIt.
+//
+// THE TWO REFUSALS HAVE TO DIFFER, and only in the direction that is safe.
+//
+// A real author's release workflow was answered "no such plugin, or you do not hold it" on every
+// run of every tag, because they had minted a token and wired CI and never learned that claiming
+// the id is a separate act no token can perform. The sentence was correct and told them nothing
+// they could act on, so the publish path stayed shut with no error anywhere that said why.
+//
+// What must NOT change is the other half. An id somebody else holds still gets the ambiguous
+// answer, to the byte: ids are permanent and never recycled, so "that one exists and is not
+// yours" is exactly what tells a squatter which names are worth waiting for. This test asserts
+// both halves in one run, because a change that softened the second would pass the first alone.
+func TestPublish_AnUnclaimedID_IsToldSo_AndAClaimedOneIsStillNotToldWhoHoldsIt(t *testing.T) {
+	t.Parallel()
+
+	w := newWorld(t, []byte("PK\x03\x04 bytes"))
+
+	// An id NOBODY has claimed, submitted by an account that is otherwise able to publish.
+	unclaimed := w.submit(t, func(raw *release.RawSubmission) {
+		raw.PluginID = "floating-combat-text"
+	})
+	_, err := w.pub.Publish(t.Context(), release.Request{
+		Submission:     unclaimed,
+		AccountID:      w.owner,
+		IdempotencyKey: "key-unclaimed",
+	})
+	require.ErrorIs(t, err, release.ErrPluginUnclaimed,
+		"an id with no claim row is a missing STEP, not a refusal, and must say so")
+	require.NotErrorIs(t, err, release.ErrNotPublishable,
+		"the two are told apart by the route, so they must not satisfy each other's errors.Is")
+
+	// The same request, from an account that does not hold a plugin somebody else DOES hold.
+	claimed := w.submit(t, nil)
+	_, err = w.pub.Publish(t.Context(), release.Request{
+		Submission:     claimed,
+		AccountID:      w.stranger,
+		IdempotencyKey: "key-not-mine",
+	})
+	require.ErrorIs(t, err, release.ErrNotPublishable)
+	require.NotErrorIs(t, err, release.ErrPluginUnclaimed,
+		"a claimed id must never be described as available; that is the squatting oracle")
+
+	require.Zero(t, w.releaseCount(t), "a refused publish wrote a row")
+	require.Zero(t, w.fetchCount(),
+		"neither refusal downloaded anything: authority is checked before the artifact is fetched")
+}
+
+// TestPublish_ADelistedPlugin_IsNotReportedAsUnclaimed.
+//
+// Delisting clears the LISTING and keeps the CLAIM — an id is never recycled, so a delisted
+// plugin's row survives for ever. Reporting one as unclaimed would send its author off to claim an
+// id that is already theirs and can never be re-claimed by anybody, and the 409 they would get
+// back is the least confusing part of that journey.
+func TestPublish_ADelistedPlugin_IsNotReportedAsUnclaimed(t *testing.T) {
+	t.Parallel()
+
+	w := newWorld(t, []byte("PK\x03\x04 bytes"))
+	w.delist(t, w.plugin)
+
+	_, err := w.pub.Publish(t.Context(), release.Request{
+		Submission:     w.submit(t, nil),
+		AccountID:      w.stranger,
+		IdempotencyKey: "key-delisted",
+	})
+	require.ErrorIs(t, err, release.ErrNotPublishable)
+	require.NotErrorIs(t, err, release.ErrPluginUnclaimed)
+}
+
 // TestPublish_AnOwnerRemovedDuringTheFetch_DoesNotGetOneMoreRelease.
 //
 // The fetch takes up to forty-five seconds and happens OUTSIDE the write transaction, because

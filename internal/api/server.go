@@ -138,9 +138,11 @@ type Config struct {
 	// account surface.
 	Tokens TokenService
 
-	// Claimer registers new plugin ids. It is the same OwnershipService in practice; declared
-	// separately because the account surface needs the one and the API needs the other, and a
-	// build could reasonably serve the pages without the endpoint.
+	// Claimer registers new plugin ids, for BOTH doors onto that act: POST /api/v1/plugins and
+	// the account page's claim form. It is the same OwnershipService in practice; declared
+	// separately because the two are different interfaces, and a build could reasonably serve the
+	// pages without the endpoint. Nil leaves the endpoint unregistered and the form unoffered —
+	// never a form that posts to a route this build does not serve.
 	Claimer Claimer
 
 	// Ownership backs the plugin settings page. Nil, like a nil Tokens, means the account surface
@@ -218,7 +220,7 @@ func New(cfg Config) http.Handler {
 		})
 	}
 	if cfg.Publisher != nil {
-		registerReleases(api, cfg.Publisher)
+		registerReleases(api, cfg.Publisher, cfg.PublicURL)
 	}
 	if cfg.Claimer != nil {
 		registerPlugins(api, cfg.Claimer)
@@ -241,6 +243,9 @@ func New(cfg Config) http.Handler {
 				Tokens:    cfg.Tokens,
 				Ownership: cfg.Ownership,
 				Providers: cfg.Providers,
+				// The same Claimer the JSON endpoint is registered with, so the form and
+				// POST /api/v1/plugins cannot end up claiming into two different services.
+				Claimer: cfg.Claimer,
 				// The same two dependencies the JSON API's review routes are wired from, so the
 				// pages and the endpoints cannot be looking at different queues. Nil leaves the
 				// review pages unregistered — see registerWeb.

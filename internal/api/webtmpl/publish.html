@@ -4,8 +4,10 @@
      The front page answers "what plugins exist". Until this page there was nowhere that answered
      "how do I make one", so a visitor who wanted to WRITE a plugin left with the same information
      they arrived with. The walkthrough below is the REAL path in the order it actually happens,
-     including the step this service has no form for yet — an on-ramp that skipped that step would
-     be a confident mistake, and every author would hit it second. */}}
+     including CLAIMING AN ID — the step that has no token-shaped door and is therefore the one an
+     author driving a release pipeline never discovers on their own. An on-ramp that skipped it
+     would be a confident mistake, and every author would hit it second. One did: a publish to an
+     unclaimed id was answered "no such plugin, or you do not hold it" on every run. */}}
 <h2>Publish a plugin</h2>
 <p>
   A plugin is a Python package with a manifest, built and released by your own repository. This
@@ -50,9 +52,10 @@
     {{if .Providers}}
       {{range .Providers}}
       <p class="muted">
-        <a href="/auth/{{.}}/login?next=/account">Sign in with GitHub</a> first — GitHub is the
-        only identity this registry accepts, because the artifacts live on GitHub Releases and the
-        ownership records it was migrated from are GitHub handles.
+        <a href="/auth/{{.}}/login?next=/account">Sign in with GitHub</a>, then claim the id with
+        the <strong>Claim a plugin id</strong> form on <a href="/account">your account page</a>.
+        GitHub is the only identity this registry accepts, because the artifacts live on GitHub
+        Releases and the ownership records it was migrated from are GitHub handles.
       </p>
       {{end}}
     {{else}}
@@ -61,13 +64,12 @@
       </p>
     {{end}}
     <p class="warn">
-      <strong>There is no form for this step yet.</strong> Claiming is
-      <code>POST /api/v1/plugins</code>, and it is session-only — no token can claim an id, however
-      scoped, because a deployment credential that could register new ids would grow its own reach
-      every time it was used. Until the page exists, <strong>send that request yourself</strong>,
-      signed in and carrying your own session cookie. Saying so is better than sending you looking
-      for a button that is not there; it is tracked as
-      <a href="https://github.com/prokopto-dev/nparse-plugin-regserve/issues/42">issue 42</a>.
+      <strong>A token cannot do this step, however scoped, and that is deliberate.</strong>
+      Claiming is session-only — <code>POST /api/v1/plugins</code> for a machine, the account
+      page's form for you — because a deployment credential that could register new ids would grow
+      its own reach every time it was used. <strong>Claim the id before you mint the token</strong>:
+      a token is pinned to an id, and publishing to an id nobody has claimed is answered
+      <code>404</code>, whatever the token carries.
     </p>
     <p class="muted">
       <strong>Do not ask somebody else to claim it for you.</strong> The account whose session sends

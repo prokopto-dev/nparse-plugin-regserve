@@ -103,6 +103,92 @@ func TestPublishRelease_ARealTokenScopedToPublish_IsAdmittedAndTheReleaseIsRecor
 	})
 }
 
+// TestPublishRelease_AnUnclaimedID_IsAnsweredWithTheMissingStep.
+//
+// THE DEAD END THIS EXISTS TO CLOSE, over real HTTP with a real token.
+//
+// A real external author wired the release workflow, minted a `plugin:publish` token, tagged a
+// version, and was answered `404 {"code":"not_found","detail":"no such plugin, or you do not hold
+// it"}` on every run. Nothing was wrong with the token. He had never claimed the id, and claiming
+// is session-only, so there was no step his pipeline could have taken and no sentence anywhere
+// telling him one was missing.
+//
+// The two halves are asserted TOGETHER and in one run, because the fix is a distinction and a
+// distinction needs both sides. An id nobody holds names the step; an id somebody ELSE holds gets
+// the ambiguous refusal unchanged, to the byte — that one is the secret, since ids are permanent
+// and "that one exists and is not yours" is what tells a squatter which names to wait for.
+//
+// Both responses are logged, so `go test -v` prints the pair a reviewer can compare.
+func TestPublishRelease_AnUnclaimedID_IsAnsweredWithTheMissingStep(t *testing.T) {
+	t.Parallel()
+
+	w := newPublishWorld(t)
+
+	// UNPINNED, and that is the author's real credential: "any plugin you own", by an account that
+	// owns none of the ids below. A pinned token would be refused by the middleware before the
+	// handler ran, which is a different — and correct — refusal about a different thing.
+	unclaimed := w.publishTo(t, "floating-combat-text", w.unpinnedToken, "1.9.2", "run-unclaimed")
+	claimed := w.publishTo(t, w.somebodyElses, w.unpinnedToken, "1.0.0", "run-not-mine")
+
+	t.Logf("unclaimed id      -> HTTP %d %s", unclaimed.status, unclaimed.body)
+	t.Logf("claimed by another -> HTTP %d %s", claimed.status, claimed.body)
+
+	t.Run("an unclaimed id names the step, the endpoint and where to do it", func(t *testing.T) {
+		require.Equal(t, http.StatusNotFound, unclaimed.status,
+			"still 404: there is still no such plugin here, and the status is public API")
+
+		p := problemOf(t, unclaimed)
+		require.Equal(t, api.CodeNotFound, p.Code,
+			"the code is a closed enum a client switches on; only the prose moves")
+		require.Contains(t, p.Detail, "floating-combat-text")
+		require.Contains(t, p.Detail, "claim",
+			"the refusal has to name the act the author has never heard of")
+		require.Contains(t, p.Detail, "no token can perform it",
+			"and say why their token was never going to work")
+		require.Contains(t, p.Detail, "https://nparseplugins.prokopto.dev/account",
+			"and where to do it, absolute, from the configured public URL")
+	})
+
+	t.Run("while an id somebody else holds is answered exactly as before", func(t *testing.T) {
+		require.Equal(t, http.StatusNotFound, claimed.status)
+
+		p := problemOf(t, claimed)
+		require.Equal(t, api.CodeNotFound, p.Code)
+
+		// VERBATIM. Not "contains", not "mentions" — this sentence is the anti-enumeration answer
+		// and softening it is the way this change could do harm.
+		require.Equal(t, "no such plugin, or you do not hold it", p.Detail)
+		require.NotContains(t, p.Detail, "claim",
+			"a claimed id must never be described as available; that is the squatting oracle")
+	})
+
+	t.Run("and the two are actually different answers", func(t *testing.T) {
+		// The assertion that makes the two above mean something. A build that had regressed to one
+		// sentence for both would satisfy every "contains" check on one of them and this on
+		// neither.
+		require.NotEqual(t, problemOf(t, unclaimed).Detail, problemOf(t, claimed).Detail)
+	})
+}
+
+// TestPublishRelease_TheUnclaimedRefusal_FallsBackToAPathWithNoPublicURL.
+//
+// An instance that was never told its own public URL must not invent one from the request's Host
+// header — that value is chosen by the caller, and this sentence is printed verbatim into somebody
+// else's release pipeline. A path is less useful and it is not a lie.
+func TestPublishRelease_TheUnclaimedRefusal_FallsBackToAPathWithNoPublicURL(t *testing.T) {
+	t.Parallel()
+
+	w := newPublishWorld(t, func(cfg *api.Config) { cfg.PublicURL = "" })
+
+	resp := w.publishTo(t, "floating-combat-text", w.unpinnedToken, "1.9.2", "run-no-public-url")
+	require.Equal(t, http.StatusNotFound, resp.status)
+
+	p := problemOf(t, resp)
+	require.Contains(t, p.Detail, "sign in at /account")
+	require.NotContains(t, p.Detail, "http",
+		"a host from the request would be a phishing link written by the caller")
+}
+
 // publishedRelease is the response body, decoded. It is written out here rather than reusing the
 // handler's unexported type on purpose: this test is a client of the published contract, and a
 // client only has the JSON.
@@ -130,11 +216,20 @@ type publishWorld struct {
 	// holds. readToken carries `plugin:read` and is otherwise identical.
 	publishToken string
 	readToken    string
+
+	// unpinnedToken carries `plugin:publish` and NO pin — the "any plugin you own" option on the
+	// mint form, and the token the author this fixture is modelled on actually held. It is what
+	// lets one token reach two different plugin ids, which the middleware's pin check would
+	// otherwise refuse before the handler ran.
+	unpinnedToken string
+
+	// somebodyElses is an id claimed by ANOTHER account. It is what the ambiguous refusal is for.
+	somebodyElses string
 }
 
 // newPublishWorld builds everything a publish touches, with nothing faked between the token and
 // the row.
-func newPublishWorld(t *testing.T) *publishWorld {
+func newPublishWorld(t *testing.T, mutate ...func(cfg *api.Config)) *publishWorld {
 	t.Helper()
 
 	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
@@ -174,17 +269,38 @@ func newPublishWorld(t *testing.T) *publishWorld {
 	require.NoError(t, err)
 	w.tokens = tokens
 
-	w.srv = httptest.NewServer(api.New(api.Config{
+	cfg := api.Config{
 		Clock:     clk,
 		Authn:     auth.NewAuthenticator(sessions, tokens),
 		Tokens:    tokens,
 		Providers: identity.NewRegistry(stubProvider{}),
 		Publisher: release.NewPublisher(db, clk, fetcher),
-	}))
+		// Configured, because the refusal an unclaimed id gets names where to claim it and this
+		// is where that value comes from. An instance with none falls back to the path; naming
+		// the live registry's own URL here keeps the fixture honest about what an author reads.
+		PublicURL: "https://nparseplugins.prokopto.dev",
+	}
+	for _, m := range mutate {
+		m(&cfg)
+	}
+	w.srv = httptest.NewServer(api.New(cfg))
 	t.Cleanup(w.srv.Close)
 
 	w.publishToken = w.mint(t, "the plugin's release workflow", "plugin:publish")
 	w.readToken = w.mint(t, "a token that may only look", "plugin:read")
+
+	// A second account holding a second id, so "claimed, and not by you" is a real row rather than
+	// a hypothesis. Its owner never publishes here; it exists to be refused.
+	w.somebodyElses = "merchant-mode-fork"
+	insertClaimedPlugin(t, db, now, w.somebodyElses, insertPublishingAccountAs(t, db, now, "octocat"))
+
+	unpinned, err := tokens.Mint(t.Context(), auth.MintRequest{
+		AccountID: w.account,
+		Name:      "any plugin you own",
+		Scopes:    []authz.Scope{"plugin:publish"},
+	})
+	require.NoError(t, err)
+	w.unpinnedToken = unpinned.Secret
 	return w
 }
 
@@ -204,9 +320,16 @@ func (w *publishWorld) mint(t *testing.T, name string, scope authz.Scope) string
 	return minted.Secret
 }
 
-// publish sends one release submission with the token in an Authorization header, which is the
-// only place a token is ever accepted.
+// publish sends one release submission for this world's own plugin.
 func (w *publishWorld) publish(t *testing.T, token, version, key string) response {
+	t.Helper()
+
+	return w.publishTo(t, w.plugin, token, version, key)
+}
+
+// publishTo sends one release submission with the token in an Authorization header, which is the
+// only place a token is ever accepted.
+func (w *publishWorld) publishTo(t *testing.T, pluginID, token, version, key string) response {
 	t.Helper()
 
 	body, err := json.Marshal(map[string]any{
@@ -218,7 +341,7 @@ func (w *publishWorld) publish(t *testing.T, token, version, key string) respons
 	require.NoError(t, err)
 
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
-		w.srv.URL+api.BasePath+"/plugins/"+w.plugin+"/releases", strings.NewReader(string(body)))
+		w.srv.URL+api.BasePath+"/plugins/"+pluginID+"/releases", strings.NewReader(string(body)))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -247,6 +370,13 @@ func (w *publishWorld) artifactSHA256() string {
 // toggle. An account without one is refused by the domain, which would be a different test.
 func insertPublishingAccount(t *testing.T, db *store.DB, now time.Time) string {
 	t.Helper()
+	return insertPublishingAccountAs(t, db, now, "prokopto-dev")
+}
+
+// insertPublishingAccountAs is the same thing under a named handle, for a fixture that needs a
+// SECOND account. (provider, subject) is unique, so two accounts cannot share one.
+func insertPublishingAccountAs(t *testing.T, db *store.DB, now time.Time, handle string) string {
+	t.Helper()
 
 	accountID, err := core.NewULID(now)
 	require.NoError(t, err)
@@ -256,7 +386,7 @@ func insertPublishingAccount(t *testing.T, db *store.DB, now time.Time) string {
 	require.NoError(t, db.Tx(t.Context(), func(q *store.Queries) error {
 		if err := q.InsertAccount(t.Context(), sqlitegen.InsertAccountParams{
 			ID:          accountID.String(),
-			DisplayName: "prokopto-dev",
+			DisplayName: handle,
 			CreatedAt:   core.MicrosFromTime(now).Int64(),
 			UpdatedAt:   core.MicrosFromTime(now).Int64(),
 		}); err != nil {
@@ -266,8 +396,8 @@ func insertPublishingAccount(t *testing.T, db *store.DB, now time.Time) string {
 			ID:           identityID.String(),
 			AccountID:    accountID.String(),
 			ProviderKind: "github",
-			Subject:      "sub-prokopto-dev",
-			Handle:       "prokopto-dev",
+			Subject:      "sub-" + handle,
+			Handle:       handle,
 			LinkedAt:     core.MicrosFromTime(now).Int64(),
 			RefreshedAt:  core.MicrosFromTime(now).Int64(),
 		})
