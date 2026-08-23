@@ -1,6 +1,8 @@
 package review_test
 
 import (
+	"bytes"
+	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -180,4 +182,91 @@ func TestNewReviewers_AnEmptySetMeansNobody(t *testing.T) {
 			require.False(t, got, "an empty reviewer set admitted somebody")
 		}
 	}
+}
+
+// TestReviewers_Configured_SeparatesNobodyMayReviewFromYouMayNot.
+//
+// The two are the same answer from IsReviewer, the same missing link on a page and the same empty
+// queue -- and only one of them is a broken deployment. Configured is what tells them apart, so it
+// is asserted over the same shapes an operator can actually leave REGSERVE_REVIEWERS in.
+func TestReviewers_Configured_SeparatesNobodyMayReviewFromYouMayNot(t *testing.T) {
+	t.Parallel()
+
+	w := newWorld(t)
+
+	for _, handles := range [][]string{nil, {}, {""}, {"   "}, {"@"}} {
+		require.False(t, review.NewReviewers(w.db, handles).Configured(),
+			"%q names nobody and must not read as a configured registry", handles)
+	}
+
+	configured := review.NewReviewers(w.db, review.ParseHandleList("themaintainer"))
+	require.True(t, configured.Configured())
+
+	// And it is a fact about the CONFIGURATION, not about any account: a handle nobody has signed
+	// in with still means somebody may review, and it must not read as an unconfigured registry
+	// just because the one caller asking is not that person.
+	got, err := configured.IsReviewer(t.Context(), w.owner)
+	require.NoError(t, err)
+	require.False(t, got)
+	require.True(t, configured.Configured())
+}
+
+// TestLogConfiguration_NoReviewersAndAnEmptyQueue_IsStillAWarning.
+//
+// The level is the assertion, and it is the defect: this case used to be logged at Info. A
+// deployment that has never set REGSERVE_REVIEWERS -- which the compose file defaults to empty, so
+// it is the ordinary one -- announced "nothing can ever be approved" at the level operators filter
+// out, and an empty queue is not evidence the setting is fine. It is what an unreachable queue
+// looks like.
+//
+// NOT parallel: it replaces the default slog handler, which is process-wide. Go releases the
+// parallel tests in a package only once the sequential ones have finished, so this does not
+// overlap them; the cleanup puts the original back either way.
+func TestLogConfiguration_NoReviewersAndAnEmptyQueue_IsStillAWarning(t *testing.T) {
+	w := newWorld(t)
+
+	tests := []struct {
+		name     string
+		handles  []string
+		pending  int64
+		wantWarn bool
+	}{
+		{name: "nobody configured, nothing waiting", wantWarn: true},
+		{name: "nobody configured, a backlog", pending: 3, wantWarn: true},
+		{name: "somebody configured", handles: []string{"themaintainer"}, pending: 3},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			logged := captureLogs(t)
+			review.NewReviewers(w.db, tc.handles).LogConfiguration(t.Context(), tc.pending)
+
+			line := logged()
+			require.NotEmpty(t, line, "boot must say what moderation this instance can do")
+
+			if !tc.wantWarn {
+				require.NotContains(t, line, `"level":"WARN"`,
+					"a configured registry is not a fault and must not warn about itself")
+				return
+			}
+
+			require.Contains(t, line, `"level":"WARN"`,
+				"a registry nobody can moderate must be loud at boot")
+			require.Contains(t, line, review.EnvVar(),
+				"the warning has to name the variable that fixes it")
+		})
+	}
+}
+
+// captureLogs redirects the default logger into a buffer for the duration of one test and hands
+// back a reader for what it collected.
+func captureLogs(t *testing.T) func() string {
+	t.Helper()
+
+	var buf bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	return buf.String
 }

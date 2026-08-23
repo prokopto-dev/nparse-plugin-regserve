@@ -93,8 +93,18 @@ GitHub repository and a merge button.
 Three things follow, and each has bitten somebody somewhere:
 
 - **Unset means nobody can approve anything.** Not "everybody" — nobody. Releases will publish,
-  verify, and sit in the queue for ever. The server says so at boot:
-  `releases are waiting for review and no reviewers are configured`.
+  verify, and sit in the queue for ever. `compose.yaml` defaults it to empty
+  (`${REGSERVE_REVIEWERS:-}`), so this is the state a deployment is in until somebody sets it, and
+  it is announced twice:
+  - **At boot, as a `WARN`,** whether or not anything is waiting:
+    `no reviewers are configured; nothing submitted to this registry can ever be approved`, or
+    `releases are waiting for review and no reviewers are configured` once there is a backlog. Both
+    carry `needs=REGSERVE_REVIEWERS`. The first used to be an `INFO`, which is where this hid: an
+    empty queue is not evidence the setting is fine, it is what an unreachable queue looks like.
+  - **On the account page of every signed-in visitor,** because an author waiting on a release
+    needs it more than the operator does. The page says the registry has no reviewers and names the
+    variable. It never says who the reviewers are, or how many — an empty list is a fault worth
+    reporting; a populated one is a list of people to work through.
 - **A handle grants nothing until that person has signed in here at least once.** The check
   resolves against a proven `identity` row, so a typo grants nobody rather than granting whoever
   registers that name next.
@@ -108,6 +118,11 @@ including a reviewer's own. Moderation is a browser-and-session operation only.
 
 A configured reviewer signs in and gets a **review queue** link in the page header; the pages are at
 `/review` and `/review/releases/{id}`, served by the same binary as everything else.
+
+**If the link is not there, the account page says which of the two reasons applies:** this account
+is not one of the configured reviewers, or the registry has no configured reviewers at all. Those
+are different problems — the first is somebody else's account to fix, the second is this file — and
+until the page distinguished them, both looked like a queue that happened to be empty.
 
 The queue lists what is waiting, oldest first. Opening a release shows **why it is there** — every
 quarantine rule that fired when it was submitted, read from the audit row the publish wrote rather

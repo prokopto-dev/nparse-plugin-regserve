@@ -29,6 +29,7 @@ A green run that checked nothing is worse than a red one, because it teaches peo
 | Gate | Rule | Mechanism |
 |---|---|---|
 | `ROUTE001` | HTTP routes are declared only in `internal/api` | AST analyser: registrar calls outside that tree |
+| `ROUTE002` | A path this service does not route answers **404**, and a routed path reached by another method answers **405** with `Allow` — both as `application/problem+json` | Test in `internal/api` (`fallback_test.go`) over a build with EVERY route registered. It exists because its absence shipped: `GET /` is a Go ServeMux **catch-all**, so registering the public directory at `/` made every unrouted GET answer `200` with the home page — measured on the live deployment for `/definitely-not-a-page-xyz`, `/openapi.json`, `/docs`, `/tokens` and `/publish`, while only the paths whose middleware refused first told the truth. The cost was not aesthetic: a missing route and a present one were indistinguishable from outside, so "is that deployed?" had no answer. The mechanism is in `internal/api/fallback.go` — the home page is registered as `/{$}`, a method-less pattern per routed path answers 405, and one `/` catch-all answers 404. The gate asserts the unrouted paths are 404 **and carry no page**, that `/` and the routes below it still answer, that HEAD is still served from the GET pattern, and that `Allow` names `HEAD` wherever GET is registered because Go's router does. It closes [issue #18], whose subject was that net/http's own 404 and 405 bodies are `text/plain`, leaving `method_not_allowed` in the closed enum unreachable by any request |
 | `SQL001` | `*sql.DB` is held only by `internal/store` | AST analyser: `database/sql` in a file's import set |
 | `NET001` | Outbound HTTP only from `internal/identity/*`, `internal/artifact`, and `cmd/regserve/healthcheck.go` | AST analyser: `http.Get`/`Post`/`Head`/`PostForm`, `http.Client` literals and `net.Dial*` outside those trees |
 | `CLOCK001` | `time.Now` appears only in `internal/clock` | AST analyser, resolving the import alias, so `clk "time"` does not defeat it |
@@ -239,3 +240,5 @@ Listed here deliberately. Do not move a row up to a table above without adding t
    nobody has seen fail is a gate nobody knows works.
 3. Add the row here.
 4. If it is a rule an agent will meet while writing code, add it to `AGENTS.md` too.
+
+[issue #18]: https://github.com/prokopto-dev/nparse-plugin-regserve/issues/18

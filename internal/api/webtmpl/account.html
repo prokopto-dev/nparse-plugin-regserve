@@ -1,4 +1,26 @@
 {{define "content"}}
+{{/* A fact about the DEPLOYMENT, not about the reader, and the one this page could not say. A
+     registry with nobody named in REGSERVE_REVIEWERS accepts releases, verifies them and never
+     lists any of them -- and from here that looked exactly like a registry whose queue happens to
+     be empty. It is shown to every signed-in account rather than to operators only, because the
+     person it costs most is whoever is waiting on a release. Who the reviewers are, and how many,
+     is deliberately not said either way. */}}
+{{if .NoReviewers}}
+  <div class="notice problem">
+    <p>
+      <strong>This registry has no reviewers configured, so nothing submitted to it can be
+      approved.</strong>
+    </p>
+    <p class="muted">
+      Publishing still works: a release is recorded, its artifact is downloaded and hashed, and it
+      then waits — indefinitely, until somebody can decide it. Moderation comes from control of the
+      deployment and from nothing else, so the fix is to set <code>REGSERVE_REVIEWERS</code> to a
+      comma-separated list of GitHub handles and restart the service. There is deliberately no way
+      to grant it from inside here.
+    </p>
+  </div>
+{{end}}
+
 <h2>Your plugins</h2>
 {{if .Plugins}}
   <table>

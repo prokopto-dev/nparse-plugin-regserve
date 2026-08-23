@@ -54,6 +54,11 @@ That varies with the *deployment*, which every caller can see anyway, and never 
 path. It is the same sentence for every plugin id, which is what makes it safe to say and still
 enough to unblock an author whose pipeline is answered `404` on every tag.
 
+**A path this service does not route answers this too**, rather than the front page. Gate
+`ROUTE002` holds it: a `200` for a page that does not exist makes a route that is missing
+indistinguishable from one that is there, which is worse than an error for everybody trying to
+find out what a deployment serves.
+
 ## invalid_request
 
 **400.** The request was understood and is wrong: a missing field, a version that is not greater
@@ -109,7 +114,12 @@ body returns the original result, which is the point of sending one.
 
 ## method_not_allowed
 
-**405.** The path exists; the method does not. The `Allow` header lists what does.
+**405.** The path exists; the method does not. The `Allow` header lists what does, including `HEAD`
+wherever `GET` is routed — Go's router serves one from the other, so an `Allow` that omitted it
+would describe a rule the server does not follow.
+
+Gate `ROUTE002` holds this one as well. It was documented and unreachable for a while: the refusal
+came from `net/http`'s own `text/plain` handler, before any of this service's code ran.
 
 ## internal_error
 

@@ -191,6 +191,23 @@ type pageData struct {
 	// says, and a page that hid the link would still be a page that could not be reached. Its job
 	// is that a reviewer landing on their account page can find the queue at all.
 	IsReviewer bool
+
+	// NoReviewers says this deployment has named NOBODY who may moderate, which is a different
+	// statement from "you may not" and the one nothing was making.
+	//
+	// Without it the two are one blank page. `REGSERVE_REVIEWERS` is defaulted empty in the
+	// compose file, so an instance where every submission queues for ever and no human can act on
+	// any of it looks exactly like an instance whose queue happens to be empty — from the account
+	// page, from the missing link, and from the outside. That ambiguity is what "never hide a row
+	// silently" is about, and it costs an author waiting on a release more than it costs anybody
+	// else.
+	//
+	// It is a FACT ABOUT THE DEPLOYMENT and is therefore shown to every signed-in account rather
+	// than to operators only: the person who most needs it is whoever is wondering why their
+	// release has not appeared, and there is nothing here to keep back — a registry that can
+	// approve nothing is the safest state this service has, not an exploitable one. What is kept
+	// back is who the reviewers ARE, and how many: see review.Reviewers.Configured.
+	NoReviewers bool
 }
 
 // scopeOption is one checkbox on the mint form, from the catalogue rather than from a list here.
@@ -643,8 +660,18 @@ func accountData(ctx context.Context, deps WebDeps, p auth.Principal) (pageData,
 		// Whether to OFFER the queue, not whether it may be reached. Asked per request rather than
 		// resolved at sign-in, like every other reviewer check: an operator who adds a handle and
 		// redeploys should not need everybody to sign in again.
-		IsReviewer: isReviewer(ctx, deps, p),
+		IsReviewer:  isReviewer(ctx, deps, p),
+		NoReviewers: noReviewers(deps),
 	}, nil
+}
+
+// noReviewers reports whether this deployment has named anybody who may moderate.
+//
+// A nil check is FALSE — the account surface is registered only when the reviewer check is wired
+// (see registerWeb), so nil here is a build that cannot answer rather than one with an empty list,
+// and announcing a fault we cannot see would be the confident mistake pointing the other way.
+func noReviewers(deps WebDeps) bool {
+	return deps.Reviewers != nil && !deps.Reviewers.Configured()
 }
 
 // isReviewer answers whether to show the queue link, and never opens a door.

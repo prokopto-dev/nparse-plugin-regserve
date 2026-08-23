@@ -83,13 +83,21 @@ func (f *fakeQueue) Reverify(_ context.Context, id, _ string) (review.Verificati
 	return review.Verification{ReleaseID: id, Verified: f.verified}, f.decideErr
 }
 
-// fakeReviewers answers the one question the middleware asks.
+// fakeReviewers answers the two questions the surfaces ask: whether this account may review, and
+// whether anybody may.
 type fakeReviewers struct {
 	yes bool
 	err error
+
+	// unconfigured is the deployment with REGSERVE_REVIEWERS empty. It is a separate field rather
+	// than being derived from `yes`, because "you are not a reviewer" and "there are no reviewers"
+	// are exactly the two states these pages have to be able to tell apart.
+	unconfigured bool
 }
 
 func (f *fakeReviewers) IsReviewer(context.Context, string) (bool, error) { return f.yes, f.err }
+
+func (f *fakeReviewers) Configured() bool { return !f.unconfigured }
 
 // reviewHarness is a running review surface plus the fakes behind it.
 type reviewHarness struct {
@@ -562,4 +570,88 @@ func TestAccountPage_OffersTheQueueOnlyToAReviewer(t *testing.T) {
 		require.NotContains(t, string(resp.body), `href="/review"`,
 			`"we could not check" must never resolve to "yes"`)
 	})
+}
+
+// TestAccountPage_ARegistryWithNoReviewers_SaysSoInsteadOfLookingLikeAnEmptyQueue.
+//
+// THE THREE STATES THIS SURFACE HAD TWO ANSWERS FOR. "You may not moderate" and "NOBODY may
+// moderate" both rendered as an account page with no queue link, and only the second is a fault:
+// `REGSERVE_REVIEWERS` is defaulted empty in the compose file, so an instance where every
+// submission waits for ever and no human can act on any of it is one unset variable away and looks
+// exactly like an instance whose queue happens to be empty.
+//
+// The assertion that matters is the last one in each case: the three pages must differ from each
+// other. A warning that appeared on all of them would be as useless as one that appeared on none.
+func TestAccountPage_ARegistryWithNoReviewers_SaysSoInsteadOfLookingLikeAnEmptyQueue(t *testing.T) {
+	t.Parallel()
+
+	page := func(t *testing.T, yes, unconfigured bool) string {
+		t.Helper()
+
+		h := newReviewHarness(t, func(h *reviewHarness) {
+			h.reviewers.yes = yes
+			h.reviewers.unconfigured = unconfigured
+		})
+		resp := h.do(t, http.MethodGet, "/account", nil)
+		require.Equal(t, http.StatusOK, resp.status)
+		return string(resp.body)
+	}
+
+	const warning = "no reviewers configured"
+
+	t.Run("a reviewer is offered the queue and told about no fault", func(t *testing.T) {
+		t.Parallel()
+
+		body := page(t, true, false)
+		require.Contains(t, body, `href="/review"`)
+		require.NotContains(t, body, warning)
+	})
+
+	t.Run("a non-reviewer on a moderated registry is told nothing", func(t *testing.T) {
+		t.Parallel()
+
+		// The quiet case, and deliberately quiet: somebody can approve, it is simply not this
+		// account. There is nothing here for the reader to act on.
+		body := page(t, false, false)
+		require.NotContains(t, body, `href="/review"`)
+		require.NotContains(t, body, warning)
+	})
+
+	t.Run("a registry nobody can moderate says so, and says what fixes it", func(t *testing.T) {
+		t.Parallel()
+
+		body := page(t, false, true)
+		require.NotContains(t, body, `href="/review"`)
+		require.Contains(t, body, warning)
+		require.Contains(t, body, review.EnvVar(),
+			"a warning that does not name the variable is a warning nobody can act on")
+
+		// Never the handles and never the count. That a registry can approve nothing is the safe
+		// state and is worth saying; who may approve is a list of people to work through.
+		require.NotContains(t, body, "themaintainer")
+	})
+}
+
+// TestReviewQueue_ANonReviewerAndAReviewerWithNothingToDo_DoNotSeeTheSamePage.
+//
+// The other half of the same ambiguity, one level down. An operator who typed /review directly had
+// no way to tell "this account may not" from "there is nothing waiting", and those need different
+// actions from them.
+func TestReviewQueue_ANonReviewerAndAReviewerWithNothingToDo_DoNotSeeTheSamePage(t *testing.T) {
+	t.Parallel()
+
+	empty := newReviewHarness(t, func(h *reviewHarness) { h.queue.waiting = nil })
+	refused := newReviewHarness(t, func(h *reviewHarness) { h.reviewers.yes = false })
+
+	idle := empty.do(t, http.MethodGet, api.PathReviewQueue, nil)
+	require.Equal(t, http.StatusOK, idle.status)
+	require.Contains(t, string(idle.body), "Nothing is waiting",
+		"a reviewer with an empty queue must be told the queue is empty")
+
+	denied := refused.do(t, http.MethodGet, api.PathReviewQueue, nil)
+	require.Equal(t, http.StatusForbidden, denied.status)
+	p := problemOf(t, denied)
+	require.Equal(t, api.CodeForbidden, p.Code)
+	require.Contains(t, p.Detail, "operates the deployment",
+		"the refusal has to say where the authority comes from; it is not something to request here")
 }

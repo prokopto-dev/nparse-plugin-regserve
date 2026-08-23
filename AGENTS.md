@@ -45,7 +45,7 @@ from it is vendored here at `internal/registry/testdata/index-v1.schema.json`.
 | Path | Holds |
 |---|---|
 | `cmd/regserve/` | The only binary. Cobra wiring, no logic |
-| `internal/api/` | Every HTTP route, registered with Huma v2 ([ADR-0012](docs/adr/0012-huma-v2-everywhere-with-the-index-bytes-pinned.md)). `routes.go` holds the only registration helper, and its signature demands an access declaration; `security.go` is the middleware that ENFORCES that same declaration. ETag and idempotency (canonical §6) are not built yet |
+| `internal/api/` | Every HTTP route, registered with Huma v2 ([ADR-0012](docs/adr/0012-huma-v2-everywhere-with-the-index-bytes-pinned.md)). `routes.go` holds the only registration helper, and its signature demands an access declaration; `security.go` is the middleware that ENFORCES that same declaration. `fallback.go` is what answers a request that matched no route at all, which the mux decides before Huma is involved. ETag and idempotency (canonical §6) are not built yet |
 | `internal/authz/` | **The** catalogue — permissions and PAT scopes, in `catalogue.go`, every key a whole quoted literal (`AUTHZ001`). It generates the scope list, the `x-regserve-permission` metadata and [`docs/reference/permissions.md`](docs/reference/permissions.md). Nothing else may hold a permission list |
 | `internal/auth/` | PAT mint and verify, sessions, OAuth state and PKCE. A credential's secret is never stored: what is, is `HMAC-SHA256(pepper, secret)`. The 8-character token prefix is the public half and the only part that may be logged |
 | `internal/audit/` | The ONE writer of `audit_log` rows. Append-only, and `detail` never carries a secret |
@@ -68,6 +68,10 @@ HTTP requests.** Everything else that needs a remote fact asks one of them.
 Each has a mechanism. The mechanism is authoritative; this list is a description of it.
 
 1. **HTTP routes are declared only in `internal/api`.** Route-registry architectural test, `ROUTE001`.
+   And **a path this service does not route answers 404**, not the front page: `ROUTE002`. `GET /`
+   is a Go ServeMux catch-all, so the home page is registered as `/{$}` and
+   `internal/api/fallback.go` owns the 404 and the 405 — a route registered at a path ending in a
+   slash would be that defect again.
 2. **`*sql.DB` is held only by `internal/store`.** Import-graph test; `SQL001`.
 3. **Outbound HTTP only from `internal/identity/*` and `internal/artifact`,** through the guarded
    client whose dialer denies private, link-local, loopback and cloud-metadata addresses. `NET001`.

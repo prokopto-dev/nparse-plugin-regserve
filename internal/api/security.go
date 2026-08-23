@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -33,6 +32,15 @@ type Authenticator interface {
 // answers a different question.
 type ReviewerCheck interface {
 	IsReviewer(ctx context.Context, accountID string) (bool, error)
+
+	// Configured reports whether ANYBODY may review this registry. It takes no context and no
+	// account because it is a fact about the deployment's own configuration, not about a request.
+	//
+	// The middleware does not read it — "nobody may review" already refuses every caller through
+	// IsReviewer, and a second path to the same refusal would be a second place to get it wrong.
+	// The PAGES read it, to tell an account that may not moderate apart from a registry where
+	// nobody can. Those look identical without it, and only one of them is a fault.
+	Configured() bool
 }
 
 // principalKey is the context key the middleware stores the resolved principal under. It is an
@@ -285,24 +293,10 @@ func RefuseTokenInQuery(next http.Handler) http.Handler {
 			return
 		}
 
-		// Written here rather than through Huma, which is not in this layer. It is the same
-		// document type handlers return, so a client parses one shape whatever refused it.
-		problem := NewProblem(http.StatusUnauthorized, CodeUnauthorized,
-			"a token in a query string is never accepted; send it as an Authorization header")
-		body, err := json.Marshal(problem)
-		if err != nil {
-			// Unreachable: Problem is four strings and an int. Refusing loudly beats serving the
-			// request we just decided to refuse.
-			slog.ErrorContext(r.Context(), "render the query-token problem", "error", err)
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-
-		w.Header().Set("Content-Type", problemContentType)
-		w.WriteHeader(http.StatusUnauthorized)
-		if _, err := w.Write(body); err != nil {
-			slog.ErrorContext(r.Context(), "write the query-token problem", "error", err)
-		}
+		// Written here rather than through Huma, which is not in this layer — the same writer the
+		// mux fallbacks use, so a caller parses one shape whatever refused it.
+		writeProblemTo(w, r, NewProblem(http.StatusUnauthorized, CodeUnauthorized,
+			"a token in a query string is never accepted; send it as an Authorization header"))
 	})
 }
 

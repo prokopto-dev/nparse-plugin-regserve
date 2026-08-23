@@ -100,6 +100,18 @@ func ParseHandleList(raw string) []string {
 // Count is how many handles were configured. For the boot log.
 func (r *Reviewers) Count() int { return len(r.handles) }
 
+// Configured reports whether ANYBODY may review this registry.
+//
+// It answers a different question from IsReviewer, and the difference is the one an operator has
+// been unable to ask: "this account may not moderate" and "NO account may moderate" are the same
+// blank page and the same missing link, and only the second is a broken deployment. The surfaces
+// use it to say which, so a release that will wait for ever says so instead of waiting quietly.
+//
+// It deliberately exposes a BOOLEAN and not the count or the handles. A page saying how many
+// people can moderate a registry, or naming them, is a list of people to work through; that the
+// list is empty is the only part of it anybody needs, and it is the part that is a fault.
+func (r *Reviewers) Configured() bool { return len(r.handles) > 0 }
+
 // IsReviewer reports whether the account holds one of the configured handles.
 //
 // It resolves through `identity`, so the answer is "this account has PROVED it holds that GitHub
@@ -138,14 +150,21 @@ func (r *Reviewers) IsReviewer(ctx context.Context, accountID string) (bool, err
 // An instance with a queue and no reviewers is a working service in which nothing will ever be
 // published, and that is exactly the kind of state that is discovered a fortnight later by an
 // author asking why their release is still pending.
+//
+// BOTH EMPTY CASES ARE WARNINGS, and the second one used to be an Info. That was wrong in the way
+// this repository cares about: `REGSERVE_REVIEWERS` is defaulted empty in the compose file, so the
+// deployment that has never set it is the ordinary one, and it announced a configuration that
+// cannot do its job at the level operators filter out. An empty queue is not evidence that the
+// setting is fine — it is what an unreachable queue looks like from the outside — so the line
+// cannot wait for a backlog to raise its own volume.
 func (r *Reviewers) LogConfiguration(ctx context.Context, pending int64) {
 	switch {
 	case len(r.handles) == 0 && pending > 0:
 		slog.WarnContext(ctx, "releases are waiting for review and no reviewers are configured",
 			"pending", pending, "needs", envReviewers)
 	case len(r.handles) == 0:
-		slog.InfoContext(ctx, "no reviewers are configured; nothing can be approved",
-			"needs", envReviewers)
+		slog.WarnContext(ctx, "no reviewers are configured; nothing submitted to this registry "+
+			"can ever be approved", "needs", envReviewers)
 	default:
 		// The COUNT and not the handles. A handle is not a secret, but a log line naming who can
 		// moderate a registry is a list of people to target, and the count answers the operator's
