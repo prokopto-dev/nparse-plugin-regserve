@@ -122,8 +122,14 @@ var (
 // The audit and review vocabulary this file writes. One spelling each: an incident review queries
 // audit_log on (subject_kind, subject_id), and a second spelling puts half the rows out of reach.
 const (
-	subjectPluginKind = "plugin"
-	actionPublish     = "plugin.publish"
+	subjectPluginKind  = "plugin"
+	subjectReleaseKind = "release"
+	actionPublish      = "plugin.publish"
+
+	// actionSupersedePending is recorded on a release a NEWER SUBMISSION retired before anybody
+	// reviewed it. It is spelled the way internal/review spells its own release actions, because
+	// an incident review reads one release's trail and does not care which package wrote a row.
+	actionSupersedePending = "release.superseded"
 
 	// operationPublishRelease is the OperationID of the route this serves. It scopes an
 	// idempotency key, so it is the SDK method name rather than a description — a key reused
@@ -201,6 +207,12 @@ type Outcome struct {
 	// Superseded is the release this one retired, set only when it published automatically. It is
 	// reported because a listing changing with nothing saying so is indistinguishable from a bug.
 	Superseded string
+
+	// SupersededPending is every release of this plugin that was still waiting for review when
+	// this one arrived, and is not waiting any more. Usually empty, and never silent when it is
+	// not: a publishing workflow that quietly cancelled the author's own earlier submission is the
+	// same class of invisible change as a listing that moved with nothing saying so.
+	SupersededPending []string
 
 	// Reasons is every quarantine rule that fired, empty for a release that went live. It is
 	// returned so a publishing workflow can print WHY its release is waiting rather than making
@@ -453,6 +465,19 @@ func (p *Publisher) record(
 			}
 		}
 
+		// A NEW SUBMISSION RETIRES WHATEVER OF THIS PLUGIN WAS STILL WAITING, in this transaction
+		// and before the insert. The partial unique index release_one_pending_per_plugin permits
+		// exactly one pending row per plugin, so doing it afterwards is a constraint violation.
+		//
+		// UNCONDITIONAL, including when this release publishes automatically. The queue showing one
+		// plugin id several times is the visible half; the half that matters is that approving is
+		// not ordered, so a 1.0.1 left waiting after 1.0.2 went live can be approved afterwards and
+		// SupersedeApprovedRelease will retire 1.0.2 to do it -- rolling the listing backwards past
+		// a version check that only runs here, at submission, against whatever was approved then.
+		if err := p.retireWaitingReleases(ctx, q, req, &out); err != nil {
+			return err
+		}
+
 		if err := q.InsertPublishRelease(ctx, params); err != nil {
 			return fmt.Errorf("record the release of %s %s: %w",
 				req.Submission.PluginID, req.Submission.Version, err)
@@ -595,6 +620,13 @@ func publishDetail(sub Submission, v verdict, out Outcome) map[string]any {
 	if len(v.reasons) > 0 {
 		detail["quarantine"] = reasonStrings(v.reasons)
 	}
+	if len(out.SupersededPending) > 0 {
+		// What this submission retired before anybody reviewed it. Recorded on the PUBLISH row as
+		// well as on each retired release, because the two answer different questions: the release
+		// rows answer "why is my submission not waiting any more", and this answers "what did that
+		// publish do" -- which is the one an incident review asks first.
+		detail["superseded_pending"] = out.SupersededPending
+	}
 	if out.State == StateApproved {
 		// A release that went live WITHOUT A HUMAN says so in the one table nobody can edit. This
 		// is the row an incident review reads when the question is "who approved these bytes" and
@@ -603,6 +635,57 @@ func publishDetail(sub Submission, v verdict, out Outcome) map[string]any {
 		detail["superseded"] = out.Superseded
 	}
 	return detail
+}
+
+// retireWaitingReleases supersedes every release of this plugin that is still waiting for review,
+// and records one audit row against each.
+//
+// The rows are READ before they are changed, because the ids are what those audit rows are written
+// against. A state change with no row explaining it leaves the author of a superseded submission
+// looking at a page that says their release will never be reviewed and nothing saying why -- and
+// audit_log is append-only, so it is the one copy of that explanation nothing can later edit.
+//
+// review_note is deliberately untouched: it carries the quarantine reasons, which are the only
+// explanation the author ever gets for why the release was waiting in the first place.
+func (p *Publisher) retireWaitingReleases(
+	ctx context.Context, q *store.Queries, req Request, out *Outcome,
+) error {
+	pluginID := req.Submission.PluginID.String()
+
+	waiting, err := q.ListPendingReleasesForPlugin(ctx, pluginID)
+	if err != nil {
+		return fmt.Errorf("read the waiting releases of %s: %w", pluginID, err)
+	}
+	if len(waiting) == 0 {
+		return nil
+	}
+
+	if _, err := q.SupersedePendingReleases(ctx, pluginID); err != nil {
+		return fmt.Errorf("supersede the waiting releases of %s: %w", pluginID, err)
+	}
+
+	for _, w := range waiting {
+		out.SupersededPending = append(out.SupersededPending, w.ID)
+
+		if err := audit.Record(ctx, q, p.clk, audit.Entry{
+			Actor:       audit.ActorAccount,
+			AccountID:   req.AccountID,
+			Action:      actionSupersedePending,
+			SubjectKind: subjectReleaseKind,
+			SubjectID:   w.ID,
+			Detail: map[string]any{
+				"plugin":        pluginID,
+				"version":       w.Version,
+				"superseded_by": req.Submission.Version,
+				"reason": "a newer release of this plugin was submitted while this one was " +
+					"waiting for review, and the newest submission is the one that is published",
+			},
+		}); err != nil {
+			return fmt.Errorf("record the superseding of release %s: %w", w.ID, err)
+		}
+	}
+
+	return nil
 }
 
 // hashRequest digests the fields that make a publish request what it is.

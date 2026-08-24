@@ -26,6 +26,11 @@ const (
 	                   'https://example.com/merchant-mode.zip',
 	                   'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
 	                   '>=1.0,<2', 1700000000000000)`
+	// A release of the same plugin WAITING for review, for the index that permits exactly one.
+	seedPendingRelease = `INSERT INTO "release" (id, plugin_id, version, state, source, artifact_url,
+	                          sdk_specifier, submitted_at)
+	                      VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FBA', 'merchant-mode', '2.0.0', 'pending', 'publish',
+	                          'https://example.com/merchant-mode-2.zip', '>=1.0,<2', 1700000000000002)`
 	seedAudit = `INSERT INTO audit_log (id, recorded_at, actor_kind, action, subject_kind, subject_id)
 	             VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FAW', 1700000000000000, 'system', 'catalogue.import',
 	                 'catalogue', NULL)`
@@ -90,6 +95,17 @@ func TestSchema_RefusedStatements(t *testing.T) {
 			           'https://example.com/merchant-mode-2.zip',
 			           'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
 			           '>=1.0,<2', 1700000000000001, 1700000000000001)`,
+			wantErr: "UNIQUE constraint failed: release.plugin_id",
+		},
+		{
+			name: "a second release of one plugin waiting for review",
+			why: "the queue put one plugin id in front of a reviewer several times, and a stale " +
+				"row approved after a newer one rolls the listing backwards",
+			setup: []string{seedPlugin, seedRelease, seedPendingRelease},
+			stmt: `INSERT INTO "release" (id, plugin_id, version, state, source, artifact_url,
+			           sdk_specifier, submitted_at)
+			       VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FBB', 'merchant-mode', '3.0.0', 'pending', 'publish',
+			           'https://example.com/merchant-mode-3.zip', '>=1.0,<2', 1700000000000003)`,
 			wantErr: "UNIQUE constraint failed: release.plugin_id",
 		},
 		{
@@ -298,11 +314,20 @@ func TestSchema_AVerifiedOrImportedHash_IsAllowed(t *testing.T) {
 	// And the shape a failed fetch leaves behind: no hash at all, which is how "we could not
 	// check" is recorded. It must not be refused, or an unverifiable artifact would have nowhere
 	// to go and the publish would have to lie or vanish.
+	//
+	// A SECOND PLUGIN, because release_one_pending_per_plugin permits one waiting release each and
+	// the row above is already merchant-mode's. Reusing the id here would make this test fail on a
+	// constraint that has nothing to do with the hash CHECK it exists to pin.
+	_, err = raw.ExecContext(t.Context(),
+		`INSERT INTO plugin (id, name, claimed_at, updated_at)
+		 VALUES ('bag-sorter', 'Bag Sorter', 1700000000000003, 1700000000000003)`)
+	require.NoError(t, err)
+
 	_, err = raw.ExecContext(t.Context(),
 		`INSERT INTO "release" (id, plugin_id, version, state, source, artifact_url,
 		     sdk_specifier, submitted_at, review_note)
-		 VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FB8', 'merchant-mode', '3.0.0', 'pending', 'publish',
-		     'https://example.com/merchant-mode-3.zip',
+		 VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FB8', 'bag-sorter', '3.0.0', 'pending', 'publish',
+		     'https://example.com/bag-sorter-3.zip',
 		     '>=1.0,<2', 1700000000000003, 'not verified: the artifact could not be downloaded')`)
 	require.NoError(t, err)
 }

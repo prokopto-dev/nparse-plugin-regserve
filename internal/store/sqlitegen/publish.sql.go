@@ -294,6 +294,48 @@ func (q *Queries) InsertPublishRelease(ctx context.Context, arg InsertPublishRel
 	return err
 }
 
+const listPendingReleasesForPlugin = `-- name: ListPendingReleasesForPlugin :many
+SELECT id, version FROM "release"
+WHERE plugin_id = ? AND state = 'pending'
+ORDER BY submitted_at, id
+`
+
+type ListPendingReleasesForPluginRow struct {
+	ID      string
+	Version string
+}
+
+// Every release of this plugin that is still waiting for a human.
+//
+// Read before SupersedePendingReleases and in the same transaction, because the ids are what the
+// audit rows are written against: a submission that retired somebody's earlier one must leave a
+// record ON THAT RELEASE, or its author opens its page and finds a state change with nothing
+// saying who did it or why. UPDATE ... RETURNING would do this in one statement and appears
+// nowhere else in this file; two statements inside one transaction cost a round trip on a local
+// SQLite file and read the same in five years.
+func (q *Queries) ListPendingReleasesForPlugin(ctx context.Context, pluginID string) ([]ListPendingReleasesForPluginRow, error) {
+	rows, err := q.db.QueryContext(ctx, listPendingReleasesForPlugin, pluginID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPendingReleasesForPluginRow{}
+	for rows.Next() {
+		var i ListPendingReleasesForPluginRow
+		if err := rows.Scan(&i.ID, &i.Version); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const setAccountTrust = `-- name: SetAccountTrust :exec
 INSERT INTO account_trust (account_id, level, set_at, set_by, note)
 VALUES (?, ?, ?, ?, ?)
@@ -324,4 +366,35 @@ func (q *Queries) SetAccountTrust(ctx context.Context, arg SetAccountTrustParams
 		arg.Note,
 	)
 	return err
+}
+
+const supersedePendingReleases = `-- name: SupersedePendingReleases :execrows
+UPDATE "release"
+SET state = 'superseded'
+WHERE plugin_id = ? AND state = 'pending'
+`
+
+// Retire every release of this plugin that is still waiting, so the incoming one is the only one.
+//
+// Run in the SAME transaction as the insert that replaces them, and BEFORE it: the partial unique
+// index release_one_pending_per_plugin permits exactly one pending row per plugin, so doing this
+// afterwards is a constraint violation rather than a race.
+//
+// Called for EVERY publish, not only the ones that end up pending. An auto-published release
+// retires a waiting one for the same reason a reviewed one does -- otherwise 1.0.1 sits in the
+// queue while 1.0.2 is live, and approving it later makes the older release the listing.
+//
+// review_note is NOT touched. It carries the quarantine reasons, which are the only explanation
+// the author ever gets, and RecordReleaseVerification in review.sql documents what it cost the
+// last time a statement here overwrote them. Why the row was retired goes to audit_log, which is
+// append-only and is what the release page already reads.
+//
+// Superseding is a STATE CHANGE and never a delete: ADR-0010 keeps every release row, and a BEFORE
+// DELETE trigger aborts anything that tries.
+func (q *Queries) SupersedePendingReleases(ctx context.Context, pluginID string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, supersedePendingReleases, pluginID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }

@@ -127,23 +127,34 @@ func buildWorld(t *testing.T, stepping bool) *world {
 	w.owner = w.account(t, "prokopto-dev")
 	w.reviewer = w.account(t, "themaintainer")
 
-	require.NoError(t, db.Tx(t.Context(), func(q *store.Queries) error {
+	w.claim(t, w.plugin, "Merchant Mode")
+	return w
+}
+
+// claim registers a plugin id to the fixture's owner.
+//
+// Separate from buildWorld because release_one_pending_per_plugin permits ONE waiting release per
+// plugin, so any test whose subject is a queue with several entries in it needs several plugins --
+// which is the shape a real queue has, and was not the shape these tests used to build.
+func (w *world) claim(t *testing.T, id, name string) {
+	t.Helper()
+
+	require.NoError(t, w.db.Tx(t.Context(), func(q *store.Queries) error {
 		if err := q.InsertPlugin(t.Context(), sqlitegen.InsertPluginParams{
-			ID:        w.plugin,
-			Name:      "Merchant Mode",
+			ID:        id,
+			Name:      name,
 			ClaimedAt: core.MicrosFromTime(now).Int64(),
 			UpdatedAt: core.MicrosFromTime(now).Int64(),
 		}); err != nil {
 			return err
 		}
 		return q.InsertPluginOwner(t.Context(), sqlitegen.InsertPluginOwnerParams{
-			PluginID:  w.plugin,
+			PluginID:  id,
 			AccountID: w.owner,
 			Role:      ownership.RoleOwner.String(),
 			GrantedAt: core.MicrosFromTime(now).Int64(),
 		})
 	}))
-	return w
 }
 
 func (w *world) account(t *testing.T, handle string) string {
@@ -176,13 +187,19 @@ func (w *world) account(t *testing.T, handle string) string {
 	return id.String()
 }
 
-// publish submits a release through the real publish path and returns its id.
+// publish submits a release of the fixture's plugin through the real publish path.
 func (w *world) publish(t *testing.T, version string) release.Outcome {
+	t.Helper()
+	return w.publishFor(t, w.plugin, version)
+}
+
+// publishFor is publish against a named plugin, for the tests that need more than one.
+func (w *world) publishFor(t *testing.T, pluginID, version string) release.Outcome {
 	t.Helper()
 
 	sum := sha256.Sum256(w.serving)
 	sub, err := release.NewSubmission(release.RawSubmission{
-		PluginID:       w.plugin,
+		PluginID:       pluginID,
 		Version:        version,
 		ArtifactURL:    w.srv.URL + "/" + version + ".whl",
 		ArtifactSHA256: hex.EncodeToString(sum[:]),
@@ -191,7 +208,7 @@ func (w *world) publish(t *testing.T, version string) release.Outcome {
 	require.NoError(t, err)
 
 	out, err := w.pub.Publish(t.Context(), release.Request{
-		Submission: sub, AccountID: w.owner, IdempotencyKey: "key-" + version,
+		Submission: sub, AccountID: w.owner, IdempotencyKey: "key-" + pluginID + "-" + version,
 	})
 	require.NoError(t, err)
 	return out

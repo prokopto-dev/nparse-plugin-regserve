@@ -214,12 +214,20 @@ func TestList_IsOldestFirst(t *testing.T) {
 	// A clock that ADVANCES. Under a frozen one every release shares a submitted_at and the order
 	// falls to the ULID tiebreaker, whose low bits are random -- so a fixed clock would be testing
 	// that this queue cannot do something it does not need to do.
+	//
+	// THREE PLUGINS, one release each. This test used to publish three versions of ONE plugin, and
+	// in doing so asserted the defect: release_one_pending_per_plugin now permits a single waiting
+	// release per plugin, so a queue three entries deep is three plugins deep. A real queue is
+	// several authors waiting on one reviewer, which is what this now builds.
 	w := newSteppingWorld(t)
-	w.publish(t, "1.0.0")
+	w.claim(t, "bag-sorter", "Bag Sorter")
+	w.claim(t, "spell-timers", "Spell Timers")
+
+	w.publishFor(t, w.plugin, "1.0.0")
 	w.serving = []byte("PK\x03\x04 second")
-	w.publish(t, "1.1.0")
+	w.publishFor(t, "bag-sorter", "1.1.0")
 	w.serving = []byte("PK\x03\x04 third")
-	w.publish(t, "1.2.0")
+	w.publishFor(t, "spell-timers", "1.2.0")
 
 	waiting, err := w.queue.List(t.Context())
 	require.NoError(t, err)
@@ -238,6 +246,94 @@ func TestList_IsOldestFirst(t *testing.T) {
 	n, err := w.queue.Pending(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, int64(3), n)
+}
+
+// TestApprove_AStaleSubmission_CannotDowngradeTheListing.
+//
+// The reported defect was that the queue showed one plugin id several times. This is what made it
+// worth fixing in the database rather than in the page: approving is NOT ordered, so a reviewer
+// working an old row after a newer one went live would have retired the newer release to do it.
+//
+// The version check lives in internal/release and runs when a release is SUBMITTED, against
+// whatever was approved at that moment. There is no equivalent on the approve path, and with
+// release_one_pending_per_plugin there does not need to be one -- the stale row is not pending, so
+// ErrNotPending is the answer and the listing does not move.
+func TestApprove_AStaleSubmission_CannotDowngradeTheListing(t *testing.T) {
+	t.Parallel()
+
+	w := newWorld(t)
+	older := w.publish(t, "1.0.0")
+
+	w.serving = []byte("PK\x03\x04 the newer one")
+	newer := w.publish(t, "1.0.1")
+
+	_, err := w.queue.Approve(t.Context(), newer.ReleaseID, w.reviewer, "")
+	require.NoError(t, err)
+	require.Equal(t, []string{w.plugin + "@1.0.1"}, w.listed(t))
+
+	_, err = w.queue.Approve(t.Context(), older.ReleaseID, w.reviewer, "")
+	require.ErrorIs(t, err, review.ErrNotPending,
+		"a submission a newer one replaced was approvable, and approving it rolls the listing back")
+
+	require.Equal(t, []string{w.plugin + "@1.0.1"}, w.listed(t),
+		"the listing moved backwards to a release that was superseded before anybody reviewed it")
+	require.Equal(t, "superseded", w.state(t, older.ReleaseID))
+}
+
+// TestList_ShowsOnePluginOnce.
+//
+// The bug as it was reported: approving a new plugin showed the same id several times, each row
+// badged "first release of this id", because the queue faithfully listed every pending row and
+// nothing stopped a plugin having several.
+func TestList_ShowsOnePluginOnce(t *testing.T) {
+	t.Parallel()
+
+	w := newWorld(t)
+	w.publish(t, "1.0.0")
+	w.serving = []byte("PK\x03\x04 the second")
+	w.publish(t, "1.0.1")
+	w.serving = []byte("PK\x03\x04 the third")
+	w.publish(t, "1.0.2")
+
+	waiting, err := w.queue.List(t.Context())
+	require.NoError(t, err)
+	require.Len(t, waiting, 1, "the same plugin id is in front of the reviewer more than once")
+	require.Equal(t, "1.0.2", waiting[0].Version, "the entry left waiting is not the newest submission")
+	require.True(t, waiting[0].FirstRelease)
+
+	// And the depth AGREES with the page. It is logged at boot and shown on the account surface,
+	// so a count that included retired submissions would report a backlog nobody could work down.
+	n, err := w.queue.Pending(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, int64(1), n)
+}
+
+// TestDetail_ASupersededSubmission_SaysWhyOnItsOwnPage.
+//
+// The author of a retired submission cannot see the queue, and review_note still holds the reason
+// it was WAITING rather than the reason it stopped. So the retirement has to be findable on the
+// release's own page, which reads audit_log -- append-only, and therefore the one copy of that
+// explanation nothing can later edit.
+func TestDetail_ASupersededSubmission_SaysWhyOnItsOwnPage(t *testing.T) {
+	t.Parallel()
+
+	w := newWorld(t)
+	older := w.publish(t, "1.0.0")
+	w.serving = []byte("PK\x03\x04 the newer one")
+	w.publish(t, "1.0.1")
+
+	detail, err := w.queue.Detail(t.Context(), older.ReleaseID)
+	require.NoError(t, err)
+
+	var found bool
+	for _, e := range detail.Events {
+		if e.Action == "release.superseded" {
+			found = true
+			require.Contains(t, e.Detail, "1.0.1", "the event does not name what replaced it")
+		}
+	}
+	require.True(t, found,
+		"the release page shows a state change with nothing saying who made it or why")
 }
 
 // TestDecisions_AreRecordedInTheAuditLog.

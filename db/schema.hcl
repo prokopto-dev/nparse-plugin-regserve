@@ -549,6 +549,28 @@ table "release" {
     columns = [column.plugin_id]
     where   = "state = 'approved'"
   }
+  # AT MOST ONE RELEASE PER PLUGIN IS WAITING FOR REVIEW, for the same reason the line above
+  # permits one approved release: the ambiguous case is made unrepresentable rather than unlikely.
+  #
+  # A plugin could hold any number of pending rows, because release_plugin_version_key is
+  # (plugin_id, version) and a second submission uses a second version. Nothing in the publish path
+  # noticed, so a plugin whose CI published three versions into a backlogged queue put the same
+  # plugin id in front of a reviewer three times, each badged "first release of this id".
+  #
+  # The half that is not cosmetic: only ONE of those rows can ever be the listing, and approving
+  # them is not ordered. Approve 1.0.2, then approve the 1.0.1 still sitting in the queue, and
+  # SupersedeApprovedRelease retires 1.0.2 and makes the OLDER release live -- a rollback past the
+  # version check in internal/release, which runs when a release is SUBMITTED and compares against
+  # whatever was approved then. There is no such check on the approve path, and with this index
+  # there does not need to be one: the stale row is not pending, so it cannot be approved.
+  #
+  # internal/release/publish.go is what keeps this satisfiable: a new submission retires the
+  # plugin's waiting releases in the same transaction as its own insert.
+  index "release_one_pending_per_plugin" {
+    unique  = true
+    columns = [column.plugin_id]
+    where   = "state = 'pending'"
+  }
 
   check "release_state_enum" {
     expr = "state IN ('pending', 'approved', 'rejected', 'superseded')"
