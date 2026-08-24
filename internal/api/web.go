@@ -107,6 +107,15 @@ type WebDeps struct {
 	// nobody can work.
 	Queue     ReviewQueue
 	Reviewers ReviewerCheck
+
+	// Trust reads and writes an account's tier. It is what the review pages set from and what the
+	// account page reads its own tier out of.
+	//
+	// Nil means the form is not registered and no tier is rendered anywhere, the same rule
+	// Claimer follows: a page offering a control posting to a route this build does not serve is
+	// an on-ramp ending in a 404, and a page showing a tier it cannot explain how to change is
+	// the smaller version of the same problem.
+	Trust TrustService
 }
 
 // Claimer is declared in plugins.go, next to the JSON endpoint that was its first consumer. The
@@ -169,6 +178,24 @@ type pageData struct {
 	// this page" is a real state and a zero-valued one would render as a release with no id.
 	Queue   []review.Waiting
 	Release *review.Detail
+
+	// Trust, on the three surfaces that show it.
+	//
+	// IT IS THE ONE FIELD THAT DECIDES WHETHER PUBLISHING IS AUTOMATED AND IT APPEARED NOWHERE.
+	// A clean version bump of an already-approved plugin by an account nobody has assessed waits
+	// forever, correctly and by design, and no page said so -- so the queue looked like it was
+	// losing track of ids it had already approved.
+	//
+	// QueueTrust is keyed by account id because a queue row names its submitter that way; a
+	// submitter with no entry renders nothing rather than guessing at a tier.
+	SubmitterTrust string
+	QueueTrust     map[string]string
+	AccountTrust   string
+
+	// CanSetTrust gates the form, and is WIRING rather than authorisation: it is false on a build
+	// with no Trust service, and the middleware refuses a non-reviewer at the route whatever this
+	// says. Every page that shows it is already reviewer-only.
+	CanSetTrust bool
 
 	// The public directory's fields. Query is the SEARCH TEXT the visitor typed, echoed back into
 	// the box so a result page can be read and refined rather than retyped — the one value on any
@@ -247,6 +274,14 @@ func registerWeb(api huma.API, deps WebDeps) {
 	// with a 503, which reads to an operator like an outage rather than a missing variable.
 	if deps.Queue != nil && deps.Reviewers != nil {
 		registerReviewPages(api, deps)
+
+		// The trust control needs a third thing on top of those two, and it is registered
+		// separately rather than folded in: a build with a queue and no Trust can still be worked
+		// -- releases are approved and rejected -- and the page simply does not offer the tier.
+		// Folding it into the condition above would take the whole review surface away instead.
+		if deps.Trust != nil {
+			registerTrustPage(api, deps)
+		}
 	}
 }
 
@@ -667,6 +702,12 @@ func accountData(ctx context.Context, deps WebDeps, p auth.Principal) (pageData,
 		// redeploys should not need everybody to sign in again.
 		IsReviewer:  isReviewer(ctx, deps, p),
 		NoReviewers: noReviewers(deps),
+		// YOUR OWN TIER, on the page that explains publishing. It governs whether your version
+		// bumps reach users without a human, and it was the one thing about your own account this
+		// service would not tell you -- which made "my release is still pending" unanswerable from
+		// here. Empty on a build with no Trust wired, and the page then says nothing rather than
+		// implying a tier.
+		AccountTrust: trustOf(ctx, deps, p.AccountID),
 	}, nil
 }
 
@@ -802,6 +843,15 @@ const (
 	msgReleaseAlreadyVerified = "release_already_verified"
 	msgReleaseNoReason        = "release_no_reason"
 	msgReleaseFailed          = "release_failed"
+
+	// The trust control. "Set" is deliberately one code for all three tiers: the page shows the
+	// account's tier immediately below the form, so the sentence does not need to repeat it, and
+	// a code per tier would be three strings that can disagree with the row.
+	msgTrustSet            = "trust_set"
+	msgTrustNoReason       = "trust_no_reason"
+	msgTrustUnknownAccount = "trust_unknown_account"
+	msgTrustBadLevel       = "trust_bad_level"
+	msgTrustFailed         = "trust_failed"
 )
 
 // messages maps each code onto the sentence a page shows, and whether it is good news.
@@ -881,6 +931,27 @@ var messages = map[string]struct {
 		problem: true,
 	},
 	msgReleaseFailed: {text: "That could not be recorded.", problem: true},
+
+	msgTrustSet: {
+		text: "Trust level set. It governs one thing: whether a version bump of an " +
+			"already-approved plugin publishes without a human. A new plugin id still always " +
+			"gets a person, whatever the tier.",
+	},
+	msgTrustNoReason: {
+		text: "A trust change must say why. A tier with no stated reason is one nobody can " +
+			"review later, and raising somebody to trusted is the decision that most needs to be " +
+			"explainable a year afterwards.",
+		problem: true,
+	},
+	msgTrustUnknownAccount: {
+		text:    "No account here has that id.",
+		problem: true,
+	},
+	msgTrustBadLevel: {
+		text:    "That is not a tier. The three are blocked, new and trusted.",
+		problem: true,
+	},
+	msgTrustFailed: {text: "That tier could not be set.", problem: true},
 }
 
 // messageFor returns (notice, problem) for a code. An unknown code renders nothing.

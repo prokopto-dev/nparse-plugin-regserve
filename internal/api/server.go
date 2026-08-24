@@ -314,6 +314,10 @@ func New(cfg Config) http.Handler {
 				// review pages unregistered — see registerWeb.
 				Queue:     cfg.Queue,
 				Reviewers: cfg.Reviewers,
+				// And the same Trust the JSON endpoint is registered with. One service, two
+				// doors: a tier set from the review page and a tier set with curl are the same
+				// write, the same audit row and the same tier the publish path reads.
+				Trust: cfg.Trust,
 			})
 		}
 	}

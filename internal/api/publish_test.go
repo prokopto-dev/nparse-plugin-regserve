@@ -296,6 +296,11 @@ type publishedRelease struct {
 	Bytes     int64    `json:"artifact_bytes"`
 	Review    string   `json:"review"`
 	Reasons   []string `json:"quarantine"`
+
+	// SupersededPending is what this submission retired before anybody reviewed it. It was
+	// computed by the publish path and rendered by nothing, so a workflow that cancelled its own
+	// author's earlier submission was told nothing at all.
+	SupersededPending []string `json:"superseded_pending"`
 }
 
 // publishWorld is a real database, a real artifact server, a real publisher and a real server.

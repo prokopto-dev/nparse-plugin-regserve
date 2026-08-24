@@ -137,15 +137,24 @@ const (
 	operationPublishRelease = "publishRelease"
 )
 
-// reviewAwaitingHuman is what a release says when nothing is WRONG with it and it still waits:
-// the submitter's account has not been trusted, so a human looks at it.
+// untrustedNote is what a release says when nothing is WRONG with it and it still waits: no
+// quarantine rule fired, and this registry has not marked the submitting account trusted.
+//
+// IT NAMES THE TIER. It used to read "awaiting human review" and nothing else, which is true and
+// answers nobody: a clean version bump of an already-approved plugin waiting forever looks like
+// the first-release rule misfiring, or like the queue losing track of an id it has already
+// approved. It is neither. It is an account at the floor -- the default for anyone nobody has
+// assessed -- and that fact appeared on no surface at all, so the answer was unreachable from the
+// row, the queue, the account page and the publish response alike.
 //
 // The reasons a release waits for a specific reason are QuarantineReason values in quarantine.go —
 // including the hash mismatch, which used to be spelled here and now lives with the other rules,
-// because a reviewer reading a queue should meet one vocabulary rather than two.
-const (
-	reviewAwaitingHuman = "awaiting human review"
-)
+// because a reviewer reading a queue should meet one vocabulary rather than two. THE TIER IS NOT
+// ONE OF THEM, deliberately: a quarantine reason is a fact about a CHANGE and the tier is a
+// judgement about a PERSON, and quarantine.go keeps those apart.
+const untrustedNote = "awaiting human review: this registry has not marked the submitting " +
+	"account trusted, so every release it publishes goes to a person -- including a version " +
+	"bump of a plugin whose earlier release was approved"
 
 // ArtifactFetcher is what the publisher needs from internal/artifact.
 //
@@ -852,17 +861,27 @@ func (p *Publisher) decide(prev previous, trust Trust, sub Submission, v verdict
 	fetchFailure := v.review
 
 	v.reasons = evaluateQuarantine(prev, sub, v)
-	v.review = quarantineNote(v.reasons, fetchFailure)
 	v.state = StatePending
 	v.comparedAgainst = prev.version
 
-	if len(v.reasons) == 0 && trust == TrustTrusted {
+	// THE NOTE IS WRITTEN ONCE, in the branch that decided the outcome. Composing it first and
+	// overwriting it afterwards is how a release ends up carrying the sentence for a decision that
+	// was not taken.
+	switch {
+	case len(v.reasons) > 0:
+		v.review = quarantineNote(v.reasons, fetchFailure)
+	case trust == TrustTrusted:
 		// The only path to a listing without a human. Note what is already true by the time we get
 		// here: the artifact was fetched, hashed, and its hash matched the submitter's claim; the
 		// plugin already has an approved release; the version advances; the host has not moved;
 		// and the size did not jump. Trust is the LAST condition, not the first.
 		v.state = StateApproved
 		v.review = autoPublishedNote
+	default:
+		// Nothing is wrong with this release and it is still waiting, which is the one outcome
+		// that used to be reported as the bare "awaiting human review". The tier is the whole
+		// reason, and it is the reason a publishing workflow cannot see from anywhere else.
+		v.review = untrustedNote
 	}
 	return v
 }

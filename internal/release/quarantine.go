@@ -178,7 +178,11 @@ func hostOf(rawURL string) string {
 // and those call for three different actions.
 func quarantineNote(reasons []QuarantineReason, fetchFailure string) string {
 	if len(reasons) == 0 {
-		return reviewAwaitingHuman
+		// Unreachable: decide() calls this only when a rule fired, and a release that is waiting
+		// for any other cause carries that cause's own sentence. Returning the bare one here
+		// rather than the empty string keeps a future caller from writing a row whose note is
+		// blank -- review_note is the only explanation an author ever gets.
+		return "awaiting human review"
 	}
 
 	parts := make([]string, 0, len(reasons))

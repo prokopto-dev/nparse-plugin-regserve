@@ -78,7 +78,14 @@
     </tr>
     <tr>
       <th>Submitted</th>
-      <td>{{.SubmittedAt.Format "2006-01-02 15:04:05"}}{{if .SubmittedBy}} by {{.SubmittedBy}}{{end}}</td>
+      <td>
+        {{.SubmittedAt.Format "2006-01-02 15:04:05"}}
+        {{if .SubmittedBy}}
+          by {{if .SubmittedByHandle}}{{.SubmittedByHandle}}{{end}}
+          <span class="muted mono">{{.SubmittedBy}}</span>
+          {{if $.SubmitterTrust}}<br><span class="muted">trust level: <strong>{{$.SubmitterTrust}}</strong></span>{{end}}
+        {{end}}
+      </td>
     </tr>
     {{if not .ReviewedAt.IsZero}}
     <tr>
@@ -152,6 +159,53 @@
   This release is <strong>{{.State}}</strong> and there is nothing left to decide. Nothing here
   edits it: a correction is a new release, and the record below is append-only.
 </p>
+{{end}}
+
+{{if and $.CanSetTrust .SubmittedBy}}
+<h2>The submitter</h2>
+
+{{/* THE CONTROL THAT DID NOT EXIST. Setting a tier is capability-floor, so no token may do it,
+     so it is browser-only -- and there was no browser surface, which meant the only way to mark
+     anybody trusted was to copy a session cookie into curl. Nobody did, so every account stayed at
+     the floor, so every release queued forever including clean version bumps of plugins that had
+     already been approved. Reviewer-only, like the whole of this page: the middleware refuses
+     everybody else before the handler runs. */}}
+<p>
+  This account is <strong>{{if $.SubmitterTrust}}{{$.SubmitterTrust}}{{else}}unknown{{end}}</strong>.
+</p>
+
+<form method="post" action="/review/accounts/{{.SubmittedBy}}/trust">
+  <fieldset>
+    <legend>Set their trust level</legend>
+    <input type="hidden" name="{{$.CSRFField}}" value="{{$.CSRFToken}}">
+    <input type="hidden" name="release" value="{{.ReleaseID}}">
+
+    <p>
+      <label><input type="radio" name="level" value="trusted"> trusted</label>
+      <label><input type="radio" name="level" value="new" checked> new</label>
+      <label><input type="radio" name="level" value="blocked"> blocked</label>
+    </p>
+
+    <label for="trust-note">Why</label>
+    <input type="text" id="trust-note" name="note" maxlength="2048" required
+           placeholder="required — a tier with no stated reason is one nobody can review later">
+
+    <p><button type="submit">Set it</button></p>
+
+    <p class="muted">
+      Trust governs <strong>one</strong> thing: whether a version bump of an
+      <em>already-approved</em> plugin publishes without a human. It never governs the first
+      appearance of a plugin id — that always gets a person — and it never governs who may review,
+      which comes from control of this deployment.
+    </p>
+    <p class="muted">
+      <strong>new</strong> is the floor and the default, and everything an account at it publishes
+      waits here, including a clean version bump of a plugin already listed. <strong>blocked</strong>
+      refuses their publishes outright, before the artifact is even fetched. It is never raised
+      automatically: a counter of successful publishes is a counter an attacker can run up.
+    </p>
+  </fieldset>
+</form>
 {{end}}
 
 <h2>Audit trail</h2>

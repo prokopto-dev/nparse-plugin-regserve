@@ -57,6 +57,37 @@ provide, and it is stated here so that nobody has to rediscover it during an inc
 compromised CDN, a re-uploaded release asset or a hijacked domain all produce bytes that fail the
 recorded hash, and the client refuses them before extraction — exactly as before.
 
+## Where a tier is set, and what happens when nobody sets one
+
+Trust is a per-account tier: `blocked`, `new` or `trusted`. **An account with no row at all is
+`new`**, which is the floor and the default, and it is never raised automatically — a counter of
+successful publishes is a counter an attacker can run up
+([ADR-0007](../adr/0007-review-new-ids-trust-gates-updates.md)).
+
+A reviewer sets it from **the release's page in the review queue**, or with
+`PUT /api/v1/accounts/{id}/trust`. Both are capability-floor: no personal access token can set a
+tier however it is scoped, because a token that could raise its own account would be a token that
+could publish without review. Both are reviewer-only as well, because a tier that a publisher could
+set for themselves is not a judgement about them.
+
+ADR-0007 wrote down the failure mode of that arrangement — *"without a habit of reviewing the tier,
+everyone stays at the floor and the automation never engages"* — and it is exactly what happened on
+the live deployment. Every account was at the floor, so every release queued, including clean
+version bumps of plugins that had already been approved. Nothing was wrong; nothing said so either.
+The tier appeared on no page, no publish response named it, and the only way to raise anybody was to
+copy a session cookie into `curl`.
+
+So the tier is now shown wherever the decision is made or felt: on your own account page, beside
+every submitter in the review queue, and on the release page next to the form that sets it. A
+release that waits **only** because of the tier says so in the sentence its author is given:
+
+> awaiting human review: this registry has not marked the submitting account trusted, so every
+> release it publishes goes to a person — including a version bump of a plugin whose earlier
+> release was approved
+
+That is a fact about the account and not about the release, which is why it is not a quarantine
+reason: those are facts about a *change*, and the tier is a judgement about a *person*.
+
 ## The failure mode we design against
 
 A **confident mistake**, not a miss.

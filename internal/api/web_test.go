@@ -19,6 +19,7 @@ import (
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/core"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/identity"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/ownership"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/release"
 )
 
 // The account surface.
@@ -124,6 +125,10 @@ type webHarness struct {
 
 	// noClaimer builds the surface with no Claimer at all. See webHarness.claimer.
 	noClaimer bool
+
+	// trust is what the account page reads its own tier out of. Nil builds a surface with none,
+	// where the page says nothing about a tier rather than implying one.
+	trust *fakeTrust
 }
 
 func newWebHarness(t *testing.T, mutate ...func(h *webHarness)) *webHarness {
@@ -165,9 +170,21 @@ func newWebHarness(t *testing.T, mutate ...func(h *webHarness)) *webHarness {
 		// The same object as Ownership, exactly as the serve command wires it: one service, two
 		// consumer-declared interfaces.
 		Claimer: h.claimer(),
+		Trust:   h.trustService(),
 	}))
 	t.Cleanup(h.srv.Close)
 	return h
+}
+
+// trustService is what the harness passes as api.TrustService, keeping a nil fake a NIL INTERFACE.
+// A nil *fakeTrust assigned straight into the field would be a non-nil interface holding a nil
+// pointer, so the page would ask it for a tier and panic -- and "this build has no Trust" would be
+// tested as "this build has a broken one".
+func (h *webHarness) trustService() api.TrustService {
+	if h.trust == nil {
+		return nil
+	}
+	return h.trust
 }
 
 // claimer is what the harness passes as api.Claimer. It is the fakeOwnership unless a test has
@@ -910,4 +927,61 @@ func TestClaimForm_IsCapabilityFloor(t *testing.T) {
 	// claimed. Reading the sentence is what tells the two apart.
 	require.Contains(t, string(resp.body), "session-only")
 	require.Empty(t, h.ownership.sawClaim, "refused before the handler ran")
+}
+
+// TestAccountPage_SaysWhatYourTrustLevelMeansForPublishing.
+//
+// THE ONE FACT ABOUT YOUR OWN ACCOUNT THIS SERVICE WOULD NOT TELL YOU. The tier decides whether
+// your version bumps reach users without a human, and it appeared on no page -- so "my release has
+// been pending for a week" had no answer reachable from here, and a queue behaving exactly as
+// designed looked like a registry that had lost track of an id it had already approved.
+func TestAccountPage_SaysWhatYourTrustLevelMeansForPublishing(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		level release.Trust
+		want  string
+	}{
+		{
+			name:  "the floor, and the reason everything of theirs is waiting",
+			level: release.TrustNew,
+			want:  "Everything you publish goes to human review",
+		},
+		{
+			name:  "trusted",
+			level: release.TrustTrusted,
+			want:  "publishes without a human",
+		},
+		{
+			name:  "blocked",
+			level: release.TrustBlocked,
+			want:  "Publishing is refused for this account",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newWebHarness(t, func(h *webHarness) { h.trust = &fakeTrust{level: tt.level} })
+			body := string(h.get(t, "/account").body)
+
+			require.Contains(t, body, "Your trust level is <strong>"+tt.level.String()+"</strong>")
+			require.Contains(t, body, tt.want)
+		})
+	}
+}
+
+// TestAccountPage_WithNoTrustServiceWired_SaysNothingAboutATier.
+//
+// Silence, not a guess. `new` is a real tier that means everything this account publishes waits,
+// and printing it because nothing could be read would be a confident mistake about the one field
+// that decides whether publishing is automated.
+func TestAccountPage_WithNoTrustServiceWired_SaysNothingAboutATier(t *testing.T) {
+	t.Parallel()
+
+	h := newWebHarness(t)
+	require.NotContains(t, string(h.get(t, "/account").body),
+		"Your trust level is")
 }

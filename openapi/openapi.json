@@ -170,7 +170,7 @@
             "type": "string"
           },
           "quarantine": {
-            "description": "Every rule that sent this release to review. Absent when it went live. A new plugin id is always one of these: the first appearance of an id always gets a human, whatever the submitter's trust level.",
+            "description": "Every rule that sent this release to review. Absent when it went live. A new plugin id is always one of these: the first appearance of an id always gets a human, whatever the submitter's trust level. An EMPTY list on a pending release means no rule fired and the review sentence says what is holding it -- usually that this registry has not marked the submitting account trusted.",
             "items": {
               "type": "string"
             },
@@ -194,6 +194,16 @@
           "state": {
             "description": "Where the release is: pending while it waits for a human, approved once it is the plugin's live release. A new plugin id always gets human review, and trust never bypasses that.",
             "type": "string"
+          },
+          "superseded_pending": {
+            "description": "Every release of this plugin that was still waiting for review when this one arrived, and is not waiting any more. Usually absent. The newest submission is the one that gets reviewed, so an earlier one of your own is retired rather than queued behind it.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "superseded_release_id": {
             "description": "The release this one retired, when it published automatically.",
@@ -2570,6 +2580,134 @@
         ],
         "x-regserve-pat-forbidden": true,
         "x-regserve-permission": "release.review",
+        "x-regserve-reviewer": true
+      }
+    },
+    "/review/accounts/{id}/trust": {
+      "post": {
+        "description": "An HTML form post. `level` is `blocked`, `new` or `trusted`, and `note` says why.\n\nA tier is NEVER raised automatically: a counter of successful publishes is a counter an attacker can run up. It governs one thing -- whether a version bump of an already-approved plugin publishes without a human -- and never the first appearance of a plugin id, which always gets a person.\n\nThe note is required. A tier with no stated reason is one nobody can review later, and raising somebody to trusted is the decision that most needs to be explainable a year afterwards.",
+        "operationId": "setAccountTrustFromTheReviewPage",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "contentMediaType": "application/octet-stream",
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "No Content",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "303": {
+            "description": "A redirect. The page the reviewer set the tier from.",
+            "headers": {
+              "Location": {
+                "description": "Where to go next.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "summary": "Set an account's trust tier",
+        "tags": [
+          "review-pages"
+        ],
+        "x-regserve-pat-forbidden": true,
+        "x-regserve-permission": "trust.set",
         "x-regserve-reviewer": true
       }
     },

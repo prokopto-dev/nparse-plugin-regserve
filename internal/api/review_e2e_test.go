@@ -120,6 +120,7 @@ func newReviewE2E(t *testing.T, handles string) *reviewE2E {
 
 	catalogue := plugin.NewCatalogue(db)
 	owners := ownership.New(db, clk)
+	publisher := release.NewPublisher(db, clk, fetcher)
 	login, err := auth.NewOAuth(db, clk, pepper, identity.NewRegistry(stubProvider{}))
 	require.NoError(t, err)
 
@@ -134,7 +135,12 @@ func newReviewE2E(t *testing.T, handles string) *reviewE2E {
 		Tokens:    tokens,
 		Ownership: owners,
 		Claimer:   owners,
-		Publisher: release.NewPublisher(db, clk, fetcher),
+		Publisher: publisher,
+		// THE SAME Publisher, wired twice. A tier is read by the publish path and written by a
+		// reviewer, and two objects over one table would be two places to change when the rule
+		// changes -- which is exactly how the reviewer's decision would stop reaching the publish
+		// that comes after it.
+		Trust: publisher,
 		// The two objects the operator's configuration actually produces. ParseHandleList is the
 		// same call cmd/regserve makes on os.Getenv(review.EnvVar()), so "the variable is unset"
 		// is reproduced here rather than described.
@@ -222,6 +228,24 @@ func (w *reviewE2E) decide(t *testing.T, cookie, csrf, releaseID, action, note s
 
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
 		w.srv.URL+"/review/releases/"+releaseID+"/decide", strings.NewReader(form.Encode()))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: cookie})
+	return w.send(t, req)
+}
+
+// setTrust posts the trust form, which is the only way a human can set a tier: it is
+// capability-floor, so it is session-only, so it is browser-only.
+func (w *reviewE2E) setTrust(t *testing.T, cookie, csrf, accountID, level, note string) response {
+	t.Helper()
+
+	form := url.Values{}
+	form.Set(auth.CSRFFieldName, csrf)
+	form.Set("level", level)
+	form.Set("note", note)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+		w.srv.URL+"/review/accounts/"+accountID+"/trust", strings.NewReader(form.Encode()))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: cookie})
@@ -398,4 +422,98 @@ func insertAccountWithHandle(t *testing.T, db *store.DB, now time.Time, handle s
 		})
 	}))
 	return accountID.String()
+}
+
+// TestReviewQueue_EveryReleaseWaitsUntilAReviewerTrustsTheAccount is the reported bug, end to end.
+//
+// WHAT IT LOOKED LIKE: "every push waits for approval even after the id has been approved -- like
+// it thinks every time is the first time." WHAT IT WAS: the account was at the floor, which is the
+// default for an account nobody has assessed, and a tier is never raised automatically. So a clean
+// version bump of an already-listed plugin queued exactly as designed, and no surface said why --
+// the release's note read "awaiting human review", the queue showed no tier, the account page
+// showed no tier, and the only way to set one was to copy a session cookie into curl because there
+// was no form.
+//
+// This walks the whole of it: the bump that waits and NAMES the tier as the reason, the reviewer
+// setting the tier from the page, and the next bump reaching the index with no human involved.
+func TestReviewQueue_EveryReleaseWaitsUntilAReviewerTrustsTheAccount(t *testing.T) {
+	t.Parallel()
+
+	w := newReviewE2E(t, "themaintainer")
+	cookie, csrf := w.sessionFor(t, w.reviewer)
+
+	// The id's first appearance always gets a human, whatever the tier. Approved, so the plugin is
+	// listed and every rule below has something to compare against.
+	first := w.publish(t, "1.0.0")
+	require.Equal(t, release.StatePending.String(), first.State)
+	require.Equal(t, http.StatusSeeOther,
+		w.decide(t, cookie, csrf, first.ReleaseID, "approve", "the first release of a new id").status)
+	require.Contains(t, w.index(t), `"version":"1.0.0"`)
+
+	t.Run("a clean version bump still waits, and says the tier is why", func(t *testing.T) {
+		bump := w.publish(t, "1.1.0")
+
+		require.Equal(t, release.StatePending.String(), bump.State)
+		require.True(t, bump.Verified)
+		require.Empty(t, bump.Reasons,
+			"no rule fired: the id is listed, the host has not moved, the version advances")
+		require.Contains(t, bump.Review, "has not marked the submitting account trusted",
+			"THE ANSWER TO THE REPORT. Without this the workflow is told only that it is waiting")
+		require.Contains(t, w.index(t), `"version":"1.0.0"`, "the listing has not moved")
+	})
+
+	t.Run("the queue shows the tier, so the pattern is visible", func(t *testing.T) {
+		resp := w.browse(t, cookie, api.PathReviewQueue)
+
+		require.Equal(t, http.StatusOK, resp.status, "body was %s", resp.body)
+		require.Contains(t, string(resp.body), "trust: new")
+		require.Contains(t, string(resp.body), "prokopto-dev", "the submitter, as a person")
+	})
+
+	t.Run("the reviewer sets the tier from the page", func(t *testing.T) {
+		resp := w.setTrust(t, cookie, csrf, w.owner, "trusted",
+			"the plugin's pipeline has published two releases and both hashed clean")
+
+		require.Equal(t, http.StatusSeeOther, resp.status, "body was %s", resp.body)
+		require.Equal(t, "/review?msg=trust_set", resp.header.Get("Location"))
+	})
+
+	t.Run("and the next bump reaches the index with no human involved", func(t *testing.T) {
+		auto := w.publish(t, "1.2.0")
+
+		require.Equal(t, release.StateApproved.String(), auto.State,
+			"a trusted owner's clean version bump of an already-approved plugin publishes itself")
+		require.Contains(t, auto.Review, "published automatically")
+		require.Contains(t, w.index(t), `"version":"1.2.0"`)
+
+		// The 1.1.0 that was waiting is retired by the newer submission, and the answer SAYS SO.
+		// A release that stops waiting with nothing saying so is indistinguishable from a bug.
+		require.Len(t, auto.SupersededPending, 1,
+			"the earlier waiting release was retired and the workflow was told")
+	})
+
+	t.Run("a bystander cannot set a tier", func(t *testing.T) {
+		other, otherCSRF := w.sessionFor(t, w.bystander)
+
+		resp := w.setTrust(t, other, otherCSRF, w.owner, "blocked", "because I said so")
+		require.Equal(t, http.StatusForbidden, resp.status,
+			"a signed-in account that is not a reviewer must not be able to change a tier")
+	})
+
+	t.Run("and neither can a token, however scoped", func(t *testing.T) {
+		form := url.Values{}
+		form.Set("level", "trusted")
+		form.Set("note", "escalating myself")
+
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+			w.srv.URL+"/review/accounts/"+w.owner+"/trust", strings.NewReader(form.Encode()))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Authorization", "Bearer "+w.publishToken)
+
+		// The capability floor, which is the whole reason the tier is worth having: a token that
+		// could raise its own account would be a token that could publish without review.
+		require.Contains(t, []int{http.StatusUnauthorized, http.StatusForbidden},
+			w.send(t, req).status)
+	})
 }

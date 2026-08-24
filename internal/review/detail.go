@@ -140,6 +140,14 @@ func (q *Queue) Detail(ctx context.Context, releaseID string) (Detail, error) {
 	out.SHA256 = deref(row.ArtifactSha256)
 	out.SubmittedBy = deref(row.SubmittedBy)
 	out.Note = deref(row.ReviewNote)
+
+	if out.SubmittedBy != "" {
+		// The person, not the ULID. This page is where a reviewer decides whether to trust an
+		// account, and that decision is about who they are.
+		if out.SubmittedByHandle, err = q.handleOf(ctx, out.SubmittedBy); err != nil {
+			return Detail{}, err
+		}
+	}
 	if row.ReviewedAt != nil {
 		out.ReviewedAt = core.Micros(*row.ReviewedAt).Time()
 	}

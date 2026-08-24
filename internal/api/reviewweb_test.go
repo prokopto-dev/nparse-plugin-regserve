@@ -15,6 +15,7 @@ import (
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/auth"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/authz"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/identity"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/release"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/review"
 )
 
@@ -35,6 +36,10 @@ import (
 // it in a Location header — an id assembled into a redirect from unvalidated input is a header
 // somebody else gets to write.
 const testReleaseID = "01JCX0MPZZZZZZZZZZZZZZZZZZ"
+
+// testSubmitterID is the account the queue's release was submitted by, and the one the trust form
+// acts on.
+const testSubmitterID = "01JCX0MPZZZZZZZZZZZZZZZZZY"
 
 // fakeQueue is api.ReviewQueue with the answers set per test, recording what it was asked.
 type fakeQueue struct {
@@ -99,6 +104,38 @@ func (f *fakeReviewers) IsReviewer(context.Context, string) (bool, error) { retu
 
 func (f *fakeReviewers) Configured() bool { return !f.unconfigured }
 
+// fakeTrust is api.TrustService with the tier set per test, recording what it was asked to write.
+type fakeTrust struct {
+	level release.Trust
+	err   error
+
+	// saw is every accepted call, as "account|level|reviewer|note". One string rather than a
+	// struct per call because what these tests assert is that the WHOLE tuple reached the service:
+	// a form that dropped the note would still have set a tier, and the note is what makes the
+	// change explainable a year later.
+	saw []string
+
+	// calls counts every call INCLUDING the ones this fake then refuses, which `saw` cannot: what
+	// some of these tests assert is that a form the page could not even name was refused before
+	// the service was reached at all, and "the write failed" and "the write was never attempted"
+	// are the two states that must not look alike.
+	calls int
+}
+
+func (f *fakeTrust) SetTrust(_ context.Context, accountID string, level release.Trust, reviewerID, note string) error {
+	f.calls++
+	if f.err != nil {
+		return f.err
+	}
+	f.saw = append(f.saw, strings.Join([]string{accountID, level.String(), reviewerID, note}, "|"))
+	f.level = level
+	return nil
+}
+
+func (f *fakeTrust) TrustOf(context.Context, string) (release.Trust, error) {
+	return f.level, nil
+}
+
 // reviewHarness is a running review surface plus the fakes behind it.
 type reviewHarness struct {
 	srv       *httptest.Server
@@ -106,6 +143,7 @@ type reviewHarness struct {
 	sessions  *fakeSessions
 	queue     *fakeQueue
 	reviewers *fakeReviewers
+	trust     *fakeTrust
 }
 
 func newReviewHarness(t *testing.T, mutate ...func(h *reviewHarness)) *reviewHarness {
@@ -115,19 +153,22 @@ func newReviewHarness(t *testing.T, mutate ...func(h *reviewHarness)) *reviewHar
 		authn:     &fakeAuthn{principal: signedIn()},
 		sessions:  &fakeSessions{},
 		reviewers: &fakeReviewers{yes: true},
+		trust:     &fakeTrust{level: release.TrustNew},
 		queue: &fakeQueue{
 			waiting: []review.Waiting{{
 				ReleaseID: testReleaseID, PluginID: "merchant-mode", PluginName: "Merchant Mode",
 				Version: "1.0.0", ArtifactURL: "https://example.com/mm.zip",
 				SHA256: strings.Repeat("c", 64), Verified: true, FirstRelease: true,
 				SubmittedAt: time.Unix(1, 0).UTC(), Note: "awaiting human review",
+				SubmittedBy: testSubmitterID, SubmittedByHandle: "prokopto-dev",
 			}},
 			detail: review.Detail{
 				Waiting: review.Waiting{
 					PluginID: "merchant-mode", PluginName: "Merchant Mode", Version: "1.0.0",
 					ArtifactURL: "https://example.com/mm.zip", SHA256: strings.Repeat("c", 64),
 					Verified: true, FirstRelease: true, SubmittedAt: time.Unix(1, 0).UTC(),
-					Note: "2 reasons: ...",
+					Note:        "2 reasons: ...",
+					SubmittedBy: testSubmitterID, SubmittedByHandle: "prokopto-dev",
 				},
 				State:      "pending",
 				Source:     "publish",
@@ -143,7 +184,7 @@ func newReviewHarness(t *testing.T, mutate ...func(h *reviewHarness)) *reviewHar
 		m(h)
 	}
 
-	h.srv = httptest.NewServer(api.New(api.Config{
+	cfg := api.Config{
 		Authn:     h.authn,
 		Login:     &fakeLogin{},
 		Sessions:  h.sessions,
@@ -152,7 +193,16 @@ func newReviewHarness(t *testing.T, mutate ...func(h *reviewHarness)) *reviewHar
 		Ownership: &fakeOwnership{},
 		Queue:     h.queue,
 		Reviewers: h.reviewers,
-	}))
+	}
+	// Assigned only when there IS one. A nil *fakeTrust placed in the interface field would be a
+	// non-nil interface holding a nil pointer, so the route would register and the first call
+	// would panic -- and the test for the unwired build would be testing the fake's nil receiver
+	// rather than what this service does without a Trust.
+	if h.trust != nil {
+		cfg.Trust = h.trust
+	}
+
+	h.srv = httptest.NewServer(api.New(cfg))
 	t.Cleanup(h.srv.Close)
 	return h
 }
@@ -209,6 +259,11 @@ func reviewRoutes() []struct {
 			method: http.MethodPost,
 			path:   "/review/releases/" + testReleaseID + "/decide",
 			form:   url.Values{"action": {"approve"}},
+		},
+		{
+			method: http.MethodPost,
+			path:   "/review/accounts/" + testSubmitterID + "/trust",
+			form:   url.Values{"level": {"trusted"}, "note": {"why"}},
 		},
 	}
 }
@@ -654,4 +709,197 @@ func TestReviewQueue_ANonReviewerAndAReviewerWithNothingToDo_DoNotSeeTheSamePage
 	require.Equal(t, api.CodeForbidden, p.Code)
 	require.Contains(t, p.Detail, "operates the deployment",
 		"the refusal has to say where the authority comes from; it is not something to request here")
+}
+
+// The trust control.
+//
+// SETTING A TIER HAD A JSON ENDPOINT AND NO DOOR. It is capability-floor, so no token may perform
+// it however scoped, so it is browser-only -- and there was no browser surface, which meant the
+// only way to mark anybody trusted was to copy a session cookie into curl. Nobody did, so every
+// account stayed at the floor, so every release queued forever including a clean version bump of a
+// plugin whose earlier release had already been approved. These pin the door.
+
+// TestTrustForm_SetsTheTierAndSendsTheReviewerBack.
+func TestTrustForm_SetsTheTierAndSendsTheReviewerBack(t *testing.T) {
+	t.Parallel()
+
+	h := newReviewHarness(t)
+	resp := h.do(t, http.MethodPost, "/review/accounts/"+testSubmitterID+"/trust", url.Values{
+		auth.CSRFFieldName: {h.csrf()},
+		"level":            {"trusted"},
+		"note":             {"six releases, every review answered"},
+		"release":          {testReleaseID},
+	})
+
+	require.Equal(t, http.StatusSeeOther, resp.status)
+	require.Equal(t, "/review/releases/"+testReleaseID+"?msg=trust_set",
+		resp.header.Get("Location"), "post/redirect/get, back to the page that was acted on")
+
+	// The WHOLE tuple, not merely the tier: the reviewer's own account is what the audit row names,
+	// and the note is the only thing that makes the change explainable a year later.
+	require.Equal(t,
+		[]string{testSubmitterID + "|trusted|acct|six releases, every review answered"},
+		h.trust.saw)
+}
+
+// TestTrustForm_WithNoReleaseToReturnTo_GoesBackToTheQueue.
+func TestTrustForm_WithNoReleaseToReturnTo_GoesBackToTheQueue(t *testing.T) {
+	t.Parallel()
+
+	h := newReviewHarness(t)
+	resp := h.do(t, http.MethodPost, "/review/accounts/"+testSubmitterID+"/trust", url.Values{
+		auth.CSRFFieldName: {h.csrf()}, "level": {"blocked"}, "note": {"compromised"},
+	})
+
+	require.Equal(t, http.StatusSeeOther, resp.status)
+	require.Equal(t, "/review?msg=trust_set", resp.header.Get("Location"))
+	require.Len(t, h.trust.saw, 1)
+}
+
+// TestTrustForm_AnUnparseableReturnTarget_IsRefusedBeforeAnythingIsSet.
+//
+// The value arrives in a form and ends up in a Location header. A header assembled from
+// unvalidated input is a header somebody else gets to write, and it is checked BEFORE the tier is
+// changed: a refusal that had already written the row would be a refusal in name only.
+func TestTrustForm_AnUnparseableReturnTarget_IsRefusedBeforeAnythingIsSet(t *testing.T) {
+	t.Parallel()
+
+	h := newReviewHarness(t)
+	resp := h.do(t, http.MethodPost, "/review/accounts/"+testSubmitterID+"/trust", url.Values{
+		auth.CSRFFieldName: {h.csrf()}, "level": {"trusted"}, "note": {"why"},
+		"release": {"https://elsewhere.example/"},
+	})
+
+	require.Equal(t, http.StatusNotFound, resp.status)
+	require.Empty(t, h.trust.saw, "nothing may be set by a request that is about to be refused")
+}
+
+// TestTrustForm_WithoutTheSessionsToken_IsRefusedBeforeAnythingIsRead.
+func TestTrustForm_WithoutTheSessionsToken_IsRefusedBeforeAnythingIsRead(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		form url.Values
+	}{
+		{name: "no token at all", form: url.Values{"level": {"trusted"}, "note": {"why"}}},
+		{
+			name: "somebody else's token",
+			form: url.Values{
+				auth.CSRFFieldName: {"csrf-for-another-session"},
+				"level":            {"trusted"}, "note": {"why"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newReviewHarness(t)
+			resp := h.do(t, http.MethodPost,
+				"/review/accounts/"+testSubmitterID+"/trust", tt.form)
+
+			require.Equal(t, http.StatusForbidden, resp.status)
+			require.Empty(t, h.trust.saw, "no tier may be set by a forged form")
+		})
+	}
+}
+
+// TestTrustForm_EachRefusal_SaysWhichOneItWas.
+//
+// One code per outcome, because the actions they call for are different: a missing reason needs a
+// sentence typing, an unknown account needs a different id, and a tier that is not one is a form
+// this page should not have been able to submit.
+func TestTrustForm_EachRefusal_SaysWhichOneItWas(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		level       string
+		err         error
+		wantMsg     string
+		wantReached bool
+	}{
+		{
+			name: "a tier that is not one", level: "wheedling",
+			wantMsg: "trust_bad_level",
+		},
+		{
+			name: "no reason given", level: "trusted", err: release.ErrNoTrustReason,
+			wantMsg: "trust_no_reason", wantReached: true,
+		},
+		{
+			name: "an account id that names nothing", level: "trusted",
+			err:         release.ErrNoSuchAccount,
+			wantMsg:     "trust_unknown_account",
+			wantReached: true,
+		},
+		{
+			name: "something else entirely", level: "trusted", err: errUnreachableDep,
+			wantMsg: "trust_failed", wantReached: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newReviewHarness(t, func(h *reviewHarness) { h.trust.err = tt.err })
+			resp := h.do(t, http.MethodPost, "/review/accounts/"+testSubmitterID+"/trust",
+				url.Values{
+					auth.CSRFFieldName: {h.csrf()}, "level": {tt.level}, "note": {""},
+					"release": {testReleaseID},
+				})
+
+			require.Equal(t, http.StatusSeeOther, resp.status)
+			require.Equal(t, "/review/releases/"+testReleaseID+"?msg="+tt.wantMsg,
+				resp.header.Get("Location"))
+
+			// A tier this page cannot even name never reaches the service. The others do, and are
+			// refused there — which is where the rule lives.
+			require.Equal(t, tt.wantReached, h.trust.calls > 0,
+				"a tier that is not one is refused before the write; the rest are the service's")
+			require.Empty(t, h.trust.saw, "none of these may change a tier")
+		})
+	}
+}
+
+// TestReviewPages_ShowTheSubmittersTier.
+//
+// THE FACT THAT EXPLAINED THE WHOLE THING AND APPEARED NOWHERE. A queue full of clean version
+// bumps from one account is one decision about the account, not five about the releases, and
+// without the tier on the page there was nothing saying why any of them were there.
+func TestReviewPages_ShowTheSubmittersTier(t *testing.T) {
+	t.Parallel()
+
+	h := newReviewHarness(t)
+
+	queue := string(h.do(t, http.MethodGet, "/review", nil).body)
+	require.Contains(t, queue, "trust: new")
+	require.Contains(t, queue, "prokopto-dev", "the person, not only the ULID")
+
+	page := string(h.do(t, http.MethodGet, "/review/releases/"+testReleaseID, nil).body)
+	require.Contains(t, page, "trust level: <strong>new</strong>")
+	require.Contains(t, page, `action="/review/accounts/`+testSubmitterID+`/trust"`,
+		"the form posts to the route this build registered")
+	require.Contains(t, page, `value="trusted"`)
+}
+
+// TestReviewPages_WithNoTrustServiceWired_OfferNoForm.
+//
+// Nil means the route is not registered, so a page that still rendered the form would be an
+// on-ramp ending in a 404 — the same rule the claim form follows.
+func TestReviewPages_WithNoTrustServiceWired_OfferNoForm(t *testing.T) {
+	t.Parallel()
+
+	h := newReviewHarness(t, func(h *reviewHarness) { h.trust = nil })
+
+	page := string(h.do(t, http.MethodGet, "/review/releases/"+testReleaseID, nil).body)
+	require.NotContains(t, page, "/trust")
+	require.NotContains(t, page, "Set their trust level")
+
+	require.Equal(t, http.StatusNotFound,
+		h.do(t, http.MethodPost, "/review/accounts/"+testSubmitterID+"/trust",
+			url.Values{auth.CSRFFieldName: {h.csrf()}, "level": {"trusted"}, "note": {"why"}}).status)
 }

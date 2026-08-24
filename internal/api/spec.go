@@ -58,6 +58,7 @@ func Spec() *huma.OpenAPI {
 		// this document, so an operation missing from it is an operation no gate checks.
 		Queue:     unavailableQueue{},
 		Reviewers: unavailableReviewers{},
+		Trust:     unavailableTrust{},
 	})
 
 	return api.OpenAPI()
@@ -177,6 +178,10 @@ type unavailableTrust struct{}
 
 func (unavailableTrust) SetTrust(context.Context, string, release.Trust, string, string) error {
 	return errSpecOnly
+}
+
+func (unavailableTrust) TrustOf(context.Context, string) (release.Trust, error) {
+	return "", errSpecOnly
 }
 
 type unavailableOwnership struct{}

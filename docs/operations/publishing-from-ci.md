@@ -246,6 +246,23 @@ completed one either. The summary lists every rule that sent it to a human. The 
 - the submitted sha256 disagreed with the bytes the registry downloaded;
 - the artifact moved to a different host, or changed size sharply, or the version does not advance.
 
+**Waiting with an EMPTY `quarantine` list** is the fourth case and the one that reads as a bug when
+it is not. No rule fired: the id is already listed, the bytes hashed clean, the version advances and
+the host has not moved — and it is waiting anyway, because this registry has not marked your account
+**trusted**. That is the floor and the default for every account nobody has assessed, so it is where
+a new publisher starts and where they stay until a reviewer decides otherwise. The `review` sentence
+says so, and your tier is on your account page.
+
+It looks exactly like the first-release case from a distance — every push waiting, forever, on an id
+that has already been approved — and the two are told apart by that list: a first release names the
+rule, a tier names nothing because no rule fired. Trust is never raised automatically, so there is
+nothing to earn by publishing more; ask a reviewer.
+
+`superseded_pending` is the other thing to read. It lists releases of yours that were still waiting
+when this one arrived and are not waiting any more: the newest submission is the one that gets
+reviewed ([ADR-0014](../adr/0014-the-newest-submission-is-the-one-that-waits.md)), so pushing 1.0.2
+while 1.0.1 sits in the queue retires 1.0.1 rather than queueing behind it.
+
 **Waiting, and the bytes were never checked.** `verified: false`. The registry could not download
 the artifact — an outage, a 404, a URL that is not public yet. The release cannot be approved until
 it is re-verified, because there is no hash to publish. Check that `artifact-url` actually answers

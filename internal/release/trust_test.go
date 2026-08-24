@@ -139,3 +139,78 @@ func TestTrust_IsNeverRaisedAutomatically(t *testing.T) {
 	require.Equal(t, release.TrustNew, got,
 		"five approved releases raised the account's tier; trust must be a judgement a human makes")
 }
+
+// TestPublish_AnUntrustedAccountsCleanVersionBump_SaysTheTierIsWhy.
+//
+// THE BUG THIS PINS was reported as "every push waits for approval even after the id has been
+// approved, like it thinks every time is the first time". Nothing was wrong: no quarantine rule
+// fires on this submission, the plugin already has an approved release, and the account is simply
+// at the floor -- which is the default for an account nobody has assessed. What made it look like
+// a defect is that the row said only "awaiting human review", so the one fact that explains it
+// appeared on no surface at all.
+//
+// The assertions are the two halves that were indistinguishable: the reason list is EMPTY, so this
+// is not the first-release rule and not a quarantine rule, AND the note names the tier.
+func TestPublish_AnUntrustedAccountsCleanVersionBump_SaysTheTierIsWhy(t *testing.T) {
+	t.Parallel()
+
+	w := newWorld(t, []byte("PK\x03\x04 the first release"))
+
+	first, err := w.publish(t, w.submit(t, nil), "untrusted-1")
+	require.NoError(t, err)
+	require.Equal(t, release.StatePending, first.State)
+	require.Contains(t, first.Reasons, release.ReasonFirstRelease.String(),
+		"the first appearance of an id always gets a human")
+	w.approve(t, first.ReleaseID)
+
+	// The second release. Same host, a version that advances, bytes that hash to what was
+	// submitted, and a plugin that is already listed -- so the ONLY thing between it and the index
+	// is that nobody has marked this account trusted.
+	w.body = []byte("PK\x03\x04 the second release")
+
+	second, err := w.publish(t, w.submit(t, func(raw *release.RawSubmission) {
+		raw.Version = "1.1.0"
+		raw.ArtifactSHA256 = w.truth()
+	}), "untrusted-2")
+	require.NoError(t, err)
+
+	require.True(t, second.Verified, "the artifact was fetched and hashed")
+	require.Equal(t, release.StatePending, second.State)
+	require.Empty(t, second.Reasons,
+		"no rule fired: this is not the first release and nothing about the change is unusual")
+	require.Contains(t, second.Review, "has not marked the submitting account trusted",
+		"the note names the tier, which is the only reason this release is waiting")
+
+	// And the same sentence is on the row a reviewer and the author both read, not only in the
+	// answer the publishing workflow happened to receive.
+	row, err := w.db.Read().GetReleaseByID(t.Context(), second.ReleaseID)
+	require.NoError(t, err)
+	require.NotNil(t, row.ReviewNote)
+	require.Equal(t, second.Review, *row.ReviewNote)
+}
+
+// TestPublish_ATrustedAccountsCleanVersionBump_DoesNotSayItIsWaiting.
+//
+// The other side of the same branch: the note on an automatic publish must not be the untrusted
+// sentence, or a listing that went live would explain itself as one that did not.
+func TestPublish_ATrustedAccountsCleanVersionBump_DoesNotSayItIsWaiting(t *testing.T) {
+	t.Parallel()
+
+	w := newWorld(t, []byte("PK\x03\x04 the first release"))
+
+	first, err := w.publish(t, w.submit(t, nil), "trusted-1")
+	require.NoError(t, err)
+	w.approve(t, first.ReleaseID)
+	w.setTrust(t, w.owner, release.TrustTrusted)
+
+	w.body = []byte("PK\x03\x04 the second release")
+	second, err := w.publish(t, w.submit(t, func(raw *release.RawSubmission) {
+		raw.Version = "1.1.0"
+		raw.ArtifactSHA256 = w.truth()
+	}), "trusted-2")
+	require.NoError(t, err)
+
+	require.Equal(t, release.StateApproved, second.State)
+	require.NotContains(t, second.Review, "has not marked the submitting account trusted")
+	require.Contains(t, second.Review, "published automatically")
+}

@@ -86,6 +86,10 @@ func (unreachableDeps) SetTrust(context.Context, string, release.Trust, string, 
 	return errUnreachableDep
 }
 
+func (unreachableDeps) TrustOf(context.Context, string) (release.Trust, error) {
+	return "", errUnreachableDep
+}
+
 // errUnreachableDep is returned by the stubs above. Reaching it means this gate stopped testing
 // routing and started testing a handler, which is a different file's job.
 var errUnreachableDep = errors.New("this gate reaches routing, never a handler")

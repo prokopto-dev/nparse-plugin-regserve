@@ -86,6 +86,7 @@ func registerReviewPages(api huma.API, deps WebDeps) {
 
 		data := reviewPageData(deps, p, "The review queue")
 		data.Queue = waiting
+		data.QueueTrust = queueTrust(ctx, deps, waiting)
 		data.Notice, data.Problem = messageFor(in.Message)
 		return renderPage(ctx, "review.html", data)
 	})
@@ -119,6 +120,7 @@ func registerReviewPages(api huma.API, deps WebDeps) {
 
 		data := reviewPageData(deps, p, detail.PluginID+" "+detail.Version)
 		data.Release = &detail
+		data.SubmitterTrust = trustOf(ctx, deps, detail.SubmittedBy)
 		data.Notice, data.Problem = messageFor(in.Message)
 		return renderPage(ctx, "release.html", data)
 	})
@@ -221,7 +223,52 @@ func reviewPageData(deps WebDeps, p auth.Principal, title string) pageData {
 		CSRFField:  auth.CSRFFieldName,
 		CSRFToken:  deps.Sessions.CSRFToken(p),
 		IsReviewer: true,
+		// The form is offered only where the route it posts to is registered. Both read
+		// deps.Trust, so the control and the route cannot disagree — see registerWeb.
+		CanSetTrust: deps.Trust != nil,
 	}
+}
+
+// trustOf reads an account's tier for a page.
+//
+// A TIER THAT CANNOT BE READ IS EMPTY, and the pages render that as "unknown" or as nothing at
+// all rather than as "new". Those are different statements and the difference is the whole point:
+// `new` is a real tier meaning everything this account publishes goes to review, and printing it
+// because a query failed would be this repository's stated failure mode -- a confident mistake --
+// on the one field that decides whether publishing is automated.
+func trustOf(ctx context.Context, deps WebDeps, accountID string) string {
+	if deps.Trust == nil || accountID == "" {
+		return ""
+	}
+	level, err := deps.Trust.TrustOf(ctx, accountID)
+	if err != nil {
+		slog.ErrorContext(ctx, "read a trust level for a review page",
+			"account_id", accountID, "error", err)
+		return ""
+	}
+	return level.String()
+}
+
+// queueTrust reads the tier of each DISTINCT submitter in the queue.
+//
+// It is on the queue and not only on the release page because the pattern is what a reviewer needs
+// to see: five plugins waiting from one account, all of them clean version bumps, is not five
+// decisions -- it is one, and it is about the account.
+func queueTrust(ctx context.Context, deps WebDeps, waiting []review.Waiting) map[string]string {
+	if deps.Trust == nil {
+		return nil
+	}
+	tiers := make(map[string]string, len(waiting))
+	for _, w := range waiting {
+		if w.SubmittedBy == "" {
+			continue
+		}
+		if _, seen := tiers[w.SubmittedBy]; seen {
+			continue
+		}
+		tiers[w.SubmittedBy] = trustOf(ctx, deps, w.SubmittedBy)
+	}
+	return tiers
 }
 
 // decisionMessage maps a queue failure onto a message code.

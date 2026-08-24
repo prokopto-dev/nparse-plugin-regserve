@@ -179,6 +179,19 @@
   <em>already-approved</em> plugin can publish without a human, which is what trust levels govern.
 </p>
 <p>
+  {{/* THE CASE THAT READS AS A BUG AND IS NOT ONE. Every push waiting on an id that has already
+       been approved looks exactly like the first-release rule misfiring; it is the tier, which is
+       the floor for every account nobody has assessed and is never raised automatically. It said
+       so nowhere, so the answer was unreachable from the page that promises to explain publishing. */}}
+  <strong>Later bumps can still wait, with nothing wrong with them.</strong> If the publish reports
+  <code>state: pending</code> and an <em>empty</em> quarantine list, no rule fired: this registry has
+  not marked your account <strong>trusted</strong>, which is the default for every account nobody has
+  assessed, and everything an account at that level publishes goes to a person.
+  {{if .HasAccountPage}}Your level is on <a href="/account">your account page</a>.{{end}}
+  It is never raised automatically — there is nothing to earn by publishing more — so ask whoever
+  operates this registry.
+</p>
+<p>
   There is a third outcome worth knowing before you meet it: <code>verified: false</code>, meaning
   the registry could not download your artifact at all. It waits for review and is honest about
   having checked nothing. The usual cause is ordering — a GitHub Release asset does not exist for an

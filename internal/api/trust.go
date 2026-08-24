@@ -15,9 +15,16 @@ import (
 // the review queue shows next to every submission.
 const PathAccountTrust = "/accounts/{id}/trust"
 
-// TrustService is what internal/api needs in order to set a trust tier.
+// TrustService is what internal/api needs in order to read and set a trust tier.
+//
+// TrustOf is here rather than being read from a column somewhere because the "no row means new"
+// default lives in ONE place -- release.Publisher.TrustOf -- and a page that restated it in a
+// query or a coalesce would be a second copy of the rule that decides whether publishing is
+// automated. It is a read, on an interface whose other method is a write, because a reviewer
+// setting a tier and a page showing one are the same fact from two directions.
 type TrustService interface {
 	SetTrust(ctx context.Context, accountID string, level release.Trust, reviewerID, note string) error
+	TrustOf(ctx context.Context, accountID string) (release.Trust, error)
 }
 
 type setTrustInput struct {

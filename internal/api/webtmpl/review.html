@@ -30,7 +30,15 @@
         <td>{{.Version}}</td>
         <td>
           {{.SubmittedAt.Format "2006-01-02 15:04"}}
-          {{if .SubmittedBy}}<br><span class="muted">by {{.SubmittedBy}}</span>{{end}}
+          {{if .SubmittedBy}}
+            <br><span class="muted">by
+              {{if .SubmittedByHandle}}{{.SubmittedByHandle}}{{else}}{{.SubmittedBy}}{{end}}</span>
+            {{/* THE TIER, on the queue and not only on the release page. Five clean version bumps
+                 from one untrusted account is one decision about the account, not five about the
+                 releases -- and without this the queue showed no reason they were there at all. */}}
+            {{$tier := index $.QueueTrust .SubmittedBy}}
+            {{if $tier}}<br><span class="muted">trust: {{$tier}}</span>{{end}}
+          {{end}}
         </td>
         <td>
           {{if .Verified}}

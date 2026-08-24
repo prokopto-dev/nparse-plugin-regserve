@@ -101,7 +101,17 @@ type publishReleaseResult struct {
 
 	// Reasons is what a publishing workflow prints so the author learns why their release is
 	// waiting without opening a browser to find out.
-	Reasons []string `json:"quarantine,omitempty" doc:"Every rule that sent this release to review. Absent when it went live. A new plugin id is always one of these: the first appearance of an id always gets a human, whatever the submitter's trust level."`
+	Reasons []string `json:"quarantine,omitempty" doc:"Every rule that sent this release to review. Absent when it went live. A new plugin id is always one of these: the first appearance of an id always gets a human, whatever the submitter's trust level. An EMPTY list on a pending release means no rule fired and the review sentence says what is holding it -- usually that this registry has not marked the submitting account trusted."`
+
+	// SupersededPending is what this submission retired before anybody reviewed it.
+	//
+	// It was computed and then dropped on the floor: release.Outcome has carried it since the
+	// one-pending-per-plugin rule landed, and nothing rendered it, so a workflow that cancelled
+	// its own author's earlier submission was told nothing at all. A release that stops waiting
+	// with nothing saying so is the same class of invisible change as a listing that moves
+	// silently, and the whole point of returning reasons here is that the author should not have
+	// to open a browser to find out what happened.
+	SupersededPending []string `json:"superseded_pending,omitempty" doc:"Every release of this plugin that was still waiting for review when this one arrived, and is not waiting any more. Usually absent. The newest submission is the one that gets reviewed, so an earlier one of your own is retired rather than queued behind it."`
 }
 
 // registerReleases wires the publish endpoint.
@@ -202,6 +212,8 @@ func registerReleases(api huma.API, publisher Publisher, advice string) {
 					Replayed:   outcome.Replayed,
 					Superseded: outcome.Superseded,
 					Reasons:    outcome.Reasons,
+
+					SupersededPending: outcome.SupersededPending,
 				},
 			}, nil
 		})

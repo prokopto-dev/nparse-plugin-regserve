@@ -114,6 +114,15 @@ type Waiting struct {
 	FirstRelease bool
 
 	SubmittedBy string
+
+	// SubmittedByHandle is the GitHub handle behind SubmittedBy, empty when the account has none.
+	//
+	// DECORATION, and never what anything matches on -- the account id is the identity and this is
+	// refreshed at each login. It is here because the decisions taken from these pages are about a
+	// PERSON: a reviewer marking somebody trusted from a queue of ULIDs is a reviewer guessing,
+	// and the query this reads was written for exactly that and then never called.
+	SubmittedByHandle string
+
 	SubmittedAt time.Time
 	Note        string
 }
@@ -123,6 +132,14 @@ func (q *Queue) List(ctx context.Context) ([]Waiting, error) {
 	rows, err := q.db.Read().ListPendingReleases(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("read the review queue: %w", err)
+	}
+
+	// One lookup per DISTINCT submitter rather than one per row: the same account usually holds
+	// several of the plugins in a queue, and a handle that is decoration should not cost a query
+	// per line to render.
+	handles, err := q.handlesOf(ctx, rows)
+	if err != nil {
+		return nil, err
 	}
 
 	out := make([]Waiting, 0, len(rows))
@@ -143,6 +160,7 @@ func (q *Queue) List(ctx context.Context) ([]Waiting, error) {
 		}
 		if row.SubmittedBy != nil {
 			w.SubmittedBy = *row.SubmittedBy
+			w.SubmittedByHandle = handles[*row.SubmittedBy]
 		}
 		if row.ReviewNote != nil {
 			w.Note = *row.ReviewNote
@@ -150,6 +168,43 @@ func (q *Queue) List(ctx context.Context) ([]Waiting, error) {
 		out = append(out, w)
 	}
 	return out, nil
+}
+
+// handlesOf reads the GitHub handle behind each distinct submitter in a queue listing.
+//
+// An account that names nothing yields an empty handle rather than an error -- see handleOf -- so
+// the only failure that reaches the caller here is a database that could not be read, and the
+// listing above would already have failed on that. It is propagated rather than swallowed for
+// exactly that reason: there is no case left where hiding it would still leave a working queue.
+func (q *Queue) handlesOf(ctx context.Context, rows []sqlitegen.ListPendingReleasesRow) (map[string]string, error) {
+	handles := make(map[string]string, len(rows))
+	for _, row := range rows {
+		if row.SubmittedBy == nil {
+			continue
+		}
+		if _, seen := handles[*row.SubmittedBy]; seen {
+			continue
+		}
+		handle, err := q.handleOf(ctx, *row.SubmittedBy)
+		if err != nil {
+			return nil, err
+		}
+		handles[*row.SubmittedBy] = handle
+	}
+	return handles, nil
+}
+
+// handleOf reads one account's GitHub handle. An account that names nothing is empty rather than
+// an error: a release whose submitter row has gone is a release a reviewer still has to decide.
+func (q *Queue) handleOf(ctx context.Context, accountID string) (string, error) {
+	handle, err := q.db.Read().GetAccountHandle(ctx, accountID)
+	switch {
+	case errors.Is(err, store.ErrNoRows):
+		return "", nil
+	case err != nil:
+		return "", fmt.Errorf("read the handle of %s: %w", accountID, err)
+	}
+	return handle, nil
 }
 
 // Pending is how many releases are waiting. For the boot log and the account surface.

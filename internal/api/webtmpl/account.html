@@ -31,6 +31,28 @@
   </div>
 {{end}}
 
+{{if .AccountTrust}}
+  {{/* YOUR OWN TIER, said plainly. It decides whether your version bumps reach users without a
+       human, and it was the one fact about your own account this service would not tell you --
+       so "my release has been pending for a week" had no answer reachable from here, and a queue
+       working exactly as designed looked like a registry that had lost track of an id it had
+       already approved. */}}
+  <p class="muted">
+    Your trust level is <strong>{{.AccountTrust}}</strong>.
+    {{if eq .AccountTrust "trusted"}}
+      A version bump of a plugin of yours that is already listed publishes without a human, as long
+      as the artifact hashes clean and nothing about the change is unusual. A new plugin id still
+      always goes to a person.
+    {{else if eq .AccountTrust "blocked"}}
+      Publishing is refused for this account. A reviewer set that, and only a reviewer can lift it.
+    {{else}}
+      That is the floor and the default. <strong>Everything you publish goes to human review</strong>,
+      including a version bump of a plugin of yours that is already listed. It is never raised
+      automatically — a reviewer decides, and there is nothing to earn by publishing more.
+    {{end}}
+  </p>
+{{end}}
+
 <h2>Your plugins</h2>
 {{if .Plugins}}
   <table>
