@@ -121,6 +121,9 @@ func registerReview(api huma.API, queue ReviewQueue) {
 		Path:        BasePath + PathPendingReleases,
 		Summary:     "List releases waiting for review",
 		Description: "Everything submitted and not yet decided, oldest first.\n\n" +
+			"AT MOST ONE ENTRY PER PLUGIN, and it is the newest submission. A later release of " +
+			"the same plugin supersedes an earlier one that is still waiting, because only one " +
+			"of them can become the listing and approving them is not ordered (ADR-0014).\n\n" +
 			"`first_release` marks a submission that is the first appearance of a plugin id. " +
 			"Those always require a human, whatever the submitter's trust level.\n\n" +
 			"`verified` false means this server could not fetch the artifact. Such a release " +

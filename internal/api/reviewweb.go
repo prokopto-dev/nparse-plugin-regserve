@@ -64,7 +64,8 @@ func registerReviewPages(api huma.API, deps WebDeps) {
 		Method:      http.MethodGet,
 		Path:        PathReviewQueue,
 		Summary:     "The review queue",
-		Description: "An HTML page listing every release waiting for a human, oldest first. " +
+		Description: "An HTML page listing every release waiting for a human, oldest first, at " +
+			"most one per plugin. " +
 			"Session-only and reviewer-only: a personal access token cannot reach it however it " +
 			"is scoped, and a signed-in account that is not a configured reviewer is refused.",
 		Tags:      []string{tagReviewPages},

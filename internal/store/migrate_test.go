@@ -1,11 +1,13 @@
 package store_test
 
 import (
+	"database/sql"
 	"io/fs"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/require"
 
 	"github.com/prokopto-dev/nparse-plugin-regserve/db"
@@ -115,4 +117,106 @@ func TestMigrate_DownBlock_CannotRun(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestMigrate_DuplicateWaitingReleases_AreRetiredBeforeTheIndexIsAdded.
+//
+// release_one_pending_per_plugin cannot simply be added: the live database ALREADY holds the rows
+// it forbids, which is how the defect was found -- the review queue showed one plugin id several
+// times. So the migration before it retires the stale ones, and this drives goose to exactly the
+// version before that pair and then forward, because that ordering is the whole reason there are
+// two files and a fresh database can never exercise it.
+func TestMigrate_DuplicateWaitingReleases_AreRetiredBeforeTheIndexIsAdded(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "regserve.db")
+	raw := openRaw(t, path)
+
+	fsys, err := fs.Sub(db.MigrationsSQLite, db.MigrationsSQLiteDir)
+	require.NoError(t, err)
+	provider, err := goose.NewProvider(goose.DialectSQLite3, raw, fsys,
+		goose.WithDisableGlobalRegistry(true))
+	require.NoError(t, err)
+
+	// The last schema that permitted several waiting releases of one plugin.
+	_, err = provider.UpTo(t.Context(), 20260820142711)
+	require.NoError(t, err)
+
+	_, err = raw.ExecContext(t.Context(),
+		`INSERT INTO plugin (id, name, claimed_at, updated_at)
+		 VALUES ('merchant-mode', 'Merchant Mode', 1700000000000000, 1700000000000000),
+		        ('bag-sorter', 'Bag Sorter', 1700000000000000, 1700000000000000)`)
+	require.NoError(t, err)
+
+	// Three waiting releases of one plugin and one of another -- the queue as it was reported. The
+	// review notes are set because the migration must not touch them: they are the only
+	// explanation the author of a superseded submission ever gets.
+	_, err = raw.ExecContext(t.Context(),
+		`INSERT INTO "release" (id, plugin_id, version, state, source, artifact_url,
+		     sdk_specifier, submitted_at, review_note)
+		 VALUES ('01ARZ3NDEKTSV4RRFFQ69G5F01', 'merchant-mode', '1.0.0', 'pending', 'publish',
+		         'https://example.com/a.zip', '>=1.0,<2', 1700000000000001, 'first release of this id'),
+		        ('01ARZ3NDEKTSV4RRFFQ69G5F02', 'merchant-mode', '1.0.1', 'pending', 'publish',
+		         'https://example.com/b.zip', '>=1.0,<2', 1700000000000002, 'first release of this id'),
+		        ('01ARZ3NDEKTSV4RRFFQ69G5F03', 'merchant-mode', '1.0.2', 'pending', 'publish',
+		         'https://example.com/c.zip', '>=1.0,<2', 1700000000000003, 'first release of this id'),
+		        ('01ARZ3NDEKTSV4RRFFQ69G5F04', 'bag-sorter', '2.0.0', 'pending', 'publish',
+		         'https://example.com/d.zip', '>=1.0,<2', 1700000000000001, 'first release of this id')`)
+	require.NoError(t, err)
+
+	_, err = provider.Up(t.Context())
+	require.NoError(t, err, "the index was added over rows that violate it")
+
+	require.Equal(t, map[string]string{
+		"01ARZ3NDEKTSV4RRFFQ69G5F01": "superseded",
+		"01ARZ3NDEKTSV4RRFFQ69G5F02": "superseded",
+		// The NEWEST submission of the plugin that had three, and the only one of its plugin left.
+		"01ARZ3NDEKTSV4RRFFQ69G5F03": "pending",
+		// Untouched: one waiting release was never the problem.
+		"01ARZ3NDEKTSV4RRFFQ69G5F04": "pending",
+	}, releaseStates(t, raw))
+
+	// Retiring a row is a state change and never a delete (ADR-0010), and the reason each one was
+	// waiting survives -- the migration has nothing to add to it that the new state does not say.
+	notes := scan(t, raw, `SELECT review_note FROM "release" ORDER BY id`)
+	require.Equal(t, []string{
+		"first release of this id", "first release of this id",
+		"first release of this id", "first release of this id",
+	}, notes)
+}
+
+// releaseStates maps every release id to its state.
+func releaseStates(t *testing.T, raw *sql.DB) map[string]string {
+	t.Helper()
+
+	rows, err := raw.QueryContext(t.Context(), `SELECT id, state FROM "release"`)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, rows.Close()) }()
+
+	out := map[string]string{}
+	for rows.Next() {
+		var id, state string
+		require.NoError(t, rows.Scan(&id, &state))
+		out[id] = state
+	}
+	require.NoError(t, rows.Err())
+	return out
+}
+
+// scan reads a single-column query into a slice.
+func scan(t *testing.T, raw *sql.DB, query string) []string {
+	t.Helper()
+
+	rows, err := raw.QueryContext(t.Context(), query)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, rows.Close()) }()
+
+	var out []string
+	for rows.Next() {
+		var v string
+		require.NoError(t, rows.Scan(&v))
+		out = append(out, v)
+	}
+	require.NoError(t, rows.Err())
+	return out
 }
