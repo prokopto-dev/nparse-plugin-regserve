@@ -147,7 +147,9 @@ func registerModerationCatalogue(api huma.API, deps WebDeps) {
 
 		data := reviewPageData(deps, p, "Every plugin")
 		data.Catalogue = listings
-		data.TrustTiers = trustTiers()
+		// No TrustTiers: this page SHOWS each owner's tier and offers no control to change it.
+		// The controls live one click away, on the plugin's own page, because a change of tier
+		// needs a stated reason and a list of every plugin is the wrong place to be typing one.
 		data.Notice, data.Problem = messageFor(in.Message)
 		return renderPage(ctx, "catalogue.html", data)
 	})
