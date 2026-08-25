@@ -55,6 +55,15 @@ type reviewE2E struct {
 	srv *httptest.Server
 	db  *store.DB
 
+	// clk is the fixture's FIXED clock, and the only clock anything in this file may read.
+	//
+	// It is on the harness so there is one spelling of the fixed time rather than the same literal
+	// retyped at each call site -- and so that a test needing a service of its own builds it on the
+	// same clock the server is running on. `time.Now()` in a test here is both a house-rule
+	// violation (the clock is injected; wall-clock access lives in internal/clock) and a fixture
+	// reading a different clock from the code under test.
+	clk clock.Fixed
+
 	tokens   *auth.Tokens
 	sessions *auth.Sessions
 	authn    *auth.Authenticator
@@ -82,6 +91,7 @@ func newReviewE2E(t *testing.T, handles string) *reviewE2E {
 
 	w := &reviewE2E{
 		db:           db,
+		clk:          clk,
 		pluginID:     "merchant-mode",
 		artifactBody: []byte("not a real wheel, but real bytes"),
 	}
@@ -281,7 +291,7 @@ func (w *reviewE2E) moderate(t *testing.T, cookie, csrf, pluginID, action, reaso
 func (w *reviewE2E) claimAndPublish(t *testing.T, pluginID, version string) publishedRelease {
 	t.Helper()
 
-	insertClaimedPlugin(t, w.db, time.Date(2026, 8, 21, 3, 46, 0, 0, time.UTC), pluginID, w.owner)
+	insertClaimedPlugin(t, w.db, w.clk.T, pluginID, w.owner)
 
 	minted, err := w.tokens.Mint(t.Context(), auth.MintRequest{
 		AccountID: w.owner,
@@ -521,7 +531,7 @@ func TestModerationConsole_ATrustedPublishersBumpListsItself_AndTheirNewIDStillG
 	// The separation, measured through the real publisher rather than asserted about a form. If
 	// approving raised trust, the bump below would list for the wrong reason and the whole test
 	// would be a false positive.
-	publisher := release.NewPublisher(w.db, clock.Fixed{T: time.Date(2026, 8, 21, 3, 46, 0, 0, time.UTC)}, nil)
+	publisher := release.NewPublisher(w.db, w.clk, nil)
 	tier, err := publisher.TrustOf(t.Context(), w.owner)
 	require.NoError(t, err)
 	require.Equal(t, release.TrustNew, tier,
@@ -594,7 +604,7 @@ func TestModerationConsole_ADelistedPluginLeavesTheIndexAndKeepsItsClaim(t *test
 
 	// AND STILL CLAIMED. Not "the row is there" — the id is refused to a fresh claimant, which is
 	// the property that actually matters and the one an accidental DELETE would break.
-	owners := ownership.New(w.db, clock.Fixed{T: time.Date(2026, 8, 21, 3, 46, 0, 0, time.UTC)})
+	owners := ownership.New(w.db, w.clk)
 	claimed, err := core.ParsePluginID(w.pluginID)
 	require.NoError(t, err)
 	err = owners.ClaimID(t.Context(), ownership.Claim{
@@ -617,6 +627,17 @@ func TestModerationConsole_IsRefusedToEverybodyWhoIsNotAConfiguredReviewer(t *te
 	t.Parallel()
 
 	w := newReviewE2E(t, "themaintainer")
+
+	// A LISTED plugin to attempt this against, put there by a real reviewer through the real form.
+	// Without it the postconditions below would be asserted over a registry with nothing listed and
+	// nothing to delist, which is a state no forbidden request could have changed either -- so they
+	// would hold whatever the middleware did.
+	reviewerCookie, reviewerCSRF := w.sessionFor(t, w.reviewer)
+	out := w.publish(t, "1.0.0")
+	require.Equal(t, http.StatusSeeOther,
+		w.decide(t, reviewerCookie, reviewerCSRF, out.ReleaseID, "approve", "fine").status)
+	require.Contains(t, w.index(t), w.pluginID, "the fixture must start listed")
+
 	cookie, csrf := w.sessionFor(t, w.bystander)
 
 	// A signed-in account that is not a reviewer.
@@ -635,10 +656,21 @@ func TestModerationConsole_IsRefusedToEverybodyWhoIsNotAConfiguredReviewer(t *te
 	require.Equal(t, http.StatusForbidden, resp.status)
 	require.Contains(t, string(resp.body), "session-only")
 
-	// Nothing was delisted and nobody was trusted by any of that.
-	require.Contains(t, w.index(t), "")
-	tier, err := release.NewPublisher(w.db, clock.Fixed{T: time.Now().UTC()}, nil).
-		TrustOf(t.Context(), w.bystander)
+	// NOTHING CHANGED, read back as state rather than asserted about the responses.
+	//
+	// A refusal that answered 403 and performed the act anyway would pass every assertion above:
+	// the status codes say what the server REPLIED, and these say what it DID. So the moderation
+	// state is read through the same service the console reads, and the tier through the same
+	// publisher the publish path reads.
+	listing, err := review.NewPlugins(w.db, w.clk).Get(t.Context(), w.pluginID)
 	require.NoError(t, err)
-	require.Equal(t, release.TrustNew, tier)
+	require.False(t, listing.Delisted,
+		"a refused delisting must leave the plugin listed; a 403 that delisted anyway would pass "+
+			"every status assertion above")
+	require.True(t, listing.Listed())
+	require.Contains(t, w.index(t), w.pluginID, "and it is still in front of every client")
+
+	tier, err := release.NewPublisher(w.db, w.clk, nil).TrustOf(t.Context(), w.bystander)
+	require.NoError(t, err)
+	require.Equal(t, release.TrustNew, tier, "a refused trust change must leave the tier at the floor")
 }

@@ -83,10 +83,31 @@ something.
 Some operations carry **no scope at all** and are session-only, because a token that could perform
 them would be equivalent to the account:
 
-- minting, listing and revoking PATs
-- adding, removing or transferring plugin owners
-- setting an account's trust level
-- approving or rejecting a release
+- minting, listing and revoking PATs — `token.mint`, `token.read`, `token.revoke`
+- registering a new plugin id — `plugin.claim`
+- adding, removing or transferring plugin owners — `owner.manage`
+- setting an account's trust level — `trust.set`
+- approving or rejecting a release — `release.review`
+- delisting or relisting somebody else's plugin as a moderator — `plugin.moderate`
+- ending the browser session it is called with — `session.end`
+
+**This list is the complete set, and gate `DOC004` keeps it that way.** It reads the keys out of
+this section and compares them with the `Floor` members of `internal/authz/catalogue.go`, failing in
+BOTH directions — a floor permission missing here, and a key here that the catalogue does not hold
+at that level. The gate exists because this section drifted: `plugin.claim` and `session.end` were
+floor members for two phases and were never written down, so the normative contract and the
+catalogue disagreed with nothing to notice, and a third omission was added on top of them before
+anybody read the two. The catalogue remains the ONE source (a hand-written permission list anywhere
+else is still forbidden); what this section holds is the *argument*, and the gate is what stops the
+argument from covering fewer cases than the code.
+
+`plugin.moderate` is the one that most invites the wrong reading, so it is spelled out. Delisting is
+not a stronger `plugin.manage`: `plugin.manage` is what an OWNER holds over their OWN listing, and
+its effective capability is the intersection of the scope, the token's plugin pin and the account's
+ownership at request time (ADR-0005). That intersection cannot express "somebody with no grant on
+this plugin removes it from every client's index", and widening it until it could would make a
+`plugin:manage` token able to delist a stranger's plugin. So moderation is a separate permission at
+the floor rather than a wider version of an ownership-bounded one.
 
 There is no `admin:*` scope and no all-powerful token. An operation in the floor declares
 `x-regserve-pat-forbidden: true` and no scopes; a PAT-callable operation declares a non-empty scope
