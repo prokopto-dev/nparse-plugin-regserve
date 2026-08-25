@@ -231,13 +231,25 @@ func (p *Plugins) Get(ctx context.Context, pluginID string) (Listing, error) {
 		return Listing{}, fmt.Errorf("read plugin %s for moderation: %w", pluginID, err)
 	}
 
-	owners, err := p.ownersByPlugin(ctx)
+	// This plugin's grants only. Reading every grant in the registry to render one page would make
+	// the cost of the page a function of the whole catalogue, which List can justify and this
+	// cannot.
+	rows, err := p.db.Read().ListOwnersWithTrustForPlugin(ctx, pluginID)
 	if err != nil {
-		return Listing{}, err
+		return Listing{}, fmt.Errorf("read the owners of %s for moderation: %w", pluginID, err)
 	}
 
 	out := listingFrom(sqlitegen.ListPluginsForModerationRow(row))
-	out.Owners = owners[pluginID]
+	out.Owners = make([]Holder, 0, len(rows))
+	for _, o := range rows {
+		out.Owners = append(out.Owners, Holder{
+			AccountID:   o.AccountID,
+			DisplayName: o.DisplayName,
+			Handle:      o.Handle,
+			Role:        o.Role,
+			Trust:       trustOrFloor(o.TrustLevel),
+		})
+	}
 	return out, nil
 }
 
