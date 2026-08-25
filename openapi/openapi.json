@@ -2573,6 +2573,468 @@
         "x-regserve-reviewer": true
       }
     },
+    "/review/accounts/{id}/trust": {
+      "post": {
+        "description": "An HTML form post carrying `level` and a required `note`. The same act as `PUT /api/v1/accounts/{id}/trust`, through the same service — this is the door a browser can use, and setting trust is capability-floor and therefore browser-only.\n\n**It is a separate form from approve/reject and always will be.** Approving a release and trusting its publisher are two decisions: the first is about these bytes, the second is about every version bump that account makes from now on. Trust is never raised as a side effect of anything, and never automatically — ADR-0007 has no publish counters and no thresholds, because a counter is something an attacker can run up.\n\n**The tier is a property of the ACCOUNT, not of a plugin.** It applies to every plugin that account holds, and there is deliberately no per-plugin trust.\n\n`trusted` lets a version bump of an ALREADY-APPROVED plugin publish without a human, and only when the artifact was fetched and re-hashed clean and no quarantine rule fired. It never lets a NEW plugin id skip review, whatever the tier, and it never governs who may moderate — that is `REGSERVE_REVIEWERS` and nothing else.",
+        "operationId": "setAccountTrustFromTheReviewPages",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "contentMediaType": "application/octet-stream",
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "No Content",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "303": {
+            "description": "A redirect. Wherever the form was submitted from.",
+            "headers": {
+              "Location": {
+                "description": "Where to go next.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "summary": "Set an account's trust tier",
+        "tags": [
+          "review-pages"
+        ],
+        "x-regserve-pat-forbidden": true,
+        "x-regserve-permission": "trust.set",
+        "x-regserve-reviewer": true
+      }
+    },
+    "/review/plugins": {
+      "get": {
+        "description": "An HTML page listing every plugin in every state — listed, claimed with nothing published yet, and delisted — with its owners and the trust tier each of them currently holds.\n\nIt is deliberately NOT the public directory. That page answers \"what is publicly visible\" and correctly declines to show a delisted or unpublished id, counting it so the shortfall is never silent. The rows it declines to show are the ones moderation is about.\n\nSession-only and reviewer-only: a personal access token cannot reach it however it is scoped, and a signed-in account that is not a configured reviewer is refused.",
+        "operationId": "getModerationCataloguePage",
+        "parameters": [
+          {
+            "description": "A message code from a completed form post.",
+            "explode": false,
+            "in": "query",
+            "name": "msg",
+            "schema": {
+              "description": "A message code from a completed form post.",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "An HTML page for a browser. Not part of the machine API; the shape is not a contract and may change with the design.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Type": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "summary": "Every plugin this registry carries",
+        "tags": [
+          "review-pages"
+        ],
+        "x-regserve-pat-forbidden": true,
+        "x-regserve-permission": "release.review",
+        "x-regserve-reviewer": true
+      }
+    },
+    "/review/plugins/{id}": {
+      "get": {
+        "description": "An HTML page showing a plugin's listing state, what it currently serves, how many of its releases are waiting, and every account that holds it with that account's trust tier.\n\nIt answers for a plugin in any state, including a delisted one: a moderator who has just delisted something is sent back here to see what they did, and the id stays claimed for ever whatever happens to the listing.",
+        "operationId": "getModerationPluginPage",
+        "parameters": [
+          {
+            "description": "The plugin's id.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The plugin's id.",
+              "type": "string"
+            }
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "msg",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "An HTML page for a browser. Not part of the machine API; the shape is not a contract and may change with the design.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Type": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "summary": "One plugin, and what a moderator may do to it",
+        "tags": [
+          "review-pages"
+        ],
+        "x-regserve-pat-forbidden": true,
+        "x-regserve-permission": "release.review",
+        "x-regserve-reviewer": true
+      }
+    },
+    "/review/plugins/{id}/listing": {
+      "post": {
+        "description": "An HTML form post. `action` is `delist` or `relist`, and both require a reason.\n\n**Delisting removes the listing and keeps the claim.** The plugin row, its releases and its owners are untouched; what changes is that the id stops appearing in `GET /index.json`. Ids are permanent and NEVER recycled — a delisted id is spoken for for ever and by nobody else, because an id that could be handed on is how you ship an update to another author's users. There is no operation here that deletes a plugin, and a database trigger refuses one.\n\nIt carries `plugin.moderate` rather than `plugin.manage`: an owner removing their own listing and a moderator removing somebody else's are different acts, the second cannot be expressed by a permission bounded by ownership (ADR-0005), and the audit row records which act it was.\n\nA reason is required in BOTH directions. Relisting clears the stored reason, so after it runs the append-only audit log is the only record that the plugin was ever delisted or why it came back.",
+        "operationId": "moderatePluginListing",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "contentMediaType": "application/octet-stream",
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "No Content",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "303": {
+            "description": "A redirect. The plugin's moderation page.",
+            "headers": {
+              "Location": {
+                "description": "Where to go next.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "summary": "Delist or relist a plugin as a moderator",
+        "tags": [
+          "review-pages"
+        ],
+        "x-regserve-pat-forbidden": true,
+        "x-regserve-permission": "plugin.moderate",
+        "x-regserve-reviewer": true
+      }
+    },
     "/review/releases/{id}": {
       "get": {
         "description": "An HTML page showing a release, every quarantine rule that fired when it was submitted, the hash THIS SERVER computed, the hash the submitter claimed when the two disagree, and the release's audit trail.\n\nIt answers for a release in any state, not only a waiting one: a reviewer who has just decided something is sent back here to see what they did.",

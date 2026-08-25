@@ -81,6 +81,46 @@ func (q *Queries) CountPlugins(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const delistPlugin = `-- name: DelistPlugin :execrows
+UPDATE plugin
+SET delisted_at = ?, delisted_reason = ?, updated_at = ?
+WHERE id = ? AND delisted_at IS NULL
+`
+
+type DelistPluginParams struct {
+	DelistedAt     *int64
+	DelistedReason *string
+	UpdatedAt      int64
+	ID             string
+}
+
+// Remove a plugin's listing and KEEP ITS CLAIM.
+//
+// An UPDATE, never a DELETE. The plugin row IS the claim (a BEFORE DELETE trigger aborts a
+// removal), so delisting sets delisted_at and the id stays spoken for -- permanently, and for
+// nobody else. An id whose plugin is gone must never become available to somebody else, because
+// that is how you ship an update to another author's users.
+//
+// delisted_reason is NOT NULL here because the table's CHECK requires the pair to agree: a
+// delisting with no stated reason is one nobody can review later, and a listing that vanishes
+// without explanation is indistinguishable from a bug.
+//
+// The WHERE names the expected current state, like every state change in review.sql and for the
+// same reason: zero rows is how "it was already delisted" is reported, without a Go check above
+// the statement leaving a window between the read and the write.
+func (q *Queries) DelistPlugin(ctx context.Context, arg DelistPluginParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, delistPlugin,
+		arg.DelistedAt,
+		arg.DelistedReason,
+		arg.UpdatedAt,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const getListing = `-- name: GetListing :one
 SELECT
     p.id,
@@ -149,6 +189,60 @@ func (q *Queries) GetPlugin(ctx context.Context, id string) (GetPluginRow, error
 	row := q.db.QueryRowContext(ctx, getPlugin, id)
 	var i GetPluginRow
 	err := row.Scan(&i.ID, &i.Name, &i.DelistedAt)
+	return i, err
+}
+
+const getPluginForModeration = `-- name: GetPluginForModeration :one
+SELECT
+    p.id,
+    p.name,
+    p.description,
+    p.author,
+    p.homepage,
+    p.claimed_at,
+    p.delisted_at,
+    p.delisted_reason,
+    CAST(coalesce((SELECT r.version FROM "release" r
+        WHERE r.plugin_id = p.id AND r.state = 'approved' LIMIT 1), '') AS TEXT) AS live_version,
+    (SELECT count(*) FROM "release" r
+        WHERE r.plugin_id = p.id AND r.state = 'pending') AS pending_releases,
+    (SELECT count(*) FROM plugin_owner o WHERE o.plugin_id = p.id) AS owner_count
+FROM plugin p
+WHERE p.id = ?
+`
+
+type GetPluginForModerationRow struct {
+	ID              string
+	Name            string
+	Description     string
+	Author          string
+	Homepage        string
+	ClaimedAt       int64
+	DelistedAt      *int64
+	DelistedReason  *string
+	LiveVersion     string
+	PendingReleases int64
+	OwnerCount      int64
+}
+
+// One plugin for the reviewer's page. Same columns as the list, so the two surfaces cannot
+// disagree about what state a plugin is in.
+func (q *Queries) GetPluginForModeration(ctx context.Context, id string) (GetPluginForModerationRow, error) {
+	row := q.db.QueryRowContext(ctx, getPluginForModeration, id)
+	var i GetPluginForModerationRow
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.Author,
+		&i.Homepage,
+		&i.ClaimedAt,
+		&i.DelistedAt,
+		&i.DelistedReason,
+		&i.LiveVersion,
+		&i.PendingReleases,
+		&i.OwnerCount,
+	)
 	return i, err
 }
 
@@ -305,6 +399,150 @@ func (q *Queries) ListListings(ctx context.Context) ([]ListListingsRow, error) {
 	return items, nil
 }
 
+const listOwnersWithTrust = `-- name: ListOwnersWithTrust :many
+SELECT
+    o.plugin_id,
+    o.account_id,
+    o.role,
+    a.display_name,
+    CAST(coalesce((SELECT i.handle FROM identity i WHERE i.account_id = a.id
+        ORDER BY i.linked_at, i.id LIMIT 1), '') AS TEXT) AS handle,
+    CAST(coalesce(t.level, '') AS TEXT) AS trust_level
+FROM plugin_owner o
+JOIN account a ON a.id = o.account_id
+LEFT JOIN account_trust t ON t.account_id = o.account_id
+ORDER BY o.plugin_id, o.granted_at, o.account_id
+`
+
+type ListOwnersWithTrustRow struct {
+	PluginID    string
+	AccountID   string
+	Role        string
+	DisplayName string
+	Handle      string
+	TrustLevel  string
+}
+
+// Every ownership grant in the registry, with the holder's handle and CURRENT trust tier.
+//
+// ALL of them in one statement, grouped by the caller, rather than a query per plugin: the
+// reviewer's catalogue shows owners against every row, and a page that issued one read per plugin
+// would be a page whose cost grows with the registry while it holds the reader's connection open.
+//
+// LEFT JOIN account_trust because NO ROW MEANS 'new'. An INNER JOIN would silently drop every
+// owner nobody has assessed -- which is most of them, and exactly the ones a reviewer is looking
+// for. The caller reads a NULL level as the floor, the same reading release.TrustOf gives it.
+//
+// plugin_id is selected so one pass can bucket the rows; the caller filters in Go rather than
+// running this per plugin.
+func (q *Queries) ListOwnersWithTrust(ctx context.Context) ([]ListOwnersWithTrustRow, error) {
+	rows, err := q.db.QueryContext(ctx, listOwnersWithTrust)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListOwnersWithTrustRow{}
+	for rows.Next() {
+		var i ListOwnersWithTrustRow
+		if err := rows.Scan(
+			&i.PluginID,
+			&i.AccountID,
+			&i.Role,
+			&i.DisplayName,
+			&i.Handle,
+			&i.TrustLevel,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPluginsForModeration = `-- name: ListPluginsForModeration :many
+SELECT
+    p.id,
+    p.name,
+    p.description,
+    p.author,
+    p.homepage,
+    p.claimed_at,
+    p.delisted_at,
+    p.delisted_reason,
+    CAST(coalesce((SELECT r.version FROM "release" r
+        WHERE r.plugin_id = p.id AND r.state = 'approved' LIMIT 1), '') AS TEXT) AS live_version,
+    (SELECT count(*) FROM "release" r
+        WHERE r.plugin_id = p.id AND r.state = 'pending') AS pending_releases,
+    (SELECT count(*) FROM plugin_owner o WHERE o.plugin_id = p.id) AS owner_count
+FROM plugin p
+ORDER BY p.id
+`
+
+type ListPluginsForModerationRow struct {
+	ID              string
+	Name            string
+	Description     string
+	Author          string
+	Homepage        string
+	ClaimedAt       int64
+	DelistedAt      *int64
+	DelistedReason  *string
+	LiveVersion     string
+	PendingReleases int64
+	OwnerCount      int64
+}
+
+// Every plugin this registry knows, whatever its state, for the reviewer's catalogue view.
+//
+// NOT the directory's query, and the difference is the point of this one. SearchListings answers
+// "what is publicly visible" and drops a delisted or unpublished id on the floor, counting it so
+// the number is honest. A reviewer needs the rows themselves: the ids claimed and never published,
+// and the ids somebody delisted, are exactly the ones moderation is about, and a moderation
+// surface that could only see what the public sees would be blind to its own subject.
+//
+// No WHERE at all, deliberately. A filter here would be a row a reviewer cannot see, and there is
+// no state of a plugin this page is not for.
+func (q *Queries) ListPluginsForModeration(ctx context.Context) ([]ListPluginsForModerationRow, error) {
+	rows, err := q.db.QueryContext(ctx, listPluginsForModeration)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPluginsForModerationRow{}
+	for rows.Next() {
+		var i ListPluginsForModerationRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Description,
+			&i.Author,
+			&i.Homepage,
+			&i.ClaimedAt,
+			&i.DelistedAt,
+			&i.DelistedReason,
+			&i.LiveVersion,
+			&i.PendingReleases,
+			&i.OwnerCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPluginsWithNoApprovedRelease = `-- name: ListPluginsWithNoApprovedRelease :many
 SELECT p.id
 FROM plugin p
@@ -339,6 +577,40 @@ func (q *Queries) ListPluginsWithNoApprovedRelease(ctx context.Context) ([]strin
 		return nil, err
 	}
 	return items, nil
+}
+
+const relistPlugin = `-- name: RelistPlugin :execrows
+UPDATE plugin
+SET delisted_at = NULL, delisted_reason = NULL, updated_at = ?
+WHERE id = ? AND delisted_at IS NOT NULL
+`
+
+type RelistPluginParams struct {
+	UpdatedAt int64
+	ID        string
+}
+
+// Put a delisted plugin's listing back.
+//
+// The inverse of the statement above, and it exists because the alternative to it is a maintainer
+// writing SQL against production. Delisting is reversible in the schema -- delisted_at is nullable
+// -- and a moderation action a reviewer cannot undo through the same surface they performed it in
+// is one that gets undone by hand, at 2am, with no audit row.
+//
+// It clears delisted_reason with it, because the CHECK requires the pair to agree, and the reason
+// a listing WAS removed does not survive as a property of a listing that is back. It survives in
+// audit_log, which is the copy that cannot be edited.
+//
+// Relisting does NOT restore anything else, because nothing else was taken away: the releases, the
+// owners and the claim were never touched. What comes back is the row's presence in the index, and
+// only if it still has an approved release -- a plugin delisted before it ever published relists
+// to exactly where it was, awaiting review.
+func (q *Queries) RelistPlugin(ctx context.Context, arg RelistPluginParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, relistPlugin, arg.UpdatedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const searchListings = `-- name: SearchListings :many

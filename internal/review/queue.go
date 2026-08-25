@@ -116,6 +116,38 @@ type Waiting struct {
 	SubmittedBy string
 	SubmittedAt time.Time
 	Note        string
+
+	// Submitter is who sent this, and what tier this registry currently holds them at.
+	//
+	// The tier is here because trusting a publisher is the decision a reviewer makes WHILE reading
+	// their submission, and the control that makes it is offered on these surfaces. Offering it
+	// without showing the current value is asking somebody to change a setting they cannot see;
+	// showing a stale one is worse. It is read with the release, in the same statement, so the
+	// two cannot come from different moments.
+	//
+	// ADR-0007: the tier belongs to the ACCOUNT, never to the plugin. It is shown against a
+	// submission because that is where the reviewer is standing, not because it is a property of
+	// the submission — and the pages say so, because a UI that implied per-plugin trust would be
+	// the UI being wrong about the model.
+	Submitter Submitter
+}
+
+// Submitter is the account behind a release, as a reviewer sees it.
+//
+// It carries a display name and a handle as well as the id because the id is a ULID: a queue that
+// showed only that made "who published this" a question a reviewer had to take to the database,
+// which is the same page telling them to go and look somewhere else.
+type Submitter struct {
+	AccountID   string
+	DisplayName string
+
+	// Handle is the provider handle, refreshed at each login. It is what a human recognises and is
+	// never what anything matches on.
+	Handle string
+
+	// Trust is the tier the account currently holds, never empty: an account with no row reads as
+	// TrustFloor. See trustOrFloor for why blank is not an option here.
+	Trust string
 }
 
 // List returns everything waiting, oldest first.
@@ -146,6 +178,12 @@ func (q *Queue) List(ctx context.Context) ([]Waiting, error) {
 		}
 		if row.ReviewNote != nil {
 			w.Note = *row.ReviewNote
+		}
+		w.Submitter = Submitter{
+			AccountID:   w.SubmittedBy,
+			DisplayName: row.SubmitterName,
+			Handle:      row.SubmitterHandle,
+			Trust:       trustOrFloor(row.SubmitterTrust),
 		}
 		out = append(out, w)
 	}

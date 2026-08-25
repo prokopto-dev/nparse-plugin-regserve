@@ -19,6 +19,13 @@
 -- verified. Those are the ones a reviewer must not simply wave through -- and the database will
 -- refuse to approve them anyway (release_approved_has_a_hash), so a queue that did not show it
 -- would be sending reviewers into an error.
+--
+-- The submitter's name, handle and CURRENT trust tier come back with the row, so a reviewer is
+-- never guessing whose submission this is or what this registry already decided about them. Both
+-- joins are LEFT: submitted_by is nullable for an imported release, and NO account_trust ROW MEANS
+-- 'new' -- an INNER JOIN would drop every submission from an account nobody has assessed, which is
+-- most of them and exactly the ones a reviewer is looking at. An empty level is read as the floor,
+-- the same reading release.TrustOf gives it.
 SELECT
     r.id,
     r.plugin_id,
@@ -31,10 +38,16 @@ SELECT
     r.submitted_at,
     r.verified_at,
     r.review_note,
+    CAST(coalesce(sub.display_name, '') AS TEXT) AS submitter_name,
+    CAST(coalesce((SELECT i.handle FROM identity i WHERE i.account_id = r.submitted_by
+        ORDER BY i.linked_at, i.id LIMIT 1), '') AS TEXT) AS submitter_handle,
+    CAST(coalesce(st.level, '') AS TEXT) AS submitter_trust,
     (SELECT count(*) FROM "release" prior
         WHERE prior.plugin_id = r.plugin_id AND prior.state = 'approved') AS approved_releases
 FROM "release" r
 JOIN plugin p ON p.id = r.plugin_id
+LEFT JOIN account sub ON sub.id = r.submitted_by
+LEFT JOIN account_trust st ON st.account_id = r.submitted_by
 WHERE r.state = 'pending'
 ORDER BY r.submitted_at, r.id;
 
@@ -110,6 +123,13 @@ SELECT provider_kind, handle FROM identity WHERE account_id = ? ORDER BY linked_
 -- live_version is what this release would replace, empty when the plugin has nothing approved.
 -- Excluding the row itself matters: once THIS release is the approved one, an unfiltered subquery
 -- would report the release as replacing itself.
+--
+-- The submitter's name, handle and CURRENT trust tier come back with the row, so a reviewer is
+-- never guessing whose submission this is or what this registry already decided about them. Both
+-- joins are LEFT: submitted_by is nullable for an imported release, and NO account_trust ROW MEANS
+-- 'new' -- an INNER JOIN would drop every submission from an account nobody has assessed, which is
+-- most of them and exactly the ones a reviewer is looking at. An empty level is read as the floor,
+-- the same reading release.TrustOf gives it.
 SELECT
     r.id,
     r.plugin_id,
@@ -129,11 +149,17 @@ SELECT
     r.reviewed_by,
     r.reviewed_at,
     r.review_note,
+    CAST(coalesce(sub.display_name, '') AS TEXT) AS submitter_name,
+    CAST(coalesce((SELECT i.handle FROM identity i WHERE i.account_id = r.submitted_by
+        ORDER BY i.linked_at, i.id LIMIT 1), '') AS TEXT) AS submitter_handle,
+    CAST(coalesce(st.level, '') AS TEXT) AS submitter_trust,
     CAST(coalesce((SELECT prior.version FROM "release" prior
         WHERE prior.plugin_id = r.plugin_id AND prior.state = 'approved' AND prior.id <> r.id
         LIMIT 1), '') AS TEXT) AS live_version
 FROM "release" r
 JOIN plugin p ON p.id = r.plugin_id
+LEFT JOIN account sub ON sub.id = r.submitted_by
+LEFT JOIN account_trust st ON st.account_id = r.submitted_by
 WHERE r.id = ?;
 
 -- name: ListAuditForRelease :many

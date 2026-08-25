@@ -201,6 +201,12 @@ func runServe(ctx context.Context, addr, dbPath, seedPath string) error {
 		cfg.Reviewers = reviewers
 		cfg.Queue = queue
 
+		// The moderation console: the reviewer's view of every plugin in every state, and the
+		// delist/relist controls. Wired here rather than beside the catalogue because it is part
+		// of the moderation surface, not a variant of the directory -- internal/plugin answers
+		// "what is publicly visible" and correctly hides the rows this reads.
+		cfg.Moderation = review.NewPlugins(db, clk)
+
 		if pending, err := queue.Pending(ctx); err != nil {
 			slog.ErrorContext(ctx, "count the review queue at boot", "error", err)
 		} else {

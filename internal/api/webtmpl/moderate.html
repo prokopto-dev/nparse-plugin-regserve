@@ -1,0 +1,199 @@
+{{define "content"}}
+{{with .Moderated}}
+<p class="muted"><a href="/review/plugins">← every plugin</a></p>
+
+<h2><code>{{.ID}}</code></h2>
+<p>
+  {{.Name}} —
+  {{if .Delisted}}
+    <strong class="warn">delisted</strong>. The id is still claimed and can never be reassigned.
+  {{else if .LiveVersion}}
+    <strong>listed</strong>, serving {{.LiveVersion}}.
+  {{else}}
+    <strong>claimed</strong>, with nothing approved yet.
+  {{end}}
+</p>
+
+{{if .Delisted}}
+<div class="notice problem">
+  <p><strong>Delisted {{.DelistedAt.Format "2006-01-02 15:04"}}.</strong></p>
+  <p>{{.DelistedReason}}</p>
+  <p class="muted">
+    The reason as recorded on the row. Relisting clears it — after that the audit log is the only
+    place it survives, which is why relisting needs a reason of its own.
+  </p>
+  {{/* SHOWN HERE AND NOWHERE ELSE, for now. A moderation note can name a person or carry an
+       accusation, so who reads it is a judgement separate from whether it is recorded — and the
+       owner currently cannot see it on any page they can reach, which is this repository's
+       "never hide a row silently" rule pointing the other way. That is issue #55, and it is a
+       decision about audience rather than something to settle inside this template. */}}
+  <p class="muted">
+    The plugin’s owners cannot currently read this: it is not on their settings page and a delisted
+    plugin’s public page answers 404. Write it as something you would be content for them to see.
+  </p>
+</div>
+{{end}}
+
+<h2>The listing</h2>
+<table class="facts">
+  <tbody>
+    <tr><th>Name</th><td>{{.Name}}</td></tr>
+    <tr>
+      <th>Description</th>
+      <td>{{if .Description}}{{.Description}}{{else}}<span class="muted">none</span>{{end}}</td>
+    </tr>
+    <tr>
+      <th>Author</th>
+      <td>{{if .Author}}{{.Author}}{{else}}<span class="muted">none</span>{{end}}</td>
+    </tr>
+    <tr>
+      <th>Homepage</th>
+      <td class="mono">{{if .Homepage}}{{.Homepage}}{{else}}<span class="muted">none</span>{{end}}</td>
+    </tr>
+    <tr><th>Claimed</th><td>{{.ClaimedAt.Format "2006-01-02 15:04"}}</td></tr>
+    <tr>
+      <th>In the index</th>
+      <td>
+        {{if .Listed}}yes, {{.LiveVersion}}
+        {{else if .Delisted}}<strong class="warn">no — delisted</strong>
+        {{else}}no — nothing approved yet{{end}}
+      </td>
+    </tr>
+    <tr>
+      <th>Approved release</th>
+      <td>
+        {{if .LiveVersion}}
+          {{.LiveVersion}}
+          {{if .Delisted}}<br><span class="muted">still approved; the listing is what was removed,
+          so this is what would come back</span>{{end}}
+        {{else}}<span class="muted">none</span>{{end}}
+      </td>
+    </tr>
+    <tr>
+      <th>Waiting for review</th>
+      <td>
+        {{if .Pending}}
+          {{.Pending}} release{{if ne .Pending 1}}s{{end}} —
+          <a href="/review">the queue</a>
+        {{else}}<span class="muted">none</span>{{end}}
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>Who holds it</h2>
+{{if not .Owners}}
+  <p class="warn">
+    <strong>Nobody owns this plugin.</strong> That is not a plugin somebody else can take over — the
+    id is permanent and is never reassigned — it is a listing nobody can update, for ever. The only
+    repair is a maintainer writing SQL.
+  </p>
+{{else}}
+  <table>
+    <thead><tr><th>Account</th><th>Role</th><th>Trust</th></tr></thead>
+    <tbody>
+    {{range .Owners}}
+      <tr>
+        <td>
+          {{if .Handle}}{{.Handle}}{{else}}{{.DisplayName}}{{end}}<br>
+          <span class="muted mono">{{.AccountID}}</span>
+        </td>
+        <td>{{.Role}}</td>
+        <td>{{.Trust}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+{{end}}
+{{end}}
+
+{{/* THE TRUST CONTROLS, one per owner, each posting to its own account.
+
+     Offered here as well as on a release's page because a reviewer looking at a plugin is looking
+     at the people behind it, and this is where "stop gating this person's version bumps" is the
+     obvious next thought. The template is shared with the release page, so the explanation of what
+     a tier does exists once.
+
+     GATED ON .CanSetTrust, which is the exact condition the route is registered on. A build with
+     no trust service renders no control rather than one that posts to a 404. */}}
+{{if and .CanSetTrust .Moderated.Owners}}
+<h2>Trust</h2>
+<p class="muted">
+  Each control below changes <strong>that account’s</strong> tier across every plugin they hold —
+  not this plugin’s. It is a separate decision from anything on the review queue, and it is never
+  made as a side effect of approving a release.
+</p>
+{{range .Moderated.Owners}}
+  {{template "trustform" ($.TrustForOwner .)}}
+{{end}}
+{{end}}
+
+<h2>The listing itself</h2>
+
+{{with .Moderated}}
+{{if .Delisted}}
+<form method="post" action="/review/plugins/{{.ID}}/listing">
+  <fieldset>
+    <legend>Relist this plugin</legend>
+    <input type="hidden" name="{{$.CSRFField}}" value="{{$.CSRFToken}}">
+
+    <label for="relist_reason">Why</label>
+    <input type="text" id="relist_reason" name="reason" maxlength="2048" required
+           placeholder="required — this is the only record that survives">
+
+    <p><button type="submit" name="action" value="relist">Relist</button></p>
+
+    <p class="muted">
+      This restores nothing except the plugin’s eligibility for the index, because nothing else was
+      taken away: the releases, the owners and the claim were untouched throughout.
+      {{if .LiveVersion}}
+        {{.LiveVersion}} is still approved, so relisting puts it back in front of every client.
+      {{else}}
+        There is nothing approved, so relisting returns it to where it was: claimed, awaiting review.
+      {{end}}
+    </p>
+    <p class="muted">
+      <strong>The reason is required in this direction too.</strong> Relisting clears the stored
+      delisting reason, so once this runs the append-only audit log is the only record that the
+      plugin was ever delisted or why it came back.
+    </p>
+  </fieldset>
+</form>
+{{else}}
+<form method="post" action="/review/plugins/{{.ID}}/listing">
+  <fieldset>
+    <legend>Delist this plugin</legend>
+    <input type="hidden" name="{{$.CSRFField}}" value="{{$.CSRFToken}}">
+
+    <label for="delist_reason">Why</label>
+    <input type="text" id="delist_reason" name="reason" maxlength="2048" required
+           placeholder="required — a listing that vanishes unexplained looks like a bug">
+
+    <p><button type="submit" name="action" value="delist">Delist</button></p>
+
+    <p class="muted">
+      {{if .LiveVersion}}
+        This removes {{.LiveVersion}} from <code>/index.json</code>, so clients stop offering it.
+      {{else}}
+        Nothing is listed for this id, so nothing leaves the index. What changes is that it cannot
+        become listed while it is delisted.
+      {{end}}
+      The release rows, the owners and the claim are untouched.
+    </p>
+    <p class="warn">
+      <strong>The id stays claimed, permanently, and is never recycled.</strong> Delisting does not
+      free the name for anybody else — an id names the plugin in every installed copy on every
+      user’s machine, so handing a used one on is how you ship an update to another author’s users.
+      There is no operation here that deletes a plugin, and a database trigger refuses one.
+    </p>
+    <p class="muted">
+      This is <strong>moderation</strong>: you are acting on somebody else’s plugin, under
+      <code>plugin.moderate</code> rather than the <code>plugin.manage</code> an owner holds over
+      their own listing. The audit row records which act it was, who did it, and the reason —
+      because both write the same column and grants change afterwards.
+    </p>
+  </fieldset>
+</form>
+{{end}}
+{{end}}
+{{end}}

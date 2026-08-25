@@ -173,7 +173,18 @@ type Config struct {
 
 	// Trust backs setting an account's trust tier. Needs Reviewers for the same reason Queue does:
 	// the route is reviewer-only and a build that cannot say who reviews cannot serve it.
+	//
+	// It backs BOTH doors onto that act: PUT /api/v1/accounts/{id}/trust and the browser form on
+	// the review pages. Wired once and passed to both, so the JSON endpoint and the form cannot
+	// end up writing through two different services.
 	Trust TrustService
+
+	// Moderation backs the moderation console: the reviewer's view of every plugin in every state,
+	// and delisting. Nil means those pages are not registered, on the same principle as a nil
+	// Catalogue — a console whose every control 500s is worse than an honest 404.
+	//
+	// Needs Reviewers for the same reason Queue and Trust do.
+	Moderation PluginModeration
 }
 
 // TokenService is what the account surface needs in order to manage personal access tokens.
@@ -314,6 +325,12 @@ func New(cfg Config) http.Handler {
 				// review pages unregistered — see registerWeb.
 				Queue:     cfg.Queue,
 				Reviewers: cfg.Reviewers,
+				// The moderation console and the trust form. The SAME TrustService the JSON
+				// endpoint above is registered with: one act, one service, two doors. Each is
+				// gated on its own dependency inside registerWeb, so a build with one and not the
+				// other serves what it can rather than all or nothing.
+				Moderation: cfg.Moderation,
+				Trust:      cfg.Trust,
 			})
 		}
 	}

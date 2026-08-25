@@ -140,6 +140,12 @@ func newReviewE2E(t *testing.T, handles string) *reviewE2E {
 		// is reproduced here rather than described.
 		Queue:     review.NewQueue(db, clk, fetcher),
 		Reviewers: review.NewReviewers(db, review.ParseHandleList(handles)),
+		// The moderation console, wired exactly as cmd/regserve wires it. The SAME Publisher backs
+		// Trust that backs Publisher, which is the point of the trust half of this file: the tier a
+		// reviewer sets through a form is read by the publish path through the same object, so
+		// "marked trusted" and "publishes without a human" are one fact rather than two.
+		Trust:      release.NewPublisher(db, clk, fetcher),
+		Moderation: review.NewPlugins(db, clk),
 	}))
 	t.Cleanup(w.srv.Close)
 
@@ -226,6 +232,87 @@ func (w *reviewE2E) decide(t *testing.T, cookie, csrf, releaseID, action, note s
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: cookie})
 	return w.send(t, req)
+}
+
+// trust posts the browser form a reviewer uses, which is the only door a human has: setting a
+// tier is capability-floor, so it is session-only, so it is browser-only.
+func (w *reviewE2E) trust(t *testing.T, cookie, csrf, accountID, level, note string) response {
+	t.Helper()
+
+	form := url.Values{}
+	form.Set(auth.CSRFFieldName, csrf)
+	form.Set("level", level)
+	form.Set("note", note)
+	form.Set("from", "plugin")
+	form.Set("from_id", w.pluginID)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+		w.srv.URL+"/review/accounts/"+accountID+"/trust", strings.NewReader(form.Encode()))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: cookie})
+	return w.send(t, req)
+}
+
+// moderate posts the delist/relist form.
+func (w *reviewE2E) moderate(t *testing.T, cookie, csrf, pluginID, action, reason string) response {
+	t.Helper()
+
+	form := url.Values{}
+	form.Set(auth.CSRFFieldName, csrf)
+	form.Set("action", action)
+	form.Set("reason", reason)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+		w.srv.URL+"/review/plugins/"+pluginID+"/listing", strings.NewReader(form.Encode()))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: cookie})
+	return w.send(t, req)
+}
+
+// claimAndPublish registers a SECOND plugin id to the same owner and publishes to it with a token
+// pinned to that id.
+//
+// It exists for the half of the trust proof that matters most: a trusted account submitting a NEW
+// id. The token is pinned to the new plugin because ADR-0005 says a PAT is scoped to one plugin,
+// so reusing the first token would be refused by the pin rather than by the review rule -- and the
+// test would pass while proving something else entirely.
+func (w *reviewE2E) claimAndPublish(t *testing.T, pluginID, version string) publishedRelease {
+	t.Helper()
+
+	insertClaimedPlugin(t, w.db, time.Date(2026, 8, 21, 3, 46, 0, 0, time.UTC), pluginID, w.owner)
+
+	minted, err := w.tokens.Mint(t.Context(), auth.MintRequest{
+		AccountID: w.owner,
+		Name:      "the second plugin's release workflow",
+		Scopes:    []authz.Scope{"plugin:publish"},
+		PluginID:  pluginID,
+	})
+	require.NoError(t, err)
+
+	sum := sha256.Sum256(w.artifactBody)
+	body, err := json.Marshal(map[string]any{
+		"version":         version,
+		"artifact_url":    w.artifactURL,
+		"artifact_sha256": hex.EncodeToString(sum[:]),
+		"sdk_specifier":   ">=1.0,<2",
+	})
+	require.NoError(t, err)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+		w.srv.URL+api.BasePath+"/plugins/"+pluginID+"/releases", strings.NewReader(string(body)))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+minted.Secret)
+	req.Header.Set("Idempotency-Key", "workflow-run-"+pluginID+"-"+version)
+
+	resp := w.send(t, req)
+	require.Equal(t, http.StatusCreated, resp.status, "body was %s", resp.body)
+
+	var got publishedRelease
+	require.NoError(t, json.Unmarshal(resp.body, &got), "body was %s", resp.body)
+	return got
 }
 
 func (w *reviewE2E) send(t *testing.T, req *http.Request) response {
@@ -398,4 +485,160 @@ func insertAccountWithHandle(t *testing.T, db *store.DB, now time.Time, handle s
 		})
 	}))
 	return accountID.String()
+}
+
+// THE MODERATION CONSOLE, END TO END, WITH NOTHING FAKED BETWEEN THE FORM AND THE INDEX.
+//
+// The operator's ask was one sentence: after reviewing somebody once, stop gating their version
+// bumps. That behaviour already existed in release.Publisher.decide and had no control, so what
+// this proves is not the rule — it is that a reviewer can now REACH the rule from a browser, and
+// that reaching it does exactly what ADR-0007 says and nothing more.
+//
+// BOTH HALVES ARE IN ONE TEST ON PURPOSE. "A trusted account's version bump lists without a human"
+// is a feature; "a trusted account's NEW id still goes to review" is the invariant that makes the
+// feature safe, and a change that broke the second while keeping the first would pass any test
+// that only asserted the first. The first appearance of an id is where impersonation is caught,
+// and no tier bypasses it — so the two are asserted against the same database, the same account
+// and the same trust row, one after the other.
+
+func TestModerationConsole_ATrustedPublishersBumpListsItself_AndTheirNewIDStillGetsAHuman(t *testing.T) {
+	t.Parallel()
+
+	w := newReviewE2E(t, "themaintainer")
+	cookie, csrf := w.sessionFor(t, w.reviewer)
+
+	// --- 1. the first release of a new id goes to a human, whatever anybody's tier -------------
+	first := w.publish(t, "1.0.0")
+	require.Equal(t, "pending", first.State, "the first appearance of an id always gets a human")
+	require.NotContains(t, w.index(t), w.pluginID)
+
+	resp := w.decide(t, cookie, csrf, first.ReleaseID, "approve", "read the diff, looks fine")
+	require.Equal(t, http.StatusSeeOther, resp.status)
+	require.Contains(t, w.index(t), `"1.0.0"`, "an approved release reaches the index")
+
+	// --- 2. approving did NOT trust the publisher ----------------------------------------------
+	//
+	// The separation, measured through the real publisher rather than asserted about a form. If
+	// approving raised trust, the bump below would list for the wrong reason and the whole test
+	// would be a false positive.
+	publisher := release.NewPublisher(w.db, clock.Fixed{T: time.Date(2026, 8, 21, 3, 46, 0, 0, time.UTC)}, nil)
+	tier, err := publisher.TrustOf(t.Context(), w.owner)
+	require.NoError(t, err)
+	require.Equal(t, release.TrustNew, tier,
+		"approving a release must never raise its publisher's tier as a side effect")
+
+	// --- 3. a reviewer marks the publisher trusted, through the form ---------------------------
+	resp = w.trust(t, cookie, csrf, w.owner, "trusted", "reviewed one release by hand; the build is reproducible")
+	require.Equal(t, http.StatusSeeOther, resp.status)
+	require.Contains(t, resp.header.Get("Location"), "msg=trust_set", "body was %s", resp.body)
+
+	tier, err = publisher.TrustOf(t.Context(), w.owner)
+	require.NoError(t, err)
+	require.Equal(t, release.TrustTrusted, tier, "the form must write the tier the publish path reads")
+
+	// --- 4. THE FEATURE: a version bump of that plugin lists with no human ----------------------
+	bump := w.publish(t, "1.1.0")
+	require.Equal(t, "approved", bump.State,
+		"a trusted owner's clean version bump of an already-approved plugin publishes itself")
+
+	index := w.index(t)
+	require.Contains(t, index, `"1.1.0"`, "and reaches the index with no reviewer involved")
+	require.NotContains(t, index, `"1.0.0"`, "superseding the release it replaced")
+
+	// Nobody decided it, and the row says so rather than being distinguishable only by a NULL.
+	require.Contains(t, bump.Review, "published automatically")
+
+	// --- 5. THE INVARIANT: a NEW id from the same trusted account still waits -------------------
+	//
+	// Same owner, same trust row, same clean artifact. The only difference is that the id has
+	// never been seen before, and that is the whole of what decides this.
+	fresh := w.claimAndPublish(t, "second-plugin", "1.0.0")
+	require.Equal(t, "pending", fresh.State,
+		"a new plugin id ALWAYS gets human review, whatever the submitter's tier (ADR-0007): "+
+			"the first appearance of an id is where impersonation is caught")
+	require.NotContains(t, w.index(t), "second-plugin", "and it is not listed while it waits")
+
+	// And it really is waiting in the queue a human works, rather than merely not-listed.
+	queue := w.browse(t, cookie, "/review")
+	require.Equal(t, http.StatusOK, queue.status)
+	require.Contains(t, string(queue.body), "second-plugin")
+}
+
+// TestModerationConsole_ADelistedPluginLeavesTheIndexAndKeepsItsClaim.
+//
+// The other capability the reviewer did not have. It is driven through the form, and what is
+// asserted afterwards is mostly what did NOT happen: the id is still claimed, and re-claiming it
+// is refused. An id that could be recycled is how you ship an update to somebody else's users.
+func TestModerationConsole_ADelistedPluginLeavesTheIndexAndKeepsItsClaim(t *testing.T) {
+	t.Parallel()
+
+	w := newReviewE2E(t, "themaintainer")
+	cookie, csrf := w.sessionFor(t, w.reviewer)
+
+	out := w.publish(t, "1.0.0")
+	require.Equal(t, http.StatusSeeOther,
+		w.decide(t, cookie, csrf, out.ReleaseID, "approve", "fine").status)
+	require.Contains(t, w.index(t), w.pluginID)
+
+	// The console shows it before anything happens to it.
+	page := w.browse(t, cookie, "/review/plugins")
+	require.Equal(t, http.StatusOK, page.status)
+	require.Contains(t, string(page.body), w.pluginID)
+
+	resp := w.moderate(t, cookie, csrf, w.pluginID, "delist", "the author asked us to withdraw it")
+	require.Equal(t, http.StatusSeeOther, resp.status)
+	require.Contains(t, resp.header.Get("Location"), "msg=listing_changed", "body was %s", resp.body)
+
+	// GONE from what every client reads.
+	require.NotContains(t, w.index(t), w.pluginID)
+
+	// AND STILL CLAIMED. Not "the row is there" — the id is refused to a fresh claimant, which is
+	// the property that actually matters and the one an accidental DELETE would break.
+	owners := ownership.New(w.db, clock.Fixed{T: time.Date(2026, 8, 21, 3, 46, 0, 0, time.UTC)})
+	claimed, err := core.ParsePluginID(w.pluginID)
+	require.NoError(t, err)
+	err = owners.ClaimID(t.Context(), ownership.Claim{
+		PluginID: claimed, Name: "Someone Else's Merchant Mode",
+	}, w.bystander)
+	require.ErrorIs(t, err, ownership.ErrAlreadyClaimed,
+		"a delisted id must never become available to somebody else")
+
+	// And it comes back, through the same surface, without a maintainer writing SQL.
+	resp = w.moderate(t, cookie, csrf, w.pluginID, "relist", "withdrawal was retracted")
+	require.Equal(t, http.StatusSeeOther, resp.status)
+	require.Contains(t, w.index(t), w.pluginID, "the still-approved release returns to the index")
+}
+
+// TestModerationConsole_IsRefusedToEverybodyWhoIsNotAConfiguredReviewer.
+//
+// The negative half, in the same file as the positive one for the reason the queue's is: a server
+// that let everybody moderate would pass every assertion above.
+func TestModerationConsole_IsRefusedToEverybodyWhoIsNotAConfiguredReviewer(t *testing.T) {
+	t.Parallel()
+
+	w := newReviewE2E(t, "themaintainer")
+	cookie, csrf := w.sessionFor(t, w.bystander)
+
+	// A signed-in account that is not a reviewer.
+	require.Equal(t, http.StatusForbidden, w.browse(t, cookie, "/review/plugins").status)
+	require.Equal(t, http.StatusForbidden,
+		w.moderate(t, cookie, csrf, w.pluginID, "delist", "I would like this gone").status)
+	require.Equal(t, http.StatusForbidden,
+		w.trust(t, cookie, csrf, w.bystander, "trusted", "trusting myself").status)
+
+	// A real publish token, over the socket. Moderation is capability-floor: no token reaches it
+	// however it is scoped, so a leaked publish token stays a leaked publish token.
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, w.srv.URL+"/review/plugins", nil)
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer "+w.publishToken)
+	resp := w.send(t, req)
+	require.Equal(t, http.StatusForbidden, resp.status)
+	require.Contains(t, string(resp.body), "session-only")
+
+	// Nothing was delisted and nobody was trusted by any of that.
+	require.Contains(t, w.index(t), "")
+	tier, err := release.NewPublisher(w.db, clock.Fixed{T: time.Now().UTC()}, nil).
+		TrustOf(t.Context(), w.bystander)
+	require.NoError(t, err)
+	require.Equal(t, release.TrustNew, tier)
 }

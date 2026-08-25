@@ -107,6 +107,20 @@ type WebDeps struct {
 	// nobody can work.
 	Queue     ReviewQueue
 	Reviewers ReviewerCheck
+
+	// Moderation backs the moderation console: every plugin in every state, and delisting. Nil
+	// leaves those pages unregistered while the queue still serves, on the same principle every
+	// optional dependency here follows — a build that cannot read the catalogue for moderation
+	// answers an honest 404 rather than rendering a page that 500s.
+	Moderation PluginModeration
+
+	// Trust backs the browser form that sets an account's trust tier. It is the SAME service the
+	// JSON endpoint is registered with, so the form and PUT /api/v1/accounts/{id}/trust cannot end
+	// up writing through two different paths — one act, one service, two doors.
+	//
+	// Nil leaves the form unregistered and unrendered. A control that posted to a route this build
+	// does not serve would be the dead end these pages exist to remove.
+	Trust TrustService
 }
 
 // Claimer is declared in plugins.go, next to the JSON endpoint that was its first consumer. The
@@ -169,6 +183,33 @@ type pageData struct {
 	// this page" is a real state and a zero-valued one would render as a release with no id.
 	Queue   []review.Waiting
 	Release *review.Detail
+
+	// Catalogue and Moderated are the moderation console's. Moderated is a pointer for the reason
+	// Release is: "no plugin on this page" is a real state, and a zero-valued one would render as
+	// a plugin with no id.
+	//
+	// Catalogue carries EVERY plugin, including the delisted ones and the ones with nothing
+	// published — which is exactly what makes it not the directory's Found. The two are separate
+	// fields rather than one shared shape because they answer different questions and a page that
+	// confused them would show a visitor a delisted id.
+	Catalogue []review.Listing
+	Moderated *review.Listing
+
+	// TrustTiers is the vocabulary the trust control offers, from the constants in
+	// internal/release rather than typed into a template. A tier list written in HTML would be a
+	// second copy of a vocabulary the database CHECKs.
+	TrustTiers []trustOption
+
+	// CanSetTrust decides whether a page renders the trust control at all. It is WIRING and not
+	// authorisation — the middleware refuses a non-reviewer at that route whatever this says — and
+	// it is false only on a build wired without a trust service, where the route is not registered
+	// either. Both read the same dependency, so a form that posts to a 404 is not a state these
+	// pages can be in.
+	CanSetTrust bool
+
+	// CanModerate is the same fact about the catalogue pages, and is what stops a release page
+	// from linking a reader into a console this build does not serve.
+	CanModerate bool
 
 	// The public directory's fields. Query is the SEARCH TEXT the visitor typed, echoed back into
 	// the box so a result page can be read and refined rather than retyped — the one value on any
@@ -247,6 +288,23 @@ func registerWeb(api huma.API, deps WebDeps) {
 	// with a 503, which reads to an operator like an outage rather than a missing variable.
 	if deps.Queue != nil && deps.Reviewers != nil {
 		registerReviewPages(api, deps)
+	}
+
+	// The moderation console, on its own condition. It needs a reviewer check for the same reason
+	// the queue does, and its own service besides — so a build with a queue and no moderation
+	// service serves the queue and answers 404 here, rather than rendering a console whose every
+	// control 500s.
+	//
+	// Trust is checked SEPARATELY from Moderation and not folded in with it, because the two come
+	// apart in a way that matters: the trust control is offered on the RELEASE page as well, which
+	// is registered above. A build with a queue and a trust service but no moderation service
+	// still offers trusting a publisher where the judgement is made, and simply has no catalogue
+	// view — which is a smaller thing to be missing than the control this whole surface is for.
+	if deps.Moderation != nil && deps.Reviewers != nil {
+		registerModerationCatalogue(api, deps)
+	}
+	if deps.Trust != nil && deps.Reviewers != nil {
+		registerTrustForm(api, deps)
 	}
 }
 
@@ -802,6 +860,27 @@ const (
 	msgReleaseAlreadyVerified = "release_already_verified"
 	msgReleaseNoReason        = "release_no_reason"
 	msgReleaseFailed          = "release_failed"
+
+	// Setting trust. "Recorded" is told apart from every way it can fail, and the failures are
+	// told apart from each other, because they call for different things: a missing reason needs
+	// text typed, an unknown account needs a different id, and a tier that is not one is a form
+	// this service did not render.
+	msgTrustSet       = "trust_set"
+	msgTrustNoReason  = "trust_no_reason"
+	msgTrustNoAccount = "trust_no_account"
+	msgTrustBadLevel  = "trust_bad_level"
+	msgTrustFailed    = "trust_failed"
+
+	// Moderating a listing. Delisting and relisting share one "changed" code because the page they
+	// return to states the resulting listing state plainly — but every REFUSAL is its own, in
+	// particular the two race outcomes: "somebody else already delisted it" is a different thing
+	// to tell a moderator from "that could not be done", and only one of them means the reason on
+	// the row is not theirs.
+	msgListingChanged     = "listing_changed"
+	msgModerationNoReason = "moderation_no_reason"
+	msgAlreadyDelisted    = "already_delisted"
+	msgNotDelisted        = "not_delisted"
+	msgModerationFailed   = "moderation_failed"
 )
 
 // messages maps each code onto the sentence a page shows, and whether it is good news.
@@ -881,6 +960,43 @@ var messages = map[string]struct {
 		problem: true,
 	},
 	msgReleaseFailed: {text: "That could not be recorded.", problem: true},
+
+	msgTrustSet: {
+		// It says what the tier DOES and what it does not, because the two most likely
+		// misreadings of "trusted" are both dangerous: that it lets a new plugin id skip review,
+		// and that it is a property of this one plugin.
+		text: "Trust level recorded. It applies to every plugin this account holds, and it never " +
+			"lets a new plugin id skip review — the first appearance of an id always gets a human.",
+	},
+	msgTrustNoReason: {
+		text: "A trust change must say why. Raising somebody to trusted is the decision that most " +
+			"needs to be explainable a year afterwards, and the note is the only place that lives.",
+		problem: true,
+	},
+	msgTrustNoAccount: {text: "No account has that id.", problem: true},
+	msgTrustBadLevel: {
+		text:    "That is not a trust level. The tiers are blocked, new and trusted.",
+		problem: true,
+	},
+	msgTrustFailed: {text: "That trust level could not be recorded.", problem: true},
+
+	msgListingChanged: {
+		text: "Recorded. The id stays claimed either way — ids are permanent and never recycled, " +
+			"so nothing here frees one for somebody else.",
+	},
+	msgModerationNoReason: {
+		text: "A delisting or a relisting must say why. A listing that changes with no stated " +
+			"reason is indistinguishable from a bug, and relisting clears the stored reason — " +
+			"after which the audit log is the only record left.",
+		problem: true,
+	},
+	msgAlreadyDelisted: {
+		text: "That plugin was already delisted: somebody else got there while this page was " +
+			"open. Reload to read the reason they gave, which is now the one on the row.",
+		problem: true,
+	},
+	msgNotDelisted:      {text: "That plugin is not delisted, so there is nothing to put back.", problem: true},
+	msgModerationFailed: {text: "That change could not be recorded.", problem: true},
 }
 
 // messageFor returns (notice, problem) for a code. An unknown code renders nothing.

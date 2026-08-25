@@ -58,6 +58,13 @@ func Spec() *huma.OpenAPI {
 		// this document, so an operation missing from it is an operation no gate checks.
 		Queue:     unavailableQueue{},
 		Reviewers: unavailableReviewers{},
+		// The moderation console and the trust form, for the same reason and with the same
+		// consequence if they were left out: PERM001 walks this document, so an operation that is
+		// not in it is an operation whose access declaration nothing checks. Leaving these off was
+		// caught by the generated permissions page reporting `plugin.moderate` as declared by
+		// "nothing yet" while a route declaring it was registered and serving.
+		Moderation: unavailableModeration{},
+		Trust:      unavailableTrust{},
 	})
 
 	return api.OpenAPI()
@@ -172,6 +179,25 @@ func (unavailableReviewers) IsReviewer(context.Context, string) (bool, error) { 
 // spec generator is not a deployment, and a document build must not render the "this registry has
 // no reviewers" warning as though it had inspected one.
 func (unavailableReviewers) Configured() bool { return true }
+
+// unavailableModeration stands in for the moderation console when the document is generated.
+type unavailableModeration struct{}
+
+func (unavailableModeration) List(context.Context) ([]review.Listing, error) {
+	return nil, errSpecOnly
+}
+
+func (unavailableModeration) Get(context.Context, string) (review.Listing, error) {
+	return review.Listing{}, errSpecOnly
+}
+
+func (unavailableModeration) Delist(context.Context, string, string, string) error {
+	return errSpecOnly
+}
+
+func (unavailableModeration) Relist(context.Context, string, string, string) error {
+	return errSpecOnly
+}
 
 type unavailableTrust struct{}
 

@@ -108,6 +108,29 @@ func Catalogue() []Entry {
 			Floor:      true,
 		},
 		{
+			// MODERATION, NOT OWNERSHIP, and that is why it is not `plugin.manage`.
+			//
+			// The two acts look alike and are not. `plugin.manage` is what an OWNER holds over
+			// their OWN listing, and ADR-0005 makes its effective capability the intersection of
+			// the scope, the token's plugin pin and the account's ownership — so it cannot express
+			// "somebody with no grant on this plugin removes it from every client's index". To
+			// make it express that, the ownership intersection would have to be loosened, and a
+			// loosened intersection is a `plugin:manage` token that can delist a stranger's
+			// plugin. That is the escalation the capability floor exists to prevent, so the answer
+			// is a second permission rather than a wider first one.
+			//
+			// It is Floor for the same reason `release.review` is: a token that could delist would
+			// be a CI credential that can take any plugin out of the index, and moderation must
+			// come from control of the deployment. Routes declaring it are
+			// `Floor("plugin.moderate").Reviewer()`, and PERM001 fails a reviewer operation that
+			// is not also floor.
+			Permission: "plugin.moderate",
+			Summary: "Delist or relist somebody else's plugin as a moderator. Delisting removes " +
+				"the listing and keeps the claim — ids are never recycled — and it is a " +
+				"different act from an owner delisting their own plugin, which the audit row says.",
+			Floor: true,
+		},
+		{
 			Permission: "session.end",
 			Summary:    "End the browser session it is called with.",
 			Floor:      true,
