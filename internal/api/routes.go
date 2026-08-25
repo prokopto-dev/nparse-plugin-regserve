@@ -117,9 +117,11 @@ func Requires(p authz.Permission, scopes ...authz.Scope) Access {
 
 // Floor is a capability-floor operation: session-only, no scope, and no token may ever perform it.
 //
-// Minting tokens, changing owners, and setting trust levels are the members. A token that could do
-// any of them would be equivalent to the account, which is the thing there is deliberately no way
-// to mint. There is no `admin:*`.
+// Minting tokens, claiming an id, changing owners, setting trust levels, reviewing a release,
+// moderating somebody else's listing and ending a session are the members — canonical §5 lists
+// them and gate DOC004 keeps that list level with the `Floor` entries in internal/authz. A token
+// that could do any of them would be equivalent to the account, which is the thing there is
+// deliberately no way to mint. There is no `admin:*`.
 func Floor(p authz.Permission) Access {
 	return Access{permission: p, patForbidden: true}
 }

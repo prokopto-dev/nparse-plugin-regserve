@@ -5,10 +5,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/api"
@@ -106,6 +108,12 @@ type reviewHarness struct {
 	sessions  *fakeSessions
 	queue     *fakeQueue
 	reviewers *fakeReviewers
+
+	// moderation and trust back the console. They are POINTERS so a test can set either to nil and
+	// get the build where that surface is not registered at all — which is the state the pages
+	// have to render honestly rather than by offering a control that 404s.
+	moderation *fakeModeration
+	trust      *fakeTrust
 }
 
 func newReviewHarness(t *testing.T, mutate ...func(h *reviewHarness)) *reviewHarness {
@@ -115,6 +123,11 @@ func newReviewHarness(t *testing.T, mutate ...func(h *reviewHarness)) *reviewHar
 		authn:     &fakeAuthn{principal: signedIn()},
 		sessions:  &fakeSessions{},
 		reviewers: &fakeReviewers{yes: true},
+		moderation: &fakeModeration{
+			listing: review.Listing{Name: "Merchant Mode", LiveVersion: "1.0.0"},
+			all:     []review.Listing{{ID: "merchant-mode", Name: "Merchant Mode", LiveVersion: "1.0.0"}},
+		},
+		trust: &fakeTrust{},
 		queue: &fakeQueue{
 			waiting: []review.Waiting{{
 				ReleaseID: testReleaseID, PluginID: "merchant-mode", PluginName: "Merchant Mode",
@@ -152,9 +165,32 @@ func newReviewHarness(t *testing.T, mutate ...func(h *reviewHarness)) *reviewHar
 		Ownership: &fakeOwnership{},
 		Queue:     h.queue,
 		Reviewers: h.reviewers,
+		// Assigned through the interface only when the fake is present, because a typed nil in an
+		// interface field is NOT nil and would register the routes over a service that panics.
+		Moderation: moderationOrNil(h.moderation),
+		Trust:      trustOrNil(h.trust),
 	}))
 	t.Cleanup(h.srv.Close)
 	return h
+}
+
+// moderationOrNil and trustOrNil turn an absent fake into a genuinely nil interface.
+//
+// `api.Config{Moderation: (*fakeModeration)(nil)}` is a non-nil interface holding a nil pointer, so
+// the registration condition would pass and the first request would panic. That is a real trap and
+// not a hypothetical one: the build with no console is a state these tests exist to cover.
+func moderationOrNil(f *fakeModeration) api.PluginModeration {
+	if f == nil {
+		return nil
+	}
+	return f
+}
+
+func trustOrNil(f *fakeTrust) api.TrustService {
+	if f == nil {
+		return nil
+	}
+	return f
 }
 
 func (h *reviewHarness) csrf() string { return h.sessions.CSRFToken(signedIn()) }
@@ -210,7 +246,80 @@ func reviewRoutes() []struct {
 			path:   "/review/releases/" + testReleaseID + "/decide",
 			form:   url.Values{"action": {"approve"}},
 		},
+		// The moderation console. Every one of these is reviewer-only and capability-floor for the
+		// same reasons the three above are, and each is walked by the same access tests -- so
+		// "moderation is session-only and reviewer-only" is one assertion over the whole surface
+		// rather than three assertions that happen to be repeated.
+		{method: http.MethodGet, path: "/review/plugins"},
+		{method: http.MethodGet, path: "/review/plugins/merchant-mode"},
+		{
+			method: http.MethodPost,
+			path:   "/review/plugins/merchant-mode/listing",
+			form:   url.Values{"action": {"delist"}, "reason": {"under test"}},
+		},
+		{
+			method: http.MethodPost,
+			path:   "/review/accounts/" + testAccountID + "/trust",
+			form:   url.Values{"level": {"trusted"}, "note": {"under test"}},
+		},
 	}
+}
+
+// TestPERM002_EveryReviewerPage_IsWalkedByAnAccessTest makes the list above SELF-CHECKING.
+//
+// reviewRoutes() is what the access tests walk, and it was a hand-kept list: a moderation route
+// added later without a line here would be a reviewer-only route whose enforcement -- as opposed to
+// its declaration -- no test exercised, and every test above would still be green. That is the
+// shape of rule this repository calls a wish, so it gets a mechanism.
+//
+// So the list is derived-checked against the route registry. api.Spec() runs the same registration
+// code the server runs, so an operation carrying x-regserve-reviewer appears there the moment it is
+// registered; this requires each one to have an entry here. PERM001 already asserts that such an
+// operation DECLARES the floor. This asserts that somebody actually sends it a request.
+func TestPERM002_EveryReviewerPage_IsWalkedByAnAccessTest(t *testing.T) {
+	t.Parallel()
+
+	covered := map[string]bool{}
+	for _, r := range reviewRoutes() {
+		covered[r.method+" "+templatise(r.path)] = true
+	}
+
+	spec := api.Spec()
+	require.NotNil(t, spec)
+
+	found := 0
+	for path, item := range spec.Paths {
+		for method, op := range map[string]*huma.Operation{
+			"GET": item.Get, "PUT": item.Put, "POST": item.Post, "DELETE": item.Delete,
+			"PATCH": item.Patch,
+		} {
+			// SCOPED TO THE PAGES, by the tag their registrations carry. The JSON review
+			// endpoints under /api/v1 are reviewer-only too and are a different surface with its
+			// own harness -- reviewRoutes() drives a browser, and a list that mixed the two would
+			// be asserting that a form post covers a JSON endpoint. Their enforcement coverage is
+			// thinner than this one and is issue #54, not this list's job.
+			if op == nil || op.Extensions[api.ExtReviewer] != true || !slices.Contains(op.Tags, "review-pages") {
+				continue
+			}
+			found++
+			require.True(t, covered[method+" "+path],
+				"%s %s is reviewer-only and no entry in reviewRoutes() sends it a request, so "+
+					"nothing checks that the middleware actually refuses a token or a "+
+					"non-reviewer on it", method, path)
+		}
+	}
+	require.NotZero(t, found,
+		"this gate inspected no reviewer operations; it is vacant, not passing")
+}
+
+// templatise turns a concrete path back into the template the document uses, so the two can be
+// compared. The substitutions are the ids reviewRoutes() uses and nothing else -- a blanket regex
+// would also rewrite a literal segment and quietly match the wrong operation.
+func templatise(path string) string {
+	for _, concrete := range []string{testReleaseID, testAccountID, "merchant-mode"} {
+		path = strings.Replace(path, "/"+concrete, "/{id}", 1)
+	}
+	return path
 }
 
 // TestReviewPages_AreSessionOnlyAndReviewerOnly — the three ways this could be wrong.

@@ -188,7 +188,11 @@
              identity, not a destination: the destinations are spelled out. */}}
         <span class="who">{{.Account.DisplayName}}</span>
         <a href="/account">your account</a>
+        {{/* Both moderation destinations, for the reason the account link is here: a link nobody
+             can find is a page that does not exist. The console is gated on .CanModerate, which is
+             the condition its routes are registered on, so the nav never offers a 404. */}}
         {{if .IsReviewer}}<a href="/review">review queue</a>{{end}}
+        {{if and .IsReviewer .CanModerate}}<a href="/review/plugins">every plugin</a>{{end}}
         {{if .CSRFToken}}
         <form method="post" action="/auth/logout" style="display:inline;margin:0">
           <input type="hidden" name="{{.CSRFField}}" value="{{.CSRFToken}}">

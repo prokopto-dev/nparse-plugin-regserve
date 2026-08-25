@@ -1,0 +1,80 @@
+{{/* THE TRUST CONTROL, defined once and included wherever a reviewer is standing when they form
+     the judgement: on a release's page beside approve/reject, and against every owner on a
+     plugin's moderation page.
+
+     ONE DEFINITION, TWO PAGES, and that is the point of it being a template rather than markup
+     copied twice. The prose below is the only place this service explains what a tier does, and
+     two copies of it is two copies to keep true.
+
+     IT IS ITS OWN <form>. On the release page it sits inside the same fieldset region as approve
+     and reject and posts somewhere else entirely, because approving a release and trusting its
+     publisher are two decisions and must stay two actions: an approve button that also raised
+     trust would silently make every approval a judgement about every future release that account
+     makes. ADR-0007 says a human decides, and a side effect is not a decision.
+
+     The dot is a `trustTarget` (see the pages that include it): .Account, .Trust, .Name, .Handle,
+     .From, .FromID, .Tiers, .CSRFField, .CSRFToken. */}}
+{{define "trustform"}}
+<form method="post" action="/review/accounts/{{.Account}}/trust">
+  <fieldset>
+    <legend>Trust this publisher</legend>
+    <input type="hidden" name="{{.CSRFField}}" value="{{.CSRFToken}}">
+
+    {{/* WHERE TO GO BACK TO, as a kind and an id rather than a URL. A hidden field holding a path
+         would be an open redirect with a hidden field in front of it; these two are parsed into a
+         typed id and the path is assembled by the handler. See api.returnPath. */}}
+    <input type="hidden" name="from" value="{{.From}}">
+    <input type="hidden" name="from_id" value="{{.FromID}}">
+
+    {{/* THE CURRENT TIER, SHOWN WHEREVER THE CHANGE IS OFFERED. A control with no current value is
+         a reviewer guessing, and the guess they would make is that everybody is `new`. */}}
+    <p>
+      {{if .Name}}<strong>{{.Name}}</strong>{{else}}<span class="mono">{{.Account}}</span>{{end}}
+      {{if .Handle}}<span class="muted">({{.Handle}})</span>{{end}}
+      is currently <strong>{{.Trust}}</strong>.
+    </p>
+
+    <label for="trust_{{.Account}}">Set to</label>
+    <select id="trust_{{.Account}}" name="level">
+      {{range .Tiers}}
+        <option value="{{.Level}}"{{if eq .Level $.Trust}} selected{{end}}>{{.Level}}</option>
+      {{end}}
+    </select>
+
+    <ul class="muted">
+      {{range .Tiers}}<li><strong>{{.Level}}</strong> — {{.Summary}}</li>{{end}}
+    </ul>
+
+    <label for="trust_note_{{.Account}}">Why</label>
+    <input type="text" id="trust_note_{{.Account}}" name="note" maxlength="2048" required
+           placeholder="required — this is the only record of the reasoning">
+
+    <p><button type="submit">Set trust level</button></p>
+
+    <p class="muted">
+      <strong>The tier belongs to the account, not to this plugin.</strong> It applies to every
+      plugin this person holds, now and in future — there is deliberately no per-plugin trust
+      (ADR-0007).
+    </p>
+    <p class="muted">
+      <strong>This is a separate decision from approving anything.</strong> Trust is never raised
+      as a side effect and never automatically: there are no publish counters and no thresholds,
+      because a counter is something an attacker can run up — publish four harmless releases, earn
+      the tier, publish the fifth.
+    </p>
+    <p class="muted">
+      What <code>trusted</code> changes is narrow. A version bump of an <em>already-approved</em>
+      plugin can publish without a human, and only when this server fetched the artifact and
+      re-hashed it clean and no quarantine rule fired. <strong>A new plugin id always gets a
+      human</strong>, whatever the tier — that is where impersonation is caught, and nothing
+      here weakens it. It never governs who may review, which comes from
+      <code>REGSERVE_REVIEWERS</code> and nothing else.
+    </p>
+    <p class="muted">
+      A reason is required. The tier itself is an upsert and carries only the current value; the
+      history is in the audit log, which nothing can edit, and this note is the only place the
+      reasoning survives.
+    </p>
+  </fieldset>
+</form>
+{{end}}

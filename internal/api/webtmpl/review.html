@@ -18,7 +18,7 @@
 
   <table>
     <thead>
-      <tr><th>Plugin</th><th>Version</th><th>Submitted</th><th>Artifact</th><th>Why</th></tr>
+      <tr><th>Plugin</th><th>Version</th><th>Submitted by</th><th>Artifact</th><th>Why</th></tr>
     </thead>
     <tbody>
     {{range .Queue}}
@@ -29,8 +29,17 @@
         </td>
         <td>{{.Version}}</td>
         <td>
-          {{.SubmittedAt.Format "2006-01-02 15:04"}}
-          {{if .SubmittedBy}}<br><span class="muted">by {{.SubmittedBy}}</span>{{end}}
+          {{/* THE PERSON AND THEIR TIER, not a ULID. The queue used to print the raw account id,
+               which made "who published this" a question a reviewer had to take to the database --
+               the same page telling them to go and look somewhere else. The tier is here because
+               it is what decides whether this account's NEXT version bump needs a human, which is
+               the judgement a reviewer forms while working the queue. */}}
+          {{if .Submitter.Handle}}{{.Submitter.Handle}}
+          {{else if .Submitter.DisplayName}}{{.Submitter.DisplayName}}
+          {{else if .Submitter.AccountID}}<span class="mono">{{.Submitter.AccountID}}</span>
+          {{else}}<span class="muted">unknown</span>{{end}}
+          {{if .Submitter.AccountID}}<br><span class="muted">{{.Submitter.Trust}}</span>{{end}}
+          <br><span class="muted">{{.SubmittedAt.Format "2006-01-02 15:04"}}</span>
         </td>
         <td>
           {{if .Verified}}
@@ -53,6 +62,14 @@
     hashed its bytes. Such a release cannot be approved — the database refuses a listing with no
     hash — so it has to be re-verified or rejected.
   </p>
+{{end}}
+
+{{if .CanModerate}}
+<p class="muted">
+  The queue is what is waiting. <a href="/review/plugins">Every plugin this registry carries</a> is
+  the other half — listed, claimed with nothing published yet, and delisted — with its owners and
+  their trust tiers.
+</p>
 {{end}}
 
 <p class="muted">

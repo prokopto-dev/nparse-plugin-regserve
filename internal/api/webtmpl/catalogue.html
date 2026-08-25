@@ -1,0 +1,80 @@
+{{define "content"}}
+<p class="muted"><a href="/review">← the review queue</a></p>
+
+<h2>Every plugin</h2>
+
+{{/* THIS IS NOT THE PUBLIC DIRECTORY, and the difference is the reason the page exists. The
+     directory answers "what is publicly visible" and correctly declines to show a delisted id or
+     one with nothing approved, counting them so the shortfall is never silent. The rows it
+     declines to show are exactly the ones moderation is about, so this shows every row and states
+     which state each is in. */}}
+<p class="muted">
+  Every id this registry carries, in every state — including the ones the public directory counts
+  and does not name. {{len .Catalogue}} plugin{{if ne (len .Catalogue) 1}}s{{end}}.
+</p>
+
+{{if not .Catalogue}}
+  <p class="muted">
+    Nothing is claimed here yet. An id appears the moment somebody claims it, before anything is
+    published against it.
+  </p>
+{{else}}
+  <table>
+    <thead>
+      <tr><th>Plugin</th><th>State</th><th>Owners</th><th></th></tr>
+    </thead>
+    <tbody>
+    {{range .Catalogue}}
+      <tr>
+        <td>
+          <a href="/review/plugins/{{.ID}}"><code>{{.ID}}</code></a><br>
+          <span class="muted">{{.Name}}</span>
+        </td>
+        <td>
+          {{if .Delisted}}
+            <strong class="warn">delisted</strong><br>
+            <span class="muted">{{.DelistedAt.Format "2006-01-02"}} — the id stays claimed</span>
+          {{else if .LiveVersion}}
+            listed<br><span class="muted">{{.LiveVersion}}</span>
+          {{else}}
+            claimed<br><span class="muted">nothing approved yet</span>
+          {{end}}
+          {{if .Pending}}
+            <br><span class="muted">{{.Pending}} waiting for review</span>
+          {{end}}
+        </td>
+        <td>
+          {{/* Owners and their tiers on the row, because "who is behind this plugin and what have
+               we already decided about them" is the question this page is opened to answer. The
+               tier is the ACCOUNT's and follows the person, not the plugin. */}}
+          {{if not .Owners}}
+            <strong class="warn">nobody</strong><br>
+            <span class="muted">
+              a listing nobody can update; the id can never be reassigned
+            </span>
+          {{else}}
+            {{range .Owners}}
+              {{if .Handle}}{{.Handle}}{{else}}{{.DisplayName}}{{end}}
+              <span class="muted">{{.Role}} · {{.Trust}}</span><br>
+            {{end}}
+          {{end}}
+        </td>
+        <td><a href="/review/plugins/{{.ID}}">moderate</a></td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+
+  <p class="muted">
+    <strong>“delisted”</strong> means the listing was removed and the <strong>claim was kept</strong>.
+    A plugin id is permanent, first-come and never recycled — it names the plugin in every installed
+    copy on every user’s machine — so a delisted id is spoken for for ever and by nobody else.
+    Nothing on this surface deletes a plugin, and a database trigger refuses one.
+  </p>
+  <p class="muted">
+    The tier beside an owner is <strong>that account’s</strong>, not that plugin’s. The same person
+    shows the same tier against every plugin they hold; there is deliberately no per-plugin trust
+    (ADR-0007).
+  </p>
+{{end}}
+{{end}}

@@ -32,8 +32,9 @@ differently on purpose — an absence cannot be told from a refusal.
 | `token.revoke` | **none — capability floor** | `POST /account/tokens/{id}/revoke` | Revoke a personal access token. |
 | `plugin.claim` | **none — capability floor** | `POST /account/plugins`<br>`POST /api/v1/plugins` | Register a new plugin id. Ids are first-come, permanent and never recycled, and the first release of a new id always goes to human review. |
 | `owner.manage` | **none — capability floor** | `GET /plugins/{id}/settings`<br>`POST /plugins/{id}/owners` | Add, remove or transfer a plugin's owners. |
-| `trust.set` | **none — capability floor** | `PUT /api/v1/accounts/{id}/trust` | Set an account's trust level. |
-| `release.review` | **none — capability floor** | `GET /api/v1/releases/pending`<br>`GET /review`<br>`GET /review/releases/{id}`<br>`POST /api/v1/releases/{id}/approve`<br>`POST /api/v1/releases/{id}/reject`<br>`POST /api/v1/releases/{id}/reverify`<br>`POST /review/releases/{id}/decide` | Approve or reject a release that is waiting for review. |
+| `trust.set` | **none — capability floor** | `POST /review/accounts/{id}/trust`<br>`PUT /api/v1/accounts/{id}/trust` | Set an account's trust level. |
+| `release.review` | **none — capability floor** | `GET /api/v1/releases/pending`<br>`GET /review`<br>`GET /review/plugins`<br>`GET /review/plugins/{id}`<br>`GET /review/releases/{id}`<br>`POST /api/v1/releases/{id}/approve`<br>`POST /api/v1/releases/{id}/reject`<br>`POST /api/v1/releases/{id}/reverify`<br>`POST /review/releases/{id}/decide` | Approve or reject a release that is waiting for review. |
+| `plugin.moderate` | **none — capability floor** | `POST /review/plugins/{id}/listing` | Delist or relist somebody else's plugin as a moderator. Delisting removes the listing and keeps the claim — ids are never recycled — and it is a different act from an owner delisting their own plugin, which the audit row says. |
 | `session.end` | **none — capability floor** | `POST /auth/logout` | End the browser session it is called with. |
 
 ## Scopes

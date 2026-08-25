@@ -140,6 +140,12 @@ func (q *Queue) Detail(ctx context.Context, releaseID string) (Detail, error) {
 	out.SHA256 = deref(row.ArtifactSha256)
 	out.SubmittedBy = deref(row.SubmittedBy)
 	out.Note = deref(row.ReviewNote)
+	out.Submitter = Submitter{
+		AccountID:   out.SubmittedBy,
+		DisplayName: row.SubmitterName,
+		Handle:      row.SubmitterHandle,
+		Trust:       trustOrFloor(row.SubmitterTrust),
+	}
 	if row.ReviewedAt != nil {
 		out.ReviewedAt = core.Micros(*row.ReviewedAt).Time()
 	}

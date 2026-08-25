@@ -78,7 +78,20 @@
     </tr>
     <tr>
       <th>Submitted</th>
-      <td>{{.SubmittedAt.Format "2006-01-02 15:04:05"}}{{if .SubmittedBy}} by {{.SubmittedBy}}{{end}}</td>
+      <td>
+        {{.SubmittedAt.Format "2006-01-02 15:04:05"}}
+        {{if .Submitter.AccountID}}
+          by
+          {{if .Submitter.Handle}}{{.Submitter.Handle}}
+          {{else if .Submitter.DisplayName}}{{.Submitter.DisplayName}}
+          {{else}}<span class="mono">{{.Submitter.AccountID}}</span>{{end}}
+          {{/* THE TIER, BESIDE THE PERSON, because it is the fact that decides whether their next
+               version bump needs a human at all -- and because the control that changes it is
+               further down this page. A control offered without its current value is a reviewer
+               guessing. It is the ACCOUNT's tier and follows them across every plugin they hold. */}}
+          <br><span class="muted">this registry holds them at <strong>{{.Submitter.Trust}}</strong></span>
+        {{end}}
+      </td>
     </tr>
     {{if not .ReviewedAt.IsZero}}
     <tr>
@@ -152,6 +165,31 @@
   This release is <strong>{{.State}}</strong> and there is nothing left to decide. Nothing here
   edits it: a correction is a new release, and the record below is append-only.
 </p>
+{{end}}
+
+{{/* THE TRUST CONTROL: beside the decision, and posting somewhere else entirely.
+
+     ON THIS PAGE, because this is where the judgement is formed -- a reviewer who has just read
+     somebody's submission is the person best placed to say whether this registry should stop
+     gating their version bumps. That was the ask this surface exists for; before it, trusting a
+     publisher needed a hand-made authenticated PUT.
+
+     SEPARATE FROM APPROVE/REJECT, and the separation is load-bearing rather than tidy. Approving
+     these bytes and trusting this publisher are two decisions: the first is about one release, the
+     second is about every version bump that account makes from now on. An approve button that also
+     raised trust would make the second happen silently every time somebody made the first.
+
+     OUTSIDE the pending branch above, deliberately. A reviewer is redirected back here after
+     approving, and "approve, then decide whether to stop gating them" is the ordinary order of the
+     two thoughts -- so a control that vanished the moment the release was decided would disappear
+     at exactly the point it is wanted. The tier is a property of the account, not of this release,
+     and nothing about it is settled by the release being finished with.
+
+     GATED ON .CanSetTrust, the exact condition the route is registered on: a build wired without a
+     trust service renders no control rather than one that posts to a 404. */}}
+{{if and $.CanSetTrust .Submitter.AccountID}}
+<h2>Trust</h2>
+{{template "trustform" $.TrustForSubmitter}}
 {{end}}
 
 <h2>Audit trail</h2>

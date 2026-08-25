@@ -119,6 +119,9 @@ func registerReviewPages(api huma.API, deps WebDeps) {
 
 		data := reviewPageData(deps, p, detail.PluginID+" "+detail.Version)
 		data.Release = &detail
+		// The tier vocabulary, because this page carries the trust control. Without it the select
+		// renders with no options -- a control that cannot be used, which is worse than no control.
+		data.TrustTiers = trustTiers()
 		data.Notice, data.Problem = messageFor(in.Message)
 		return renderPage(ctx, "release.html", data)
 	})
@@ -221,6 +224,14 @@ func reviewPageData(deps WebDeps, p auth.Principal, title string) pageData {
 		CSRFField:  auth.CSRFFieldName,
 		CSRFToken:  deps.Sessions.CSRFToken(p),
 		IsReviewer: true,
+
+		// The exact conditions the two moderation registrars are gated on, read from the same
+		// dependencies. A page offers the trust control only where the route that answers it is
+		// registered, and links to the console only where the console is served — so "the page
+		// says you can do this here" and "the route that does it exists" are one fact rather than
+		// two that can drift.
+		CanSetTrust: deps.Trust != nil,
+		CanModerate: deps.Moderation != nil,
 	}
 }
 

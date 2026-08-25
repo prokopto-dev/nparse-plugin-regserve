@@ -15,6 +15,7 @@ import (
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/ownership"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/registry"
 	"github.com/prokopto-dev/nparse-plugin-regserve/internal/release"
+	"github.com/prokopto-dev/nparse-plugin-regserve/internal/review"
 )
 
 // GATE ROUTE002: a path this service does not route answers 404, and one it routes by another
@@ -49,26 +50,27 @@ func routedServer(t *testing.T) *httptest.Server {
 
 	dir := &fakeDirectory{fakeCatalogue: fakeCatalogue{plugins: []registry.Plugin{testPlugin("merchant-mode")}}}
 	srv := httptest.NewServer(api.New(api.Config{
-		Catalogue: dir,
-		Directory: dir,
-		Readiness: failingReady{},
-		Authn:     &fakeAuthn{},
-		Login:     &fakeLogin{},
-		Sessions:  &fakeSessions{},
-		Providers: identity.NewRegistry(stubProvider{}),
-		Tokens:    &fakeTokens{},
-		Ownership: &fakeOwnership{},
-		Claimer:   unreachableDeps{},
-		Publisher: unreachableDeps{},
-		Queue:     &fakeQueue{},
-		Reviewers: &fakeReviewers{},
-		Trust:     unreachableDeps{},
+		Catalogue:  dir,
+		Directory:  dir,
+		Readiness:  failingReady{},
+		Authn:      &fakeAuthn{},
+		Login:      &fakeLogin{},
+		Sessions:   &fakeSessions{},
+		Providers:  identity.NewRegistry(stubProvider{}),
+		Tokens:     &fakeTokens{},
+		Ownership:  &fakeOwnership{},
+		Claimer:    unreachableDeps{},
+		Publisher:  unreachableDeps{},
+		Queue:      &fakeQueue{},
+		Reviewers:  &fakeReviewers{},
+		Trust:      unreachableDeps{},
+		Moderation: unreachableDeps{},
 	}))
 	t.Cleanup(srv.Close)
 	return srv
 }
 
-// unreachableDeps stands in for the three services no request in this file reaches. They are wired
+// unreachableDeps stands in for the services no request in this file reaches. They are wired
 // because a route is only registered when its dependency is present, and this gate is about the
 // WHOLE pattern set — a build missing the publish route would pass the 405 assertion for it by
 // answering 404 instead.
@@ -83,6 +85,22 @@ func (unreachableDeps) ClaimID(context.Context, ownership.Claim, string) error {
 }
 
 func (unreachableDeps) SetTrust(context.Context, string, release.Trust, string, string) error {
+	return errUnreachableDep
+}
+
+func (unreachableDeps) List(context.Context) ([]review.Listing, error) {
+	return nil, errUnreachableDep
+}
+
+func (unreachableDeps) Get(context.Context, string) (review.Listing, error) {
+	return review.Listing{}, errUnreachableDep
+}
+
+func (unreachableDeps) Delist(context.Context, string, string, string) error {
+	return errUnreachableDep
+}
+
+func (unreachableDeps) Relist(context.Context, string, string, string) error {
 	return errUnreachableDep
 }
 

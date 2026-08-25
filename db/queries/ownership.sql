@@ -70,3 +70,26 @@ JOIN account a ON a.id = i.account_id
 WHERE i.provider_kind = ? AND lower(i.handle) = lower(sqlc.arg(handle))
 ORDER BY i.linked_at, i.id
 LIMIT 1;
+
+-- name: ListOwnersWithTrustForPlugin :many
+-- One plugin's owners with their handles and CURRENT trust tiers, for the moderation page.
+--
+-- The single-plugin counterpart of ListOwnersWithTrust in plugin.sql, and a separate statement for
+-- the same reason GetListing is separate from ListListings: one page needs one plugin's rows, and
+-- reading every ownership grant in the registry to render it would make the cost of the page a
+-- function of the whole catalogue.
+--
+-- LEFT JOIN account_trust because NO ROW MEANS 'new'. An INNER JOIN would drop every owner nobody
+-- has assessed -- which is most of them, and exactly the ones a reviewer is looking for.
+SELECT
+    o.account_id,
+    o.role,
+    a.display_name,
+    CAST(coalesce((SELECT i.handle FROM identity i WHERE i.account_id = a.id
+        ORDER BY i.linked_at, i.id LIMIT 1), '') AS TEXT) AS handle,
+    CAST(coalesce(t.level, '') AS TEXT) AS trust_level
+FROM plugin_owner o
+JOIN account a ON a.id = o.account_id
+LEFT JOIN account_trust t ON t.account_id = o.account_id
+WHERE o.plugin_id = ?
+ORDER BY o.granted_at, o.account_id;
